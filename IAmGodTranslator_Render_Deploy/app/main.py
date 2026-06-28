@@ -240,6 +240,11 @@ async def upload_reference(novel_id: str, reference: Annotated[list[UploadFile],
     return JSONResponse(await novels.upload_reference(novel_id, reference), status_code=201)
 
 
+@app.post("/api/novels/{novel_id}/import/ai-translations")
+async def import_ai_translations(novel_id: str, translated_zip: Annotated[UploadFile, File(description="AI translated chapters ZIP")]) -> JSONResponse:
+    return JSONResponse(await novels.import_ai_translations(novel_id, translated_zip), status_code=201)
+
+
 @app.post("/api/novels/{novel_id}/translate/batch")
 async def create_novel_batch(novel_id: str, payload: Annotated[dict[str, object], Body()]) -> JSONResponse:
     settings = dict(payload)

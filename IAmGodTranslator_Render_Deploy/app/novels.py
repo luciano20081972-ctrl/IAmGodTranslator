@@ -105,6 +105,33 @@ class NovelManager:
         self.touch(novel_id)
         return self.library(novel_id)
 
+    async def import_ai_translations(self, novel_id: str, upload: UploadFile) -> dict[str, Any]:
+        filename = safe_filename(upload.filename, "ai-translated-chapters.zip")
+        if Path(filename).suffix.lower() != ".zip":
+            raise ValueError("AI translated chapters import must be a .zip file.")
+
+        imported = 0
+        ai_dir = self.folders(novel_id)["ai"]
+        ai_dir.mkdir(parents=True, exist_ok=True)
+
+        with zipfile.ZipFile(io.BytesIO(await upload.read())) as archive:
+            for member in archive.infolist():
+                if member.is_dir():
+                    continue
+
+                name = Path(member.filename.replace("\\", "/")).name
+                if not re.fullmatch(r"\d{1,6}\.txt", name, re.IGNORECASE):
+                    continue
+
+                chapter_number = int(Path(name).stem)
+                target = ai_dir / f"{chapter_number:04d}.txt"
+                with archive.open(member) as source, open(target, "wb") as output:
+                    shutil.copyfileobj(source, output)
+                imported += 1
+
+        self.touch(novel_id)
+        return {"imported": imported, **self.library(novel_id)}
+
     def create_batch(self, novel_id: str, settings: dict[str, Any]) -> dict[str, Any]:
         batch_size = max(1, min(200, int(settings.get("batch_size") or 25)))
         references = self.reference_files_by_number(novel_id)
@@ -204,6 +231,14 @@ class NovelManager:
         for number, file in self.reference_files_by_number(novel_id).items():
             chapters.setdefault(number, self.base_chapter(number, file.stem))
             chapters[number]["reference_path"] = str(file)
+        for file in sorted(self.folders(novel_id)["ai"].rglob("*.txt")):
+            parsed = parse_chapter(file)
+            number = parsed.get("number")
+            if number is None:
+                continue
+            current = chapters.setdefault(int(number), self.base_chapter(int(number), parsed.get("title") or file.stem))
+            current["output_path"] = str(file)
+            current["status"] = "translated"
         for job_dir, state in self.raw_jobs(novel_id):
             folders = self.service_for(novel_id).job_folders(job_dir)
             for item in state.get("chapters", []):
@@ -317,7 +352,7 @@ class NovelManager:
 
     def folders(self, novel_id: str) -> dict[str, Path]:
         novel_dir = self.novel_dir(novel_id)
-        return {"original": novel_dir / "Original", "reference": novel_dir / "Reference", "output": novel_dir / "Output", "backups": novel_dir / "Backups", "config": novel_dir / "config"}
+        return {"original": novel_dir / "Original", "reference": novel_dir / "Reference", "ai": novel_dir / "AI", "output": novel_dir / "Output", "backups": novel_dir / "Backups", "config": novel_dir / "config"}
 
     def novel_dir(self, novel_id: str) -> Path:
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,80}", novel_id):
