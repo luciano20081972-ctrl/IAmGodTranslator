@@ -23,6 +23,24 @@
       <div class="status-chip" id="apiStatus">Checking server</div>
     </header>
 
+    <section class="storage-band" aria-labelledby="storageTitle">
+      <div>
+        <p class="eyebrow">Storage</p>
+        <h2 id="storageTitle">Saved Data</h2>
+      </div>
+      <div class="storage-metrics">
+        <div><span>Mode</span><strong id="storageMode">Checking</strong></div>
+        <div><span>Chinese</span><strong id="storageChinese">0</strong></div>
+        <div><span>NovelFire</span><strong id="storageReferences">0</strong></div>
+        <div><span>English</span><strong id="storageTranslations">0</strong></div>
+        <div><span>Last backup</span><strong id="storageBackup">Never</strong></div>
+      </div>
+      <form class="restore-form" id="restoreForm">
+        <input id="backupFile" name="backup" type="file" accept=".zip,application/zip" aria-label="Restore backup ZIP">
+        <button class="secondary-button" type="submit">Restore Backup</button>
+      </form>
+    </section>
+
     <main class="workspace">
       <section class="tool-panel upload-panel" aria-labelledby="uploadTitle">
         <div class="panel-head">
@@ -111,6 +129,8 @@
           <div class="estimate-summary" id="estimateSummary"></div>
           <div class="estimate-actions">
             <a class="secondary-link" id="estimateReportLink" href="#">Report</a>
+            <a class="secondary-link disabled" id="downloadPrompts" href="#" aria-disabled="true">Prompts</a>
+            <a class="secondary-link disabled" id="backupJob" href="#" aria-disabled="true">Backup</a>
             <button class="primary-button small" id="startTranslation" type="button" disabled>Start Translation</button>
           </div>
         </section>

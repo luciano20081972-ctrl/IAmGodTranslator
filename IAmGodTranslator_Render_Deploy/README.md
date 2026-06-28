@@ -47,6 +47,7 @@ OPENAI_API_KEY=your-api-key-here
 OPENAI_MODEL=gpt-4o-mini
 LOG_LEVEL=INFO
 MAX_UPLOAD_BYTES=52428800
+DATA_DIR=
 ```
 
 Run the app:
@@ -78,15 +79,17 @@ The release includes `render.yaml`, so Render can deploy it directly from a GitH
 7. Add environment variables in Render:
    - `OPENAI_API_KEY`: your OpenAI API key
    - `OPENAI_MODEL`: `gpt-4o-mini`
+   - `DATA_DIR`: `/var/data/IAmGodTranslator`
    - `LOG_LEVEL`: `INFO`
-8. Deploy.
-9. After deploy, open the Render URL and verify `/api/health` returns:
+8. Add a Render persistent disk mounted at `/var/data` if your Render service plan supports disks.
+9. Deploy.
+10. After deploy, open the Render URL and verify `/api/health` returns:
 
 ```json
 {"status":"ok"}
 ```
 
-Render free instances use ephemeral local storage. Download translated chapters before redeploys, restarts, or long idle periods.
+Render instances without a persistent disk use ephemeral local storage. For long translation jobs, use a persistent disk mounted at `/var/data` with `DATA_DIR=/var/data/IAmGodTranslator`.
 
 ## iPhone Home Screen
 
@@ -104,7 +107,7 @@ The app includes Apple web app meta tags, `manifest.json`, an SVG icon, and `ser
 Uploaded jobs are stored under:
 
 ```text
-data/jobs/<job_id>/
+<DATA_DIR or ./data>/jobs/<job_id>/
   Chinese/
   NovelFire/
   Prompts/
@@ -115,6 +118,8 @@ data/jobs/<job_id>/
 ```
 
 Each job gets its own copy of `memory.json`, `glossary.json`, and `style.json`.
+The app keeps persistent copies of `memory.json`, `glossary.json`, and `style.json` under `<DATA_DIR>/config/`.
+Full job backups are saved under `<DATA_DIR>/backups/` when downloaded.
 
 ## Notes
 
@@ -123,3 +128,6 @@ Each job gets its own copy of `memory.json`, `glossary.json`, and `style.json`.
 - Default safety settings stop at one test chapter, use `gpt-4o-mini`, and allow at most one retry for failed chapters.
 - Queue state is persisted to both `state.json` and `Logs/translation_queue.json`.
 - Queued or running jobs are resumed automatically on app startup.
+- `/api/storage` reports storage mode and saved file counts.
+- Each job can download English translations, saved prompts, or a full backup ZIP.
+- Backup ZIPs can be restored from the web UI.

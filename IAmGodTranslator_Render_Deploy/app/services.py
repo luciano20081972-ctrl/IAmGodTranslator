@@ -37,8 +37,10 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
+DEFAULT_RENDER_DATA_DIR = Path("/var/data/IAmGodTranslator")
 BASELINE_FILES = ("memory.json", "glossary.json", "style.json")
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
+MAX_BACKUP_BYTES = int(os.getenv("MAX_BACKUP_BYTES", str(500 * 1024 * 1024)))
 SECRET_PATTERN = re.compile(r"sk-[A-Za-z0-9_\-*]+")
 
 
@@ -70,18 +72,44 @@ def unique_path(folder: Path, filename: str) -> Path:
     raise RuntimeError(f"Unable to create unique filename for {filename}")
 
 
+def resolve_data_dir() -> Path:
+    configured = os.getenv("DATA_DIR")
+
+    if configured:
+        return Path(configured).expanduser()
+
+    if os.getenv("RENDER") and DEFAULT_RENDER_DATA_DIR.parent.exists():
+        return DEFAULT_RENDER_DATA_DIR
+
+    return DEFAULT_DATA_DIR
+
+
 class TranslationService:
     def __init__(
         self,
-        data_dir: Path = DEFAULT_DATA_DIR,
+        data_dir: Path | None = None,
         translator: Callable[[str], str] = translate,
     ):
-        self.data_dir = data_dir
+        self.data_dir = data_dir or resolve_data_dir()
         self.jobs_dir = self.data_dir / "jobs"
+        self.config_dir = self.data_dir / "config"
+        self.backups_dir = self.data_dir / "backups"
         self.translator = translator
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._prepare_storage()
+
+    def _prepare_storage(self) -> None:
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.backups_dir.mkdir(parents=True, exist_ok=True)
+
+        for filename in BASELINE_FILES:
+            source = PROJECT_ROOT / filename
+            target = self.config_dir / filename
+
+            if source.exists() and not target.exists():
+                shutil.copy2(source, target)
 
     async def create_job(
         self,
@@ -201,18 +229,185 @@ class TranslationService:
             return None
 
         zip_path = folders["output"] / f"{job_id}-translated-chapters.zip"
-        zip_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for file in output_files:
-                archive.write(file, arcname=file.name)
-
+        self._zip_files(output_files, zip_path, folders["english"])
         return zip_path
+
+    def build_prompts_zip(self, job_id: str) -> Path | None:
+        job_dir = self.job_dir(job_id)
+        folders = self.job_folders(job_dir)
+        prompt_files = sorted(folders["prompts"].glob("*.txt"))
+
+        if not prompt_files:
+            return None
+
+        zip_path = folders["output"] / f"{job_id}-prompts.zip"
+        self._zip_files(prompt_files, zip_path, folders["prompts"])
+        return zip_path
+
+    def build_backup_zip(self, job_id: str) -> Path | None:
+        job_dir = self.job_dir(job_id)
+
+        if not job_dir.exists():
+            return None
+
+        timestamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+        zip_path = self.backups_dir / f"{job_id}-backup-{timestamp}.zip"
+        files = sorted(path for path in job_dir.rglob("*") if path.is_file())
+        self._zip_files(files, zip_path, job_dir, prefix=job_id)
+        self._write_json(
+            self.data_dir / "storage_state.json",
+            {
+                "last_backup_at": utc_now(),
+                "last_backup_file": str(zip_path),
+                "job_id": job_id,
+            },
+        )
+        return zip_path
+
+    async def restore_backup(self, upload: UploadFile) -> dict[str, Any]:
+        filename = safe_filename(upload.filename, "job-backup.zip")
+
+        if Path(filename).suffix.lower() != ".zip":
+            raise ValueError("Backup must be a .zip file.")
+
+        content = await upload.read()
+
+        if len(content) > MAX_BACKUP_BYTES:
+            raise ValueError("Backup ZIP is larger than the configured restore limit.")
+
+        try:
+            archive = zipfile.ZipFile(io.BytesIO(content))
+        except zipfile.BadZipFile as exc:
+            raise ValueError("Backup ZIP could not be read.") from exc
+
+        with archive:
+            members = [
+                member
+                for member in archive.infolist()
+                if not member.is_dir()
+            ]
+            self._validate_zip_members(members)
+
+            state_member = next(
+                (member for member in members if Path(member.filename).name == "state.json"),
+                None,
+            )
+
+            if state_member is None:
+                raise ValueError("Backup ZIP does not contain a job state.json.")
+
+            state = json.loads(archive.read(state_member).decode("utf-8"))
+            original_job_id = str(state.get("job_id") or "")
+            job_id = original_job_id if re.fullmatch(r"[a-f0-9]{32}", original_job_id) else uuid.uuid4().hex
+
+            if self.job_dir(job_id).exists():
+                job_id = uuid.uuid4().hex
+
+            job_dir = self.job_dir(job_id)
+            job_dir.mkdir(parents=True)
+            root_parts = Path(state_member.filename).parts[:-1]
+
+            for member in members:
+                parts = Path(member.filename).parts
+                relative_parts = parts[len(root_parts):] if parts[:len(root_parts)] == root_parts else parts
+
+                if not relative_parts:
+                    continue
+
+                output = job_dir.joinpath(*relative_parts)
+                output.parent.mkdir(parents=True, exist_ok=True)
+
+                with archive.open(member) as source, open(output, "wb") as target:
+                    shutil.copyfileobj(source, target)
+
+        self._normalize_restored_job(job_dir, job_id)
+        restored = self._load_state(job_dir)
+
+        if restored is None:
+            raise ValueError("Restored backup did not produce a readable job state.")
+
+        return self._public_state(restored)
+
+    def storage_status(self) -> dict[str, Any]:
+        chinese_count = 0
+        reference_count = 0
+        translation_count = 0
+
+        for job_dir in self.jobs_dir.glob("*"):
+            if not job_dir.is_dir():
+                continue
+
+            folders = self.job_folders(job_dir)
+            chinese_count += len(list(folders["chinese"].glob("*.txt")))
+            reference_count += len(list(folders["novelfire"].glob("*.txt")))
+            translation_count += len(list(folders["english"].glob("*.txt")))
+
+        storage_state_path = self.data_dir / "storage_state.json"
+        storage_state = self._read_json(storage_state_path) if storage_state_path.exists() else {}
+
+        return {
+            "mode": self._storage_mode(),
+            "data_dir": str(self.data_dir),
+            "saved_chinese_chapters": chinese_count,
+            "saved_novelfire_references": reference_count,
+            "saved_translations": translation_count,
+            "last_backup_at": storage_state.get("last_backup_at"),
+            "last_backup_file": storage_state.get("last_backup_file"),
+        }
 
     def estimate_report(self, job_id: str) -> Path | None:
         job_dir = self.job_dir(job_id)
         report = self.job_folders(job_dir)["output"] / "cost_estimate_report.md"
         return report if report.exists() else None
+
+    def _zip_files(self, files: list[Path], zip_path: Path, root: Path, prefix: str = "") -> None:
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for file in files:
+                arcname = file.relative_to(root).as_posix()
+
+                if prefix:
+                    arcname = f"{prefix}/{arcname}"
+
+                archive.write(file, arcname=arcname)
+
+    def _validate_zip_members(self, members: list[zipfile.ZipInfo]) -> None:
+        for member in members:
+            path = Path(member.filename)
+
+            if path.is_absolute() or ".." in path.parts:
+                raise ValueError("Backup ZIP contains an unsafe path.")
+
+            if member.file_size > MAX_BACKUP_BYTES:
+                raise ValueError("Backup ZIP contains a file larger than the restore limit.")
+
+    def _normalize_restored_job(self, job_dir: Path, job_id: str) -> None:
+        state = self._load_state(job_dir)
+
+        if state is None:
+            return
+
+        folders = self.job_folders(job_dir)
+        state["job_id"] = job_id
+
+        for folder in folders.values():
+            folder.mkdir(parents=True, exist_ok=True)
+
+        for chapter in state.get("chapters", []):
+            source_file = chapter.get("source_file")
+            reference_file = chapter.get("reference_file")
+
+            if source_file:
+                chapter["source_path"] = str(folders["chinese"] / source_file)
+
+            if reference_file:
+                chapter["reference_path"] = str(folders["novelfire"] / reference_file)
+
+        report = folders["output"] / "cost_estimate_report.md"
+        state["estimate_report"] = str(report) if report.exists() else state.get("estimate_report")
+        self._refresh_counts(state)
+        self._save_state(job_dir, state)
 
     def job_dir(self, job_id: str) -> Path:
         if not re.fullmatch(r"[a-f0-9]{32}", job_id):
@@ -567,11 +762,13 @@ class TranslationService:
 
     def _copy_baseline_files(self, job_dir: Path) -> None:
         for filename in BASELINE_FILES:
-            source = PROJECT_ROOT / filename
+            source = self.config_dir / filename
             target = job_dir / filename
 
             if source.exists() and not target.exists():
                 shutil.copy2(source, target)
+            elif not target.exists() and (PROJECT_ROOT / filename).exists():
+                shutil.copy2(PROJECT_ROOT / filename, target)
 
     def _load_state(self, job_dir: Path) -> dict[str, Any] | None:
         state_path = job_dir / "state.json"
@@ -693,3 +890,15 @@ class TranslationService:
             or "incorrect api key" in text
             or "openai_api_key" in text
         )
+
+    def _storage_mode(self) -> str:
+        if os.getenv("DATA_DIR"):
+            return "persistent-disk"
+
+        if os.getenv("RENDER") and self.data_dir == DEFAULT_RENDER_DATA_DIR:
+            return "render-persistent-disk"
+
+        if os.getenv("RENDER"):
+            return "render-ephemeral-filesystem"
+
+        return "local-filesystem"

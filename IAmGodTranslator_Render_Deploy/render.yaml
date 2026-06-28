@@ -12,6 +12,12 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_MODEL
-        value: gpt-5.5
+        value: gpt-4o-mini
+      - key: DATA_DIR
+        value: /var/data/IAmGodTranslator
       - key: LOG_LEVEL
         value: INFO
+    disk:
+      name: iamgodtranslator-data
+      mountPath: /var/data
+      sizeGB: 1

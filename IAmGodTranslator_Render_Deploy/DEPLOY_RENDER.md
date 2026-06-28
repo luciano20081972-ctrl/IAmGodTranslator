@@ -21,6 +21,7 @@ OPENAI_API_KEY=your OpenAI API key
 OPENAI_MODEL=gpt-4o-mini
 LOG_LEVEL=INFO
 MAX_UPLOAD_BYTES=52428800
+DATA_DIR=/var/data/IAmGodTranslator
 ```
 
 Do not commit `.env`. Add `OPENAI_API_KEY` only in Render's environment variable UI.
@@ -33,9 +34,10 @@ Do not commit `.env`. Add `OPENAI_API_KEY` only in Render's environment variable
 4. Connect the GitHub repository.
 5. Set the build command and start command shown above.
 6. Add the environment variables shown above.
-7. Choose the free instance type and deploy.
-8. Open `https://your-render-service.onrender.com/api/health`; it should return `{"status":"ok"}`.
-9. Open `https://your-render-service.onrender.com/` to use the translator.
+7. Add a persistent disk mounted at `/var/data` if your Render service plan supports disks.
+8. Deploy.
+9. Open `https://your-render-service.onrender.com/api/health`; it should return `{"status":"ok"}`.
+10. Open `https://your-render-service.onrender.com/` to use the translator.
 
 ## iPhone Safari
 
@@ -51,4 +53,11 @@ Do not commit `.env`. Add `OPENAI_API_KEY` only in Render's environment variable
 4. Keep the suggested name or enter `IAmGodTranslator`.
 5. Tap **Add**.
 
-Render free services use ephemeral disk. Download translated chapters before redeploys, restarts, or long idle periods.
+Render services without a persistent disk use ephemeral storage. For long translation jobs, mount a persistent disk at `/var/data` and keep `DATA_DIR=/var/data/IAmGodTranslator`.
+
+## Storage and Backups
+
+- Uploaded Chinese chapters, NovelFire references, queue state, settings, prompts, translations, reports, glossary, and memory are stored under `DATA_DIR`.
+- The web UI shows storage mode and saved file counts.
+- Use **Download** for English translations, **Prompts** for saved prompts, and **Backup** for a full job ZIP.
+- Use **Restore Backup** to upload a full job backup ZIP after a redeploy or migration.

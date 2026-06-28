@@ -5,6 +5,13 @@ const state = {
 
 const els = {
   apiStatus: document.querySelector("#apiStatus"),
+  storageMode: document.querySelector("#storageMode"),
+  storageChinese: document.querySelector("#storageChinese"),
+  storageReferences: document.querySelector("#storageReferences"),
+  storageTranslations: document.querySelector("#storageTranslations"),
+  storageBackup: document.querySelector("#storageBackup"),
+  restoreForm: document.querySelector("#restoreForm"),
+  backupFile: document.querySelector("#backupFile"),
   uploadForm: document.querySelector("#uploadForm"),
   chineseFiles: document.querySelector("#chineseFiles"),
   referenceFiles: document.querySelector("#referenceFiles"),
@@ -21,6 +28,8 @@ const els = {
   estimatePanel: document.querySelector("#estimatePanel"),
   estimateSummary: document.querySelector("#estimateSummary"),
   estimateReportLink: document.querySelector("#estimateReportLink"),
+  downloadPrompts: document.querySelector("#downloadPrompts"),
+  backupJob: document.querySelector("#backupJob"),
   formMessage: document.querySelector("#formMessage"),
   refreshJobs: document.querySelector("#refreshJobs"),
   jobStatus: document.querySelector("#jobStatus"),
@@ -99,6 +108,7 @@ function renderJob(job) {
   els.jobCounts.textContent = `${completed} / ${total}`;
   els.progressFill.style.width = `${percent}%`;
   renderEstimate(job);
+  renderJobActions(job);
 
   if (completed > 0) {
     els.downloadAll.classList.remove("disabled");
@@ -155,6 +165,19 @@ function renderJob(job) {
     row.append(main, actions);
     els.chapterList.appendChild(row);
   }
+}
+
+function toggleLink(link, enabled, href = "#") {
+  link.classList.toggle("disabled", !enabled);
+  link.setAttribute("aria-disabled", enabled ? "false" : "true");
+  link.href = enabled ? href : "#";
+}
+
+function renderJobActions(job) {
+  const hasJob = Boolean(job?.job_id);
+  const hasPrompts = job.chapters?.some((chapter) => chapter.tries > 0 || chapter.status === "completed");
+  toggleLink(els.downloadPrompts, hasJob && hasPrompts, `/api/jobs/${job.job_id}/prompts/download`);
+  toggleLink(els.backupJob, hasJob, `/api/jobs/${job.job_id}/backup`);
 }
 
 function renderHistory(jobs) {
@@ -232,6 +255,14 @@ function renderEstimate(job) {
   els.startTranslation.disabled = !canStart;
 }
 
+function renderStorage(status) {
+  els.storageMode.textContent = status.mode || "Unknown";
+  els.storageChinese.textContent = Number(status.saved_chinese_chapters || 0).toLocaleString();
+  els.storageReferences.textContent = Number(status.saved_novelfire_references || 0).toLocaleString();
+  els.storageTranslations.textContent = Number(status.saved_translations || 0).toLocaleString();
+  els.storageBackup.textContent = status.last_backup_at ? formatDate(status.last_backup_at) : "Never";
+}
+
 async function checkHealth() {
   try {
     const response = await fetch("/api/health");
@@ -263,6 +294,16 @@ async function fetchJobs() {
   }
 }
 
+async function fetchStorage() {
+  const response = await fetch("/api/storage");
+
+  if (!response.ok) {
+    throw new Error("Could not load storage status");
+  }
+
+  renderStorage(await response.json());
+}
+
 async function fetchJob(jobId) {
   const response = await fetch(`/api/jobs/${jobId}`);
 
@@ -273,6 +314,7 @@ async function fetchJob(jobId) {
   const job = await response.json();
   renderJob(job);
   await fetchJobs();
+  await fetchStorage();
 
   if (["completed", "failed", "test_completed", "budget_reached"].includes(job.status)) {
     stopPolling();
@@ -334,6 +376,7 @@ async function submitJob(event) {
 
     renderJob(payload);
     await fetchJobs();
+    await fetchStorage();
     setMessage("Cost estimate ready. Review it before starting translation.");
     els.uploadForm.reset();
     els.stopWhenBudgetReached.checked = true;
@@ -346,6 +389,39 @@ async function submitJob(event) {
     setMessage(error.message, true);
   } finally {
     els.submitButton.disabled = false;
+  }
+}
+
+async function restoreBackup(event) {
+  event.preventDefault();
+
+  if (!els.backupFile.files.length) {
+    setMessage("Choose a backup ZIP to restore.", true);
+    return;
+  }
+
+  const body = new FormData();
+  body.append("backup", els.backupFile.files[0]);
+  setMessage("Restoring backup...");
+
+  try {
+    const response = await fetch("/api/jobs/restore", {
+      method: "POST",
+      body,
+    });
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload.detail || "Restore failed");
+    }
+
+    els.restoreForm.reset();
+    renderJob(payload);
+    await fetchJobs();
+    await fetchStorage();
+    setMessage("Backup restored.");
+  } catch (error) {
+    setMessage(error.message, true);
   }
 }
 
@@ -378,10 +454,13 @@ async function startCurrentJob() {
 els.chineseFiles.addEventListener("change", () => renderFileList(els.chineseFiles, els.chineseList));
 els.referenceFiles.addEventListener("change", () => renderFileList(els.referenceFiles, els.referenceList));
 els.uploadForm.addEventListener("submit", submitJob);
+els.restoreForm.addEventListener("submit", restoreBackup);
 els.startTranslation.addEventListener("click", startCurrentJob);
+els.backupJob.addEventListener("click", () => window.setTimeout(() => fetchStorage().catch(() => {}), 1200));
 els.refreshJobs.addEventListener("click", () => fetchJobs().catch(() => setMessage("Could not refresh jobs.", true)));
 
 checkHealth();
+fetchStorage().catch(() => {});
 fetchJobs().catch(() => {});
 
 if ("serviceWorker" in navigator) {

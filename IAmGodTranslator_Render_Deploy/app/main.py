@@ -56,6 +56,11 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/storage")
+async def storage_status() -> dict[str, object]:
+    return service.storage_status()
+
+
 @app.get("/api/jobs")
 async def list_jobs() -> dict[str, object]:
     return {"jobs": service.list_jobs()}
@@ -121,6 +126,18 @@ async def start_job(job_id: str) -> dict[str, str]:
     return {"status": "queued"}
 
 
+@app.post("/api/jobs/restore")
+async def restore_job_backup(
+    backup: Annotated[UploadFile, File(description="Full job backup ZIP")],
+) -> JSONResponse:
+    try:
+        job = await service.restore_backup(backup)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return JSONResponse(job, status_code=201)
+
+
 @app.get("/api/jobs/{job_id}/download")
 async def download_job(job_id: str) -> FileResponse:
     try:
@@ -130,6 +147,40 @@ async def download_job(job_id: str) -> FileResponse:
 
     if zip_path is None:
         raise HTTPException(status_code=404, detail="No translated chapters are available yet.")
+
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=zip_path.name,
+    )
+
+
+@app.get("/api/jobs/{job_id}/prompts/download")
+async def download_prompts(job_id: str) -> FileResponse:
+    try:
+        zip_path = service.build_prompts_zip(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if zip_path is None:
+        raise HTTPException(status_code=404, detail="No saved prompts are available yet.")
+
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=zip_path.name,
+    )
+
+
+@app.get("/api/jobs/{job_id}/backup")
+async def download_job_backup(job_id: str) -> FileResponse:
+    try:
+        zip_path = service.build_backup_zip(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if zip_path is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
 
     return FileResponse(
         zip_path,
