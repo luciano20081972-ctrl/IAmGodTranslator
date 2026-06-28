@@ -1,4 +1,4 @@
-const CACHE_NAME = "iamgodtranslator-v3-static";
+const CACHE_NAME = "iamgodtranslator-v4-static";
 const STATIC_ASSETS = [
   "/manifest.json",
   "/static/icons/icon.svg",

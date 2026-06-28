@@ -1,16 +1,17 @@
-# IAmGodTranslator Web v2
+# IAmGodTranslator Web v3
 
-FastAPI web app for translating web novel chapters while preserving the existing Python translator modules. Version 2 adds a multi-novel library, per-novel storage, online reader, backups, and restore tools.
+FastAPI web app for translating and reading web novel chapters while preserving the existing Python translator modules. Version 3 adds public reader pages with admin-only translation, import, backup, and settings controls.
 
 ## Features
 
 - Novel Library home with search, sorting, and novel cards.
-- Per-novel dashboard for Chapters, Reader, Translate, Backups, and Settings.
+- Public per-novel dashboard for Chapters and Reader.
+- Admin-only Translate, Backups, Settings, imports, restores, downloads, cover upload, and app icon upload.
 - Original Story uploads for source chapters.
 - Optional Reference Translation uploads for support/reference text.
 - Queue and cost estimate before translation.
 - Explicit Start Batch button with paid translation warning.
-- Online reader with Translation, Original Story, Reference Translation, and Prompt tabs.
+- Online reader with separate Original Story, Reference Translation, and AI Translation modes.
 - Download English ZIP, prompts ZIP, single translated chapters, or full novel backup ZIP.
 - Restore a full novel backup ZIP.
 - Persistent storage through `DATA_DIR`, suitable for Render persistent disks.
@@ -39,12 +40,13 @@ Environment variables:
 ```env
 OPENAI_API_KEY=your OpenAI API key
 OPENAI_MODEL=gpt-4o-mini
+ADMIN_PASSWORD=choose a private admin password
 LOG_LEVEL=INFO
 MAX_UPLOAD_BYTES=52428800
 DATA_DIR=/var/data/IAmGodTranslator
 ```
 
-Do not commit `.env`. For long jobs, attach a Render persistent disk mounted at `/var/data`.
+Do not commit `.env`. Set `ADMIN_PASSWORD` on Render or the admin tools stay hidden and locked. For long jobs, attach a Render persistent disk mounted at `/var/data`.
 
 ## Data Layout
 
@@ -71,4 +73,5 @@ Open the deployed Render URL in Safari, tap Share, choose Add to Home Screen, th
 - Cost estimates do not call OpenAI.
 - Uploads and estimates do not start translation automatically.
 - Translation starts only after pressing Start Batch and confirming.
+- Public visitors can read available chapters but cannot modify data or start paid work.
 - Release ZIPs must exclude `.env`, API keys, `.venv`, `__pycache__`, runtime job data, logs, generated prompts, and generated translations.

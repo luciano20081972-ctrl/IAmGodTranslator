@@ -25,12 +25,13 @@ IAmGodTranslator_Render_Deploy
 ```env
 OPENAI_API_KEY=your OpenAI API key
 OPENAI_MODEL=gpt-4o-mini
+ADMIN_PASSWORD=choose a private admin password
 LOG_LEVEL=INFO
 MAX_UPLOAD_BYTES=52428800
 DATA_DIR=/var/data/IAmGodTranslator
 ```
 
-Never commit `.env`.
+Never commit `.env`. Without `ADMIN_PASSWORD`, admin login is disabled and private controls remain hidden.
 
 ## Persistent Disk
 

@@ -54,6 +54,8 @@ class NovelManager:
         metadata = {
             "novel_id": candidate,
             "title": title,
+            "summary": "",
+            "tags": [],
             "created_at": utc_now(),
             "updated_at": utc_now(),
             "source_language": "Chinese",
@@ -72,9 +74,13 @@ class NovelManager:
 
     def update_novel(self, novel_id: str, updates: dict[str, Any]) -> dict[str, Any]:
         metadata = self.get_metadata(novel_id)
-        for key in ("title", "source_language", "target_language"):
+        for key in ("title", "source_language", "target_language", "summary"):
             if isinstance(updates.get(key), str) and updates[key].strip():
                 metadata[key] = updates[key].strip()
+        if isinstance(updates.get("tags"), list):
+            metadata["tags"] = [str(tag).strip() for tag in updates["tags"] if str(tag).strip()][:12]
+        elif isinstance(updates.get("tags"), str):
+            metadata["tags"] = [tag.strip() for tag in updates["tags"].split(",") if tag.strip()][:12]
         if isinstance(updates.get("settings"), dict):
             metadata.setdefault("settings", {}).update(updates["settings"])
         metadata["updated_at"] = utc_now()
@@ -192,6 +198,27 @@ class NovelManager:
         metadata["updated_at"] = utc_now()
         self.write_json(self.metadata_path(novel_id), metadata)
         return self.library(novel_id)
+
+    async def upload_app_icon(self, upload: UploadFile) -> dict[str, Any]:
+        filename = safe_filename(upload.filename, "app-icon.png")
+        suffix = Path(filename).suffix.lower()
+        if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+            raise ValueError("App icon must be jpg, jpeg, png, or webp.")
+        icon_dir = self.data_dir / "app"
+        icon_dir.mkdir(parents=True, exist_ok=True)
+        for old_icon in icon_dir.glob("app-icon.*"):
+            if old_icon.is_file():
+                old_icon.unlink()
+        target = icon_dir / f"app-icon{suffix}"
+        with open(target, "wb") as output:
+            output.write(await upload.read())
+        return {"icon_url": f"/api/app-icon?v={int(target.stat().st_mtime)}"}
+
+    def app_icon_path(self) -> Path | None:
+        for path in (self.data_dir / "app").glob("app-icon.*"):
+            if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
+                return path
+        return None
 
     def create_batch(self, novel_id: str, settings: dict[str, Any]) -> dict[str, Any]:
         batch_size = max(1, min(200, int(settings.get("batch_size") or 25)))
