@@ -127,3 +127,9 @@ body:not(.is-admin) .admin-only { display:none !important; }
 body.is-admin button.admin-only,body.is-admin .tab.admin-only { display:inline-flex !important; }
 body.is-admin section.admin-only { display:none !important; }
 body.is-admin section.admin-only.active { display:block !important; }
+.workspace-tabs { max-width:1280px; margin:0 auto 16px; display:flex; gap:8px; overflow-x:auto; padding:0 0 6px; scrollbar-width:thin; }
+.workspace-tab { display:inline-flex; align-items:center; gap:8px; max-width:240px; border:1px solid var(--line); border-radius:999px; background:var(--surface); color:var(--text); min-height:38px; padding:8px 12px; font-weight:800; cursor:pointer; white-space:nowrap; }
+.workspace-tab span:first-child { overflow:hidden; text-overflow:ellipsis; }
+.workspace-tab.active { border-color:var(--accent); color:var(--accent); background:rgba(22,124,107,.1); }
+.workspace-close { display:inline-grid; place-items:center; width:20px; height:20px; border-radius:999px; background:var(--surface-2); color:var(--muted); font-size:.8rem; line-height:1; }
+@media (max-width:820px) { .workspace-tabs { margin-bottom:12px; } .workspace-tab { max-width:190px; } }
