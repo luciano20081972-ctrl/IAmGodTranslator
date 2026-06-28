@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import UploadFile
 
 from app.services import TranslationService, safe_filename, unique_path, utc_now
-from modules.chapter import parse_chapter, read_text
+from modules.chapter import chapter_from_filename, parse_chapter, read_text
 
 
 DEFAULT_NOVEL_ID = "i-am-god"
@@ -132,6 +132,67 @@ class NovelManager:
         self.touch(novel_id)
         return {"imported": imported, **self.library(novel_id)}
 
+    async def import_original_zip(self, novel_id: str, upload: UploadFile) -> dict[str, Any]:
+        result = await self.import_chapter_zip(novel_id, upload, "original", "Original Story")
+        return {**result, **self.library(novel_id)}
+
+    async def import_reference_zip(self, novel_id: str, upload: UploadFile) -> dict[str, Any]:
+        result = await self.import_chapter_zip(novel_id, upload, "reference", "Reference Translation")
+        return {**result, **self.library(novel_id)}
+
+    async def import_chapter_zip(self, novel_id: str, upload: UploadFile, folder_key: str, label: str) -> dict[str, int]:
+        filename = safe_filename(upload.filename, f"{folder_key}-chapters.zip")
+        if Path(filename).suffix.lower() != ".zip":
+            raise ValueError(f"{label} import must be a .zip file.")
+
+        target_dir = self.folders(novel_id)[folder_key]
+        target_dir.mkdir(parents=True, exist_ok=True)
+        existing = set(self.chapter_numbers_for_folder(target_dir))
+        seen: set[int] = set()
+        imported = 0
+        duplicates = 0
+
+        with zipfile.ZipFile(io.BytesIO(await upload.read())) as archive:
+            for member in archive.infolist():
+                if member.is_dir():
+                    continue
+                name = Path(member.filename.replace("\\", "/")).name
+                if Path(name).suffix.lower() != ".txt":
+                    continue
+                number = chapter_from_filename(Path(name))
+                if number is None:
+                    continue
+                if number in existing or number in seen:
+                    duplicates += 1
+                    continue
+                target = target_dir / f"{number:04d}.txt"
+                with archive.open(member) as source, open(target, "wb") as output:
+                    shutil.copyfileobj(source, output)
+                seen.add(number)
+                imported += 1
+
+        self.touch(novel_id)
+        return {"imported": imported, "duplicates": duplicates}
+
+    async def upload_cover(self, novel_id: str, upload: UploadFile) -> dict[str, Any]:
+        filename = safe_filename(upload.filename, "cover.png")
+        suffix = Path(filename).suffix.lower()
+        if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+            raise ValueError("Cover image must be jpg, jpeg, png, or webp.")
+        cover_dir = self.folders(novel_id)["cover"]
+        cover_dir.mkdir(parents=True, exist_ok=True)
+        for old_cover in cover_dir.glob("*"):
+            if old_cover.is_file():
+                old_cover.unlink()
+        target = cover_dir / f"cover{suffix}"
+        with open(target, "wb") as output:
+            output.write(await upload.read())
+        metadata = self.get_metadata(novel_id)
+        metadata.setdefault("settings", {})["cover_file"] = str(target.relative_to(self.novel_dir(novel_id)))
+        metadata["updated_at"] = utc_now()
+        self.write_json(self.metadata_path(novel_id), metadata)
+        return self.library(novel_id)
+
     def create_batch(self, novel_id: str, settings: dict[str, Any]) -> dict[str, Any]:
         batch_size = max(1, min(200, int(settings.get("batch_size") or 25)))
         references = self.reference_files_by_number(novel_id)
@@ -164,11 +225,40 @@ class NovelManager:
         text = read_text(path_value) if path_value and Path(str(path_value)).exists() else ""
         return {"chapter": chapter, "text": text}
 
+    def cover_path(self, novel_id: str) -> Path | None:
+        metadata = self.get_metadata(novel_id)
+        cover_file = metadata.get("settings", {}).get("cover_file")
+        if isinstance(cover_file, str):
+            path = self.novel_dir(novel_id) / cover_file
+            if path.exists():
+                return path
+        for path in self.folders(novel_id)["cover"].glob("cover.*"):
+            if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
+                return path
+        return None
+
     def build_english_zip(self, novel_id: str) -> Path | None:
         return self.build_zip_from_chapters(novel_id, "output_path", "english")
 
+    def build_original_zip(self, novel_id: str) -> Path | None:
+        return self.build_zip_from_folder(novel_id, "original", "original-story")
+
+    def build_reference_zip(self, novel_id: str) -> Path | None:
+        return self.build_zip_from_folder(novel_id, "reference", "reference-translation")
+
+    def build_ai_zip(self, novel_id: str) -> Path | None:
+        return self.build_english_zip(novel_id)
+
     def build_prompts_zip(self, novel_id: str) -> Path | None:
         return self.build_zip_from_chapters(novel_id, "prompt_path", "prompts")
+
+    def build_zip_from_folder(self, novel_id: str, folder_key: str, suffix: str) -> Path | None:
+        files = sorted(path for path in self.folders(novel_id)[folder_key].rglob("*.txt") if path.is_file())
+        if not files:
+            return None
+        zip_path = self.folders(novel_id)["output"] / f"{novel_id}-{suffix}.zip"
+        self.zip_paths(files, zip_path, base=self.folders(novel_id)[folder_key])
+        return zip_path
 
     def build_zip_from_chapters(self, novel_id: str, key: str, suffix: str) -> Path | None:
         files = [Path(str(chapter[key])) for chapter in self.chapters(novel_id) if chapter.get(key)]
@@ -272,26 +362,32 @@ class NovelManager:
         novel_id = metadata["novel_id"]
         chapters = self.chapters(novel_id)
         translated = sum(1 for chapter in chapters if chapter.get("status") == "translated")
+        original_valid = len(self.chapter_numbers_for_folder(self.folders(novel_id)["original"]))
+        reference_valid = len(self.chapter_numbers_for_folder(self.folders(novel_id)["reference"]))
         jobs = [state for _, state in self.raw_jobs(novel_id)]
         settings = metadata.get("settings", {})
         status = "translating" if any(job.get("status") == "running" for job in jobs) else "ready"
         if status == "ready" and any(chapter.get("status") == "failed" for chapter in chapters):
             status = "needs attention"
+        cover_path = self.cover_path(novel_id)
         return {
             **metadata,
             "storage_mode": self.root_service._storage_mode(),
             "data_dir": str(self.data_dir),
             "counts": {
                 "total_chapters": len(chapters),
-                "original_files": len(list(self.folders(novel_id)["original"].rglob("*.txt"))),
-                "reference_files": len(list(self.folders(novel_id)["reference"].rglob("*.txt"))),
+                "original_files": original_valid,
+                "reference_files": reference_valid,
+                "raw_original_files": len(list(self.folders(novel_id)["original"].rglob("*.txt"))),
+                "raw_reference_files": len(list(self.folders(novel_id)["reference"].rglob("*.txt"))),
                 "translated_chapters": translated,
-                "remaining_chapters": max(0, len(chapters) - translated),
+                "remaining_chapters": max(0, original_valid - translated),
                 "jobs": len(jobs),
             },
             "status": status,
             "current_model": settings.get("model") or "gpt-4o-mini",
             "last_backup_at": settings.get("last_backup_at"),
+            "cover_url": f"/api/novels/{novel_id}/cover?v={int(cover_path.stat().st_mtime)}" if cover_path else None,
         }
 
     def migrate_legacy_jobs(self) -> None:
@@ -321,6 +417,17 @@ class NovelManager:
             if number is not None:
                 references[int(number)] = file
         return references
+
+    def chapter_numbers_for_folder(self, folder: Path) -> set[int]:
+        numbers: set[int] = set()
+        for file in sorted(folder.rglob("*.txt")):
+            try:
+                number = parse_chapter(file).get("number")
+            except OSError:
+                continue
+            if number is not None:
+                numbers.add(int(number))
+        return numbers
 
     def raw_jobs(self, novel_id: str) -> list[tuple[Path, dict[str, Any]]]:
         jobs = []
@@ -352,7 +459,7 @@ class NovelManager:
 
     def folders(self, novel_id: str) -> dict[str, Path]:
         novel_dir = self.novel_dir(novel_id)
-        return {"original": novel_dir / "Original", "reference": novel_dir / "Reference", "ai": novel_dir / "AI", "output": novel_dir / "Output", "backups": novel_dir / "Backups", "config": novel_dir / "config"}
+        return {"original": novel_dir / "Original", "reference": novel_dir / "Reference", "ai": novel_dir / "AI", "output": novel_dir / "Output", "backups": novel_dir / "Backups", "config": novel_dir / "config", "cover": novel_dir / "Cover"}
 
     def novel_dir(self, novel_id: str) -> Path:
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,80}", novel_id):

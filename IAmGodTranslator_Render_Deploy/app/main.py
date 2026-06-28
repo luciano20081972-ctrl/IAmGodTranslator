@@ -245,6 +245,38 @@ async def import_ai_translations(novel_id: str, translated_zip: Annotated[Upload
     return JSONResponse(await novels.import_ai_translations(novel_id, translated_zip), status_code=201)
 
 
+@app.post("/api/novels/{novel_id}/import/original")
+async def import_original_zip(novel_id: str, original_zip: Annotated[UploadFile, File(description="Original Story ZIP")]) -> JSONResponse:
+    try:
+        return JSONResponse(await novels.import_original_zip(novel_id, original_zip), status_code=201)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/novels/{novel_id}/import/reference")
+async def import_reference_zip(novel_id: str, reference_zip: Annotated[UploadFile, File(description="Reference Translation ZIP")]) -> JSONResponse:
+    try:
+        return JSONResponse(await novels.import_reference_zip(novel_id, reference_zip), status_code=201)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/novels/{novel_id}/cover")
+async def upload_novel_cover(novel_id: str, cover: Annotated[UploadFile, File(description="Novel cover image")]) -> JSONResponse:
+    try:
+        return JSONResponse(await novels.upload_cover(novel_id, cover), status_code=201)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/novels/{novel_id}/cover")
+async def get_novel_cover(novel_id: str) -> FileResponse:
+    cover = novels.cover_path(novel_id)
+    if cover is None:
+        raise HTTPException(status_code=404, detail="Cover image not found.")
+    return FileResponse(cover)
+
+
 @app.post("/api/novels/{novel_id}/translate/batch")
 async def create_novel_batch(novel_id: str, payload: Annotated[dict[str, object], Body()]) -> JSONResponse:
     settings = dict(payload)
@@ -274,6 +306,30 @@ async def download_novel_english(novel_id: str) -> FileResponse:
     zip_path = novels.build_english_zip(novel_id)
     if zip_path is None:
         raise HTTPException(status_code=404, detail="No translated chapters are available yet.")
+    return FileResponse(zip_path, media_type="application/zip", filename=zip_path.name)
+
+
+@app.get("/api/novels/{novel_id}/download/original")
+async def download_novel_original(novel_id: str) -> FileResponse:
+    zip_path = novels.build_original_zip(novel_id)
+    if zip_path is None:
+        raise HTTPException(status_code=404, detail="No Original Story chapters are available yet.")
+    return FileResponse(zip_path, media_type="application/zip", filename=zip_path.name)
+
+
+@app.get("/api/novels/{novel_id}/download/reference")
+async def download_novel_reference(novel_id: str) -> FileResponse:
+    zip_path = novels.build_reference_zip(novel_id)
+    if zip_path is None:
+        raise HTTPException(status_code=404, detail="No Reference Translation chapters are available yet.")
+    return FileResponse(zip_path, media_type="application/zip", filename=zip_path.name)
+
+
+@app.get("/api/novels/{novel_id}/download/ai")
+async def download_novel_ai(novel_id: str) -> FileResponse:
+    zip_path = novels.build_ai_zip(novel_id)
+    if zip_path is None:
+        raise HTTPException(status_code=404, detail="No AI Translation chapters are available yet.")
     return FileResponse(zip_path, media_type="application/zip", filename=zip_path.name)
 
 
