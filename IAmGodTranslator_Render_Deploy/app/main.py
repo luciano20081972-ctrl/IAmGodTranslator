@@ -27,6 +27,19 @@ novels = NovelManager(service)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+@app.middleware("http")
+async def cache_control_headers(request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+
+    if path in {"/", "/index.html", "/service-worker.js"}:
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+    elif path in {"/static/app.js", "/static/styles.css"}:
+        response.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
+
+    return response
+
+
 @app.on_event("startup")
 async def resume_jobs() -> None:
     resumed = service.resume_incomplete_jobs() + novels.resume_incomplete_jobs()
