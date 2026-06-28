@@ -408,6 +408,6 @@ function bind() {
   els.addNovelForm.onsubmit = async (event) => { event.preventDefault(); if (!els.addNovelForm.reportValidity()) return; const title = els.newNovelTitle.value.trim(); const novel = await api("/api/novels", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title }) }); closeAddNovelDialog(); await loadNovels(); openNovel(novel.novel_id); };
 }
 
-function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=5").then((registration) => registration.update()).catch(() => {}); }
+function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=6").then((registration) => registration.update()).catch(() => {}); }
 async function init() { registerServiceWorker(); setTheme(localStorage.getItem("igt-theme") || "dark"); bind(); renderWorkspaces(); await loadAppInfo(); await loadAdminStatus(); try { await api("/api/health"); els.apiStatus.textContent = "Online"; els.apiStatus.classList.add("ok"); } catch { els.apiStatus.textContent = "Offline"; } await loadNovels(); }
 init().catch((error) => toast(error.message, true));
