@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#167c6b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="IAmGodTranslator">
+  <title>IAmGodTranslator</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/static/icons/icon.svg">
+  <link rel="icon" href="/static/icons/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Chinese to English</p>
+        <h1>IAmGodTranslator</h1>
+      </div>
+      <div class="status-chip" id="apiStatus">Checking server</div>
+    </header>
+
+    <main class="workspace">
+      <section class="tool-panel upload-panel" aria-labelledby="uploadTitle">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">New Job</p>
+            <h2 id="uploadTitle">Upload Chapters</h2>
+          </div>
+          <button class="icon-button" id="refreshJobs" type="button" aria-label="Refresh jobs" title="Refresh jobs">
+            <span aria-hidden="true">R</span>
+          </button>
+        </div>
+
+        <form id="uploadForm">
+          <label class="drop-zone" for="chineseFiles">
+            <span class="drop-icon" aria-hidden="true">↑</span>
+            <span class="drop-title">Chinese chapters</span>
+            <span class="drop-meta">TXT or ZIP</span>
+            <input id="chineseFiles" name="chinese" type="file" accept=".txt,.zip,text/plain,application/zip" multiple required>
+          </label>
+          <ul class="file-list" id="chineseList"></ul>
+
+          <label class="drop-zone optional" for="referenceFiles">
+            <span class="drop-icon" aria-hidden="true">＋</span>
+            <span class="drop-title">NovelFire reference</span>
+            <span class="drop-meta">Optional TXT or ZIP</span>
+            <input id="referenceFiles" name="references" type="file" accept=".txt,.zip,text/plain,application/zip" multiple>
+          </label>
+          <ul class="file-list" id="referenceList"></ul>
+
+          <fieldset class="settings-panel">
+            <legend>Settings</legend>
+
+            <label class="setting-field" for="maxTotalBudget">
+              <span>Max total budget</span>
+              <input id="maxTotalBudget" name="max_total_budget" type="number" min="0" step="0.01" placeholder="No limit">
+            </label>
+
+            <label class="setting-field" for="maxCostPerChapter">
+              <span>Max cost per chapter</span>
+              <input id="maxCostPerChapter" name="max_cost_per_chapter" type="number" min="0" step="0.01" placeholder="No limit">
+            </label>
+
+            <label class="setting-toggle">
+              <input id="stopWhenBudgetReached" name="stop_when_budget_reached" type="checkbox" checked>
+              <span>Stop translation when budget is reached</span>
+            </label>
+
+            <label class="setting-toggle">
+              <input id="testChapterOnly" name="test_chapter_only" type="checkbox" checked>
+              <span>Translate only 1 test chapter first</span>
+            </label>
+
+            <label class="setting-toggle">
+              <input id="showEstimateBeforeStarting" name="show_estimate_before_starting" type="checkbox" checked>
+              <span>Show estimated cost before starting</span>
+            </label>
+
+            <label class="setting-field" for="retryFailedChapters">
+              <span>Retry failed chapters</span>
+              <input id="retryFailedChapters" name="retry_failed_chapters" type="number" min="0" max="1" step="1" value="1">
+            </label>
+          </fieldset>
+
+          <button class="primary-button" id="submitButton" type="submit">
+            <span aria-hidden="true">$</span>
+            Estimate Cost
+          </button>
+        </form>
+
+        <div class="message" id="formMessage" role="status" aria-live="polite"></div>
+      </section>
+
+      <section class="tool-panel queue-panel" aria-labelledby="queueTitle">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Queue</p>
+            <h2 id="queueTitle">Current Job</h2>
+          </div>
+          <a class="download-link disabled" id="downloadAll" href="#" aria-disabled="true">
+            <span aria-hidden="true">D</span>
+            Download
+          </a>
+        </div>
+
+        <section class="estimate-panel" id="estimatePanel" hidden>
+          <div class="estimate-summary" id="estimateSummary"></div>
+          <div class="estimate-actions">
+            <a class="secondary-link" id="estimateReportLink" href="#">Report</a>
+            <button class="primary-button small" id="startTranslation" type="button" disabled>Start Translation</button>
+          </div>
+        </section>
+
+        <div class="progress-wrap">
+          <div class="progress-track">
+            <div class="progress-fill" id="progressFill"></div>
+          </div>
+          <div class="progress-meta">
+            <span id="jobStatus">No job selected</span>
+            <span id="jobCounts">0 / 0</span>
+          </div>
+        </div>
+
+        <div class="chapter-list" id="chapterList"></div>
+      </section>
+    </main>
+
+    <section class="history-band" aria-labelledby="historyTitle">
+      <div class="history-inner">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Recent</p>
+            <h2 id="historyTitle">Jobs</h2>
+          </div>
+        </div>
+        <div class="job-strip" id="jobStrip"></div>
+      </div>
+    </section>
+  </div>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
