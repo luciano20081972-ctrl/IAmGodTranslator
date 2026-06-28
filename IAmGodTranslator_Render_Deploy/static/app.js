@@ -1,470 +1,61 @@
-const state = {
-  currentJobId: null,
-  pollTimer: null,
-};
-
-const els = {
-  apiStatus: document.querySelector("#apiStatus"),
-  storageMode: document.querySelector("#storageMode"),
-  storageChinese: document.querySelector("#storageChinese"),
-  storageReferences: document.querySelector("#storageReferences"),
-  storageTranslations: document.querySelector("#storageTranslations"),
-  storageBackup: document.querySelector("#storageBackup"),
-  restoreForm: document.querySelector("#restoreForm"),
-  backupFile: document.querySelector("#backupFile"),
-  uploadForm: document.querySelector("#uploadForm"),
-  chineseFiles: document.querySelector("#chineseFiles"),
-  referenceFiles: document.querySelector("#referenceFiles"),
-  chineseList: document.querySelector("#chineseList"),
-  referenceList: document.querySelector("#referenceList"),
-  maxTotalBudget: document.querySelector("#maxTotalBudget"),
-  maxCostPerChapter: document.querySelector("#maxCostPerChapter"),
-  stopWhenBudgetReached: document.querySelector("#stopWhenBudgetReached"),
-  testChapterOnly: document.querySelector("#testChapterOnly"),
-  showEstimateBeforeStarting: document.querySelector("#showEstimateBeforeStarting"),
-  retryFailedChapters: document.querySelector("#retryFailedChapters"),
-  submitButton: document.querySelector("#submitButton"),
-  startTranslation: document.querySelector("#startTranslation"),
-  estimatePanel: document.querySelector("#estimatePanel"),
-  estimateSummary: document.querySelector("#estimateSummary"),
-  estimateReportLink: document.querySelector("#estimateReportLink"),
-  downloadPrompts: document.querySelector("#downloadPrompts"),
-  backupJob: document.querySelector("#backupJob"),
-  formMessage: document.querySelector("#formMessage"),
-  refreshJobs: document.querySelector("#refreshJobs"),
-  jobStatus: document.querySelector("#jobStatus"),
-  jobCounts: document.querySelector("#jobCounts"),
-  progressFill: document.querySelector("#progressFill"),
-  chapterList: document.querySelector("#chapterList"),
-  jobStrip: document.querySelector("#jobStrip"),
-  downloadAll: document.querySelector("#downloadAll"),
-};
-
-function setMessage(text, isError = false) {
-  els.formMessage.textContent = text;
-  els.formMessage.classList.toggle("error", isError);
-}
-
-function renderFileList(input, list) {
-  list.innerHTML = "";
-
-  for (const file of input.files) {
-    const li = document.createElement("li");
-    li.textContent = file.name;
-    list.appendChild(li);
-  }
-}
-
-function statusLabel(status) {
-  const labels = {
-    queued: "Queued",
-    running: "Running",
-    completed: "Completed",
-    failed: "Failed",
-    estimated: "Estimated",
-    test_completed: "Test Complete",
-    budget_reached: "Budget Reached",
-    skipped: "Skipped",
-    pending: "Pending",
-    translating: "Translating",
-  };
-
-  return labels[status] || status || "Unknown";
-}
-
-function formatDate(value) {
-  if (!value) {
-    return "";
-  }
-
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(new Date(value));
-}
-
-function completionPercent(job) {
-  const total = job.counts?.total || 0;
-  const completed = job.counts?.completed || 0;
-
-  if (!total) {
-    return 0;
-  }
-
-  return Math.round((completed / total) * 100);
-}
-
-function renderJob(job) {
-  state.currentJobId = job.job_id;
-
-  const total = job.counts.total;
-  const completed = job.counts.completed;
-  const failed = job.counts.failed;
-  const percent = completionPercent(job);
-
-  els.jobStatus.textContent = failed ? `${statusLabel(job.status)} - ${failed} failed` : statusLabel(job.status);
-  els.jobCounts.textContent = `${completed} / ${total}`;
-  els.progressFill.style.width = `${percent}%`;
-  renderEstimate(job);
-  renderJobActions(job);
-
-  if (completed > 0) {
-    els.downloadAll.classList.remove("disabled");
-    els.downloadAll.removeAttribute("aria-disabled");
-    els.downloadAll.href = `/api/jobs/${job.job_id}/download`;
-  } else {
-    els.downloadAll.classList.add("disabled");
-    els.downloadAll.setAttribute("aria-disabled", "true");
-    els.downloadAll.href = "#";
-  }
-
-  els.chapterList.innerHTML = "";
-
-  if (!job.chapters.length) {
-    els.chapterList.innerHTML = '<div class="empty-state">No chapters in this job.</div>';
-    return;
-  }
-
-  for (const chapter of job.chapters) {
-    const row = document.createElement("article");
-    row.className = "chapter-row";
-
-    const main = document.createElement("div");
-    main.className = "chapter-main";
-
-    const title = document.createElement("div");
-    title.className = "chapter-title";
-    title.textContent = `${String(chapter.chapter).padStart(4, "0")} · ${chapter.title}`;
-
-    const sub = document.createElement("div");
-    sub.className = "chapter-sub";
-    sub.textContent = chapter.error || (chapter.reference_file ? `Reference: ${chapter.reference_file}` : chapter.source_file);
-
-    main.append(title, sub);
-
-    const actions = document.createElement("div");
-    actions.className = "chapter-actions";
-
-    const pill = document.createElement("span");
-    pill.className = `pill ${chapter.status}`;
-    pill.textContent = statusLabel(chapter.status);
-
-    actions.appendChild(pill);
-
-    if (chapter.status === "completed") {
-      const link = document.createElement("a");
-      link.href = `/api/jobs/${job.job_id}/chapters/${chapter.chapter}/download`;
-      link.title = "Download chapter";
-      link.setAttribute("aria-label", `Download chapter ${chapter.chapter}`);
-      link.textContent = "D";
-      actions.appendChild(link);
-    }
-
-    row.append(main, actions);
-    els.chapterList.appendChild(row);
-  }
-}
-
-function toggleLink(link, enabled, href = "#") {
-  link.classList.toggle("disabled", !enabled);
-  link.setAttribute("aria-disabled", enabled ? "false" : "true");
-  link.href = enabled ? href : "#";
-}
-
-function renderJobActions(job) {
-  const hasJob = Boolean(job?.job_id);
-  const hasPrompts = job.chapters?.some((chapter) => chapter.tries > 0 || chapter.status === "completed");
-  toggleLink(els.downloadPrompts, hasJob && hasPrompts, `/api/jobs/${job.job_id}/prompts/download`);
-  toggleLink(els.backupJob, hasJob, `/api/jobs/${job.job_id}/backup`);
-}
-
-function renderHistory(jobs) {
-  els.jobStrip.innerHTML = "";
-
-  if (!jobs.length) {
-    els.jobStrip.innerHTML = '<div class="empty-state">No recent jobs.</div>';
-    return;
-  }
-
-  for (const job of jobs) {
-    const card = document.createElement("button");
-    card.type = "button";
-    card.className = "job-card";
-    card.classList.toggle("active", job.job_id === state.currentJobId);
-
-    const main = document.createElement("div");
-    const title = document.createElement("div");
-    title.className = "job-card-title";
-    title.textContent = statusLabel(job.status);
-
-    const meta = document.createElement("div");
-    meta.className = "job-card-meta";
-    meta.textContent = `${job.counts.completed}/${job.counts.total} - ${formatDate(job.created_at)}`;
-
-    const percent = document.createElement("strong");
-    percent.textContent = `${completionPercent(job)}%`;
-
-    main.append(title, meta);
-    card.append(main, percent);
-
-    card.addEventListener("click", () => {
-      state.currentJobId = job.job_id;
-      fetchJob(job.job_id);
-    });
-
-    els.jobStrip.appendChild(card);
-  }
-}
-
-function formatCurrency(value) {
-  return `$${Number(value || 0).toFixed(6)}`;
-}
-
-function renderEstimate(job) {
-  if (!job.estimate) {
-    els.estimatePanel.hidden = true;
-    return;
-  }
-
-  const totals = job.estimate.totals;
-  els.estimatePanel.hidden = false;
-  els.estimateSummary.innerHTML = "";
-
-  const metrics = [
-    ["Chapters", totals.chapter_count],
-    ["Input tokens", totals.input_tokens.toLocaleString()],
-    ["Output tokens", totals.output_tokens.toLocaleString()],
-    ["Cheapest total", formatCurrency(totals.cheapest_model_cost)],
-    ["Recommended total", formatCurrency(totals.recommended_model_cost)],
-    ["Cheapest with retries", formatCurrency(totals.cheapest_model_cost_with_retries)],
-    ["Cheapest model", job.estimate.cheapest_model],
-    ["Recommended", job.estimate.recommended_model],
-  ];
-
-  for (const [label, value] of metrics) {
-    const item = document.createElement("div");
-    item.className = "estimate-metric";
-    item.innerHTML = `<span>${label}</span><strong>${value}</strong>`;
-    els.estimateSummary.appendChild(item);
-  }
-
-  els.estimateReportLink.href = `/api/jobs/${job.job_id}/estimate-report`;
-  const canStart = ["estimated", "queued", "test_completed", "budget_reached"].includes(job.status);
-  els.startTranslation.disabled = !canStart;
-}
-
-function renderStorage(status) {
-  els.storageMode.textContent = status.mode || "Unknown";
-  els.storageChinese.textContent = Number(status.saved_chinese_chapters || 0).toLocaleString();
-  els.storageReferences.textContent = Number(status.saved_novelfire_references || 0).toLocaleString();
-  els.storageTranslations.textContent = Number(status.saved_translations || 0).toLocaleString();
-  els.storageBackup.textContent = status.last_backup_at ? formatDate(status.last_backup_at) : "Never";
-}
-
-async function checkHealth() {
-  try {
-    const response = await fetch("/api/health");
-
-    if (!response.ok) {
-      throw new Error("Server unavailable");
-    }
-
-    els.apiStatus.textContent = "Server online";
-    els.apiStatus.classList.add("online");
-  } catch (error) {
-    els.apiStatus.textContent = "Server offline";
-    els.apiStatus.classList.remove("online");
-  }
-}
-
-async function fetchJobs() {
-  const response = await fetch("/api/jobs");
-
-  if (!response.ok) {
-    throw new Error("Could not load jobs");
-  }
-
-  const data = await response.json();
-  renderHistory(data.jobs);
-
-  if (!state.currentJobId && data.jobs.length) {
-    renderJob(data.jobs[0]);
-  }
-}
-
-async function fetchStorage() {
-  const response = await fetch("/api/storage");
-
-  if (!response.ok) {
-    throw new Error("Could not load storage status");
-  }
-
-  renderStorage(await response.json());
-}
-
-async function fetchJob(jobId) {
-  const response = await fetch(`/api/jobs/${jobId}`);
-
-  if (!response.ok) {
-    throw new Error("Could not load job");
-  }
-
-  const job = await response.json();
-  renderJob(job);
-  await fetchJobs();
-  await fetchStorage();
-
-  if (["completed", "failed", "test_completed", "budget_reached"].includes(job.status)) {
-    stopPolling();
-  }
-}
-
-function startPolling(jobId) {
-  stopPolling();
-  state.pollTimer = window.setInterval(() => fetchJob(jobId).catch(() => {}), 1800);
-}
-
-function stopPolling() {
-  if (state.pollTimer) {
-    window.clearInterval(state.pollTimer);
-    state.pollTimer = null;
-  }
-}
-
-async function submitJob(event) {
-  event.preventDefault();
-  setMessage("");
-
-  if (!els.chineseFiles.files.length) {
-    setMessage("Add at least one Chinese TXT or ZIP file.", true);
-    return;
-  }
-
-  const body = new FormData();
-
-  for (const file of els.chineseFiles.files) {
-    body.append("chinese", file);
-  }
-
-  for (const file of els.referenceFiles.files) {
-    body.append("references", file);
-  }
-
-  body.append("max_total_budget", els.maxTotalBudget.value);
-  body.append("max_cost_per_chapter", els.maxCostPerChapter.value);
-  body.append("stop_when_budget_reached", els.stopWhenBudgetReached.checked ? "true" : "false");
-  body.append("test_chapter_only", els.testChapterOnly.checked ? "true" : "false");
-  body.append("show_estimate_before_starting", els.showEstimateBeforeStarting.checked ? "true" : "false");
-  body.append("retry_failed_chapters", els.retryFailedChapters.value || "1");
-
-  els.submitButton.disabled = true;
-  setMessage("Scanning chapters and estimating cost...");
-
-  try {
-    const response = await fetch("/api/jobs", {
-      method: "POST",
-      body,
-    });
-
-    const payload = await response.json();
-
-    if (!response.ok) {
-      throw new Error(payload.detail || "Upload failed");
-    }
-
-    renderJob(payload);
-    await fetchJobs();
-    await fetchStorage();
-    setMessage("Cost estimate ready. Review it before starting translation.");
-    els.uploadForm.reset();
-    els.stopWhenBudgetReached.checked = true;
-    els.testChapterOnly.checked = true;
-    els.showEstimateBeforeStarting.checked = true;
-    els.retryFailedChapters.value = "1";
-    renderFileList(els.chineseFiles, els.chineseList);
-    renderFileList(els.referenceFiles, els.referenceList);
-  } catch (error) {
-    setMessage(error.message, true);
-  } finally {
-    els.submitButton.disabled = false;
-  }
-}
-
-async function restoreBackup(event) {
-  event.preventDefault();
-
-  if (!els.backupFile.files.length) {
-    setMessage("Choose a backup ZIP to restore.", true);
-    return;
-  }
-
-  const body = new FormData();
-  body.append("backup", els.backupFile.files[0]);
-  setMessage("Restoring backup...");
-
-  try {
-    const response = await fetch("/api/jobs/restore", {
-      method: "POST",
-      body,
-    });
-    const payload = await response.json();
-
-    if (!response.ok) {
-      throw new Error(payload.detail || "Restore failed");
-    }
-
-    els.restoreForm.reset();
-    renderJob(payload);
-    await fetchJobs();
-    await fetchStorage();
-    setMessage("Backup restored.");
-  } catch (error) {
-    setMessage(error.message, true);
-  }
-}
-
-async function startCurrentJob() {
-  if (!state.currentJobId) {
-    return;
-  }
-
-  els.startTranslation.disabled = true;
-  setMessage("Starting translation...");
-
-  try {
-    const response = await fetch(`/api/jobs/${state.currentJobId}/start`, {
-      method: "POST",
-    });
-    const payload = await response.json();
-
-    if (!response.ok) {
-      throw new Error(payload.detail || "Could not start translation");
-    }
-
-    startPolling(state.currentJobId);
-    setMessage("Translation started.");
-  } catch (error) {
-    setMessage(error.message, true);
-    els.startTranslation.disabled = false;
-  }
-}
-
-els.chineseFiles.addEventListener("change", () => renderFileList(els.chineseFiles, els.chineseList));
-els.referenceFiles.addEventListener("change", () => renderFileList(els.referenceFiles, els.referenceList));
-els.uploadForm.addEventListener("submit", submitJob);
-els.restoreForm.addEventListener("submit", restoreBackup);
-els.startTranslation.addEventListener("click", startCurrentJob);
-els.backupJob.addEventListener("click", () => window.setTimeout(() => fetchStorage().catch(() => {}), 1200));
-els.refreshJobs.addEventListener("click", () => fetchJobs().catch(() => setMessage("Could not refresh jobs.", true)));
-
-checkHealth();
-fetchStorage().catch(() => {});
-fetchJobs().catch(() => {});
-
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/service-worker.js").catch(() => {});
-  });
-}
+document.querySelector("#app").innerHTML = `
+<div class="app-shell">
+  <header class="topbar">
+    <button class="brand" id="homeButton" type="button"><span class="brand-mark">IG</span><span><strong>IAmGodTranslator</strong><small>Novel library</small></span></button>
+    <div class="top-actions"><span class="status-chip" id="apiStatus">Checking</span><button class="icon-button" id="themeToggle" type="button">T</button></div>
+  </header>
+  <main>
+    <section class="view active" id="libraryView">
+      <div class="library-hero"><div><p class="eyebrow">Library Home</p><h1>Your Translation Library</h1></div><button class="primary-button" id="addNovelButton" type="button">Add New Novel</button></div>
+      <div class="toolbar"><label><span>Search</span><input id="novelSearch" type="search" placeholder="Search novels by title"></label><label><span>Sort</span><select id="novelSort"><option value="updated">Last updated</option><option value="name">Name</option><option value="translated">Translated count</option></select></label></div>
+      <div class="novel-grid" id="novelGrid"></div>
+    </section>
+    <section class="view" id="detailView">
+      <div class="detail-head"><button class="secondary-button" id="backToLibrary" type="button">Library</button><div><p class="eyebrow">Novel Dashboard</p><h1 id="novelTitle">Novel</h1></div></div>
+      <div class="metrics-grid"><div><span>Storage</span><strong id="metricStorage">-</strong></div><div><span>Original Story</span><strong id="metricOriginal">0</strong></div><div><span>Reference Translation</span><strong id="metricReference">0</strong></div><div><span>Translated</span><strong id="metricTranslated">0</strong></div><div><span>Remaining</span><strong id="metricRemaining">0</strong></div><div><span>Last backup</span><strong id="metricBackup">Never</strong></div><div><span>Model</span><strong id="metricModel">gpt-4o-mini</strong></div><div><span>Status</span><strong id="metricStatus">Ready</strong></div></div>
+      <nav class="tabs"><button class="tab active" data-tab="chapters" type="button">Chapters</button><button class="tab" data-tab="reader" type="button">Reader</button><button class="tab" data-tab="translate" type="button">Translate</button><button class="tab" data-tab="backups" type="button">Backups</button><button class="tab" data-tab="settings" type="button">Settings</button></nav>
+      <section class="tab-panel active" id="chaptersPanel"><div class="toolbar"><label><span>Search chapters</span><input id="chapterSearch" type="search" placeholder="Chapter number or title"></label><label><span>Status</span><select id="chapterFilter"><option value="all">All</option><option value="translated">Translated</option><option value="untranslated">Untranslated</option><option value="queued">Queued</option><option value="translating">Translating</option><option value="failed">Failed</option></select></label></div><div class="chapter-list" id="chapterList"></div></section>
+      <section class="tab-panel" id="readerPanel"><div class="reader-shell"><div class="reader-toolbar"><button class="secondary-button" id="readerBack" type="button">Chapter Library</button><div class="reader-controls"><button class="icon-button" id="fontDown" type="button">A-</button><button class="icon-button" id="fontUp" type="button">A+</button><button class="icon-button" id="widthToggle" type="button">W</button></div></div><div class="reader-nav"><button class="secondary-button" id="prevChapter" type="button">Previous</button><div><p class="eyebrow" id="readerChapterNumber">Chapter</p><h2 id="readerChapterTitle">Open a chapter</h2></div><button class="secondary-button" id="nextChapter" type="button">Next</button></div><div class="reader-tabs"><button class="reader-tab active" data-reader-tab="english" type="button">Translation</button><button class="reader-tab" data-reader-tab="original" type="button">Original Story</button><button class="reader-tab" data-reader-tab="reference" type="button">Reference Translation</button><button class="reader-tab" data-reader-tab="prompt" type="button">Prompt</button></div><article class="reader-content" id="readerContent">Select a translated chapter from the chapter library.</article></div></section>
+      <section class="tab-panel" id="translatePanel"><div class="translate-grid"><form class="panel" id="originalUploadForm"><h2>Original Story Upload</h2><p class="helper">Original Story is the source of truth for translation.</p><input id="originalFiles" name="original" type="file" accept=".txt,.zip,text/plain,application/zip" multiple required><button class="primary-button" type="submit">Upload Original Story</button></form><form class="panel" id="referenceUploadForm"><h2>Reference Translation Upload</h2><p class="helper">Reference Translation is optional support text, including NovelFire-style references.</p><input id="referenceFiles" name="reference" type="file" accept=".txt,.zip,text/plain,application/zip" multiple><button class="secondary-button" type="submit">Upload Reference Translation</button></form></div><form class="panel settings-grid" id="batchForm"><h2>Batch Settings</h2><label><span>Model</span><select id="model"><option value="gpt-4o-mini">gpt-4o-mini</option></select></label><label><span>Max total budget</span><input id="maxTotalBudget" type="number" step="0.01" min="0" value="15.00"></label><label><span>Max per-chapter budget</span><input id="maxCostPerChapter" type="number" step="0.001" min="0" value="0.017"></label><label><span>Retry limit</span><input id="retryFailedChapters" type="number" min="0" max="1" value="1"></label><label><span>Batch size</span><input id="batchSize" type="number" min="1" max="200" value="25"></label><label class="check"><input id="stopWhenBudgetReached" type="checkbox" checked> Stop when budget reached</label><div class="warning">Paid translation warning: starting a batch calls the OpenAI API and may spend money. Review the estimate first.</div><div class="actions"><button class="secondary-button" id="estimateBatch" type="button">Show Cost Estimate</button><button class="primary-button" id="startBatch" type="button" disabled>Start Batch</button></div></form><section class="panel"><h2>Queue</h2><div class="estimate-box" id="estimateBox">No batch estimate yet.</div><div class="progress-track"><div id="jobProgress" class="progress-fill"></div></div><div class="chapter-list compact" id="queueList"></div></section></section>
+      <section class="tab-panel" id="backupsPanel"><div class="backup-grid"><a class="panel link-card" id="downloadEnglish" href="#">Download all English translations as ZIP</a><a class="panel link-card" id="downloadPrompts" href="#">Download all prompts as ZIP</a><a class="panel link-card" id="downloadBackup" href="#">Download full novel backup ZIP</a><form class="panel" id="restoreNovelForm"><h2>Restore from Backup ZIP</h2><p class="helper">English ZIP is for PC reading and backup. Full backup ZIP restores this novel's app state.</p><input id="restoreFile" name="backup" type="file" accept=".zip,application/zip" required><button class="secondary-button" type="submit">Restore Novel Backup</button></form></div></section>
+      <section class="tab-panel" id="settingsPanel"><form class="panel settings-grid" id="novelSettingsForm"><h2>Settings</h2><label><span>Novel title</span><input id="settingsTitle" type="text"></label><label><span>Source language</span><input id="sourceLanguage" type="text" value="Chinese"></label><label><span>Target language</span><input id="targetLanguage" type="text" value="English"></label><label><span>Default model</span><input id="defaultModel" type="text" value="gpt-4o-mini"></label><label><span>App version</span><input value="2.0.0" disabled></label><label><span>Storage mode</span><input id="storageModeDisplay" type="text" disabled></label><label><span>DATA_DIR</span><input id="dataDirDisplay" type="text" disabled></label><button class="primary-button" type="submit">Save Settings</button></form></section>
+    </section>
+  </main><div class="toast" id="toast" role="status" aria-live="polite"></div>
+</div><dialog id="addNovelDialog"><form method="dialog" id="addNovelForm"><h2>Add New Novel</h2><label><span>Title</span><input id="newNovelTitle" type="text" required></label><div class="actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" value="default">Create</button></div></form></dialog>`;
+
+const state = { novels: [], currentNovel: null, chapters: [], readerChapter: null, readerTab: "english", currentJob: null, pollTimer: null, readerSize: 18, readerWide: false };
+const $ = (selector) => document.querySelector(selector);
+const els = { apiStatus: $("#apiStatus"), homeButton: $("#homeButton"), themeToggle: $("#themeToggle"), libraryView: $("#libraryView"), detailView: $("#detailView"), novelGrid: $("#novelGrid"), novelSearch: $("#novelSearch"), novelSort: $("#novelSort"), addNovelButton: $("#addNovelButton"), addNovelDialog: $("#addNovelDialog"), addNovelForm: $("#addNovelForm"), newNovelTitle: $("#newNovelTitle"), backToLibrary: $("#backToLibrary"), novelTitle: $("#novelTitle"), metricStorage: $("#metricStorage"), metricOriginal: $("#metricOriginal"), metricReference: $("#metricReference"), metricTranslated: $("#metricTranslated"), metricRemaining: $("#metricRemaining"), metricBackup: $("#metricBackup"), metricModel: $("#metricModel"), metricStatus: $("#metricStatus"), chapterSearch: $("#chapterSearch"), chapterFilter: $("#chapterFilter"), chapterList: $("#chapterList"), readerBack: $("#readerBack"), prevChapter: $("#prevChapter"), nextChapter: $("#nextChapter"), readerChapterNumber: $("#readerChapterNumber"), readerChapterTitle: $("#readerChapterTitle"), readerContent: $("#readerContent"), fontDown: $("#fontDown"), fontUp: $("#fontUp"), widthToggle: $("#widthToggle"), originalUploadForm: $("#originalUploadForm"), referenceUploadForm: $("#referenceUploadForm"), originalFiles: $("#originalFiles"), referenceFiles: $("#referenceFiles"), model: $("#model"), maxTotalBudget: $("#maxTotalBudget"), maxCostPerChapter: $("#maxCostPerChapter"), retryFailedChapters: $("#retryFailedChapters"), batchSize: $("#batchSize"), stopWhenBudgetReached: $("#stopWhenBudgetReached"), estimateBatch: $("#estimateBatch"), startBatch: $("#startBatch"), estimateBox: $("#estimateBox"), jobProgress: $("#jobProgress"), queueList: $("#queueList"), downloadEnglish: $("#downloadEnglish"), downloadPrompts: $("#downloadPrompts"), downloadBackup: $("#downloadBackup"), restoreNovelForm: $("#restoreNovelForm"), restoreFile: $("#restoreFile"), novelSettingsForm: $("#novelSettingsForm"), settingsTitle: $("#settingsTitle"), sourceLanguage: $("#sourceLanguage"), targetLanguage: $("#targetLanguage"), defaultModel: $("#defaultModel"), storageModeDisplay: $("#storageModeDisplay"), dataDirDisplay: $("#dataDirDisplay"), toast: $("#toast") };
+const tabs = document.querySelectorAll(".tab");
+const panels = document.querySelectorAll(".tab-panel");
+const readerTabs = document.querySelectorAll(".reader-tab");
+
+function toast(message, error = false) { els.toast.textContent = message; els.toast.style.background = error ? "var(--danger)" : "var(--text)"; els.toast.classList.add("show"); clearTimeout(toast.timer); toast.timer = setTimeout(() => els.toast.classList.remove("show"), 3200); }
+async function api(path, options = {}) { const res = await fetch(path, options); const text = await res.text(); const data = text ? JSON.parse(text) : {}; if (!res.ok) throw new Error(data.detail || `Request failed: ${res.status}`); return data; }
+function esc(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char])); }
+function date(value) { if (!value) return "Never"; try { return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(value)); } catch { return value; } }
+function status(value) { return ({ completed: "translated", estimated: "queued", running: "translating", test_completed: "translated" }[value] || value || "unknown"); }
+function money(value) { return `$${Number(value || 0).toFixed(4)}`; }
+function setTheme(theme) { const dark = theme === "dark"; document.body.classList.toggle("dark", dark); localStorage.setItem("igt-theme", dark ? "dark" : "light"); }
+function showView(name) { els.libraryView.classList.toggle("active", name === "library"); els.detailView.classList.toggle("active", name === "detail"); }
+function switchTab(tab) { tabs.forEach((button) => button.classList.toggle("active", button.dataset.tab === tab)); panels.forEach((panel) => panel.classList.toggle("active", panel.id === `${tab}Panel`)); }
+
+async function loadNovels() { state.novels = (await api("/api/novels")).novels || []; renderNovels(); }
+function renderNovels() { const q = els.novelSearch.value.toLowerCase(); const sort = els.novelSort.value; let novels = state.novels.filter((n) => n.title.toLowerCase().includes(q)); novels.sort((a, b) => sort === "name" ? a.title.localeCompare(b.title) : sort === "translated" ? b.counts.translated_chapters - a.counts.translated_chapters : String(b.updated_at).localeCompare(String(a.updated_at))); els.novelGrid.innerHTML = novels.length ? "" : '<div class="empty-state">No novels found. Add a novel to begin.</div>'; for (const novel of novels) { const card = document.createElement("article"); card.className = "novel-card"; card.innerHTML = `<div class="cover">${esc(novel.title.slice(0, 2).toUpperCase())}</div><div><h2>${esc(novel.title)}</h2><p class="card-meta">Last updated ${date(novel.updated_at)}</p></div><div class="card-stats"><div><span>Uploaded</span><strong>${novel.counts.total_chapters}</strong></div><div><span>Translated</span><strong>${novel.counts.translated_chapters}</strong></div><div><span>Remaining</span><strong>${novel.counts.remaining_chapters}</strong></div></div><div class="chapter-actions"><span class="badge ${novel.status}">${status(novel.status)}</span><button class="primary-button" type="button">Open</button></div>`; card.querySelector("button").addEventListener("click", () => openNovel(novel.novel_id)); els.novelGrid.appendChild(card); } }
+async function openNovel(id) { const data = await api(`/api/novels/${id}/library`); state.currentNovel = data.novel; state.chapters = data.chapters || []; state.currentJob = null; showView("detail"); renderDetail(); renderChapters(); renderQueue(); switchTab("chapters"); }
+function renderDetail() { const n = state.currentNovel, c = n.counts; els.novelTitle.textContent = n.title; els.metricStorage.textContent = n.storage_mode; els.metricOriginal.textContent = c.original_files; els.metricReference.textContent = c.reference_files; els.metricTranslated.textContent = c.translated_chapters; els.metricRemaining.textContent = c.remaining_chapters; els.metricBackup.textContent = date(n.last_backup_at); els.metricModel.textContent = n.current_model; els.metricStatus.textContent = status(n.status); els.downloadEnglish.href = `/api/novels/${n.novel_id}/download/english`; els.downloadPrompts.href = `/api/novels/${n.novel_id}/download/prompts`; els.downloadBackup.href = `/api/novels/${n.novel_id}/backup`; els.settingsTitle.value = n.title; els.sourceLanguage.value = n.source_language || "Chinese"; els.targetLanguage.value = n.target_language || "English"; els.defaultModel.value = n.current_model || "gpt-4o-mini"; els.storageModeDisplay.value = n.storage_mode || ""; els.dataDirDisplay.value = n.data_dir || ""; }
+function renderChapters() { const q = els.chapterSearch.value.toLowerCase(); const f = els.chapterFilter.value; const chapters = state.chapters.filter((c) => (f === "all" || c.status === f) && `${c.chapter} ${c.title}`.toLowerCase().includes(q)).sort((a, b) => a.chapter - b.chapter); els.chapterList.innerHTML = chapters.length ? "" : '<div class="empty-state">No chapters match this view.</div>'; for (const c of chapters) { const row = document.createElement("article"); row.className = "chapter-row"; row.innerHTML = `<div><div class="chapter-title">${String(c.chapter).padStart(4, "0")} - ${esc(c.title || "Untitled")}</div><div class="chapter-meta">${c.has_original ? "Original Story" : "No original"} / ${c.has_reference ? "Reference Translation" : "No reference"} / ${c.has_prompt ? "Prompt saved" : "No prompt"}</div></div><div class="chapter-actions"><span class="badge ${c.status}">${status(c.status)}</span></div>`; if (c.has_translation) { const read = document.createElement("button"); read.className = "secondary-button"; read.textContent = "Read"; read.addEventListener("click", () => openReader(c.chapter, "english")); const dl = document.createElement("a"); dl.className = "secondary-button"; dl.href = `/api/novels/${state.currentNovel.novel_id}/chapters/${c.chapter}/download`; dl.textContent = "Download"; row.querySelector(".chapter-actions").append(read, dl); } els.chapterList.appendChild(row); } }
+async function openReader(chapter, tab = state.readerTab) { const c = state.chapters.find((item) => Number(item.chapter) === Number(chapter)); if (!c) return; state.readerChapter = Number(chapter); state.readerTab = tab; switchTab("reader"); els.readerChapterNumber.textContent = `Chapter ${c.chapter}`; els.readerChapterTitle.textContent = c.title || "Untitled"; readerTabs.forEach((button) => button.classList.toggle("active", button.dataset.readerTab === tab)); await loadReaderText(); api("/api/reader/last", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ novel_id: state.currentNovel.novel_id, chapter: state.readerChapter }) }).catch(() => {}); }
+async function loadReaderText() { els.readerContent.textContent = "Loading..."; try { const data = await api(`/api/novels/${state.currentNovel.novel_id}/chapters/${state.readerChapter}/${state.readerTab}`); els.readerContent.textContent = data.text || "No text is available for this tab."; } catch (error) { els.readerContent.textContent = error.message; } }
+function adjacent(offset) { const translated = state.chapters.filter((c) => c.has_translation).sort((a, b) => a.chapter - b.chapter); const i = translated.findIndex((c) => c.chapter === state.readerChapter); if (translated[i + offset]) openReader(translated[i + offset].chapter, "english"); }
+async function upload(kind) { const input = kind === "original" ? els.originalFiles : els.referenceFiles; if (!input.files.length) return toast("Choose files first.", true); const form = new FormData(); for (const file of input.files) form.append(kind, file); await api(`/api/novels/${state.currentNovel.novel_id}/upload/${kind}`, { method: "POST", body: form }); input.value = ""; await openNovel(state.currentNovel.novel_id); switchTab("translate"); toast(kind === "original" ? "Original Story uploaded." : "Reference Translation uploaded."); }
+function settings(startNow = false) { return { model: els.model.value, max_total_budget: els.maxTotalBudget.value, max_cost_per_chapter: els.maxCostPerChapter.value, retry_failed_chapters: Number(els.retryFailedChapters.value || 0), batch_size: Number(els.batchSize.value || 25), stop_when_budget_reached: els.stopWhenBudgetReached.checked, show_estimate_before_starting: true, test_chapter_only: false, start_now: startNow }; }
+async function buildEstimate() { state.currentJob = await api(`/api/novels/${state.currentNovel.novel_id}/translate/batch`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings(false)) }); els.startBatch.disabled = false; renderQueue(); toast("Cost estimate ready. Translation has not started."); }
+async function startBatch() { if (!state.currentJob) await buildEstimate(); if (!window.confirm("Start paid translation for this estimated batch?")) return; await api(`/api/novels/${state.currentNovel.novel_id}/jobs/${state.currentJob.job_id}/start`, { method: "POST" }); toast("Batch started."); pollJob(); }
+async function pollJob() { if (!state.currentJob) return; clearTimeout(state.pollTimer); state.currentJob = await api(`/api/novels/${state.currentNovel.novel_id}/jobs/${state.currentJob.job_id}`); renderQueue(); if (["queued", "running"].includes(state.currentJob.status)) state.pollTimer = setTimeout(pollJob, 3000); }
+function renderQueue() { const job = state.currentJob; if (!job) { els.estimateBox.textContent = "No batch estimate yet."; els.jobProgress.style.width = "0%"; els.queueList.innerHTML = '<div class="empty-state">Build a cost estimate to preview the next batch queue.</div>'; return; } const total = job.counts?.total || 0, done = job.counts?.completed || 0; els.jobProgress.style.width = `${total ? Math.round((done / total) * 100) : 0}%`; els.estimateBox.innerHTML = `<strong>${status(job.status)}</strong><br>Chapters: ${total}. Cheapest estimate: ${money(job.estimate?.cheapest_total_cost)}. Recommended estimate: ${money(job.estimate?.recommended_total_cost)}.`; els.queueList.innerHTML = ""; for (const c of job.chapters || []) { const row = document.createElement("article"); row.className = "chapter-row"; row.innerHTML = `<div><div class="chapter-title">${String(c.chapter).padStart(4, "0")} - ${esc(c.title || "")}</div><div class="chapter-meta">${esc(c.error || "Ready")}</div></div><span class="badge ${c.status}">${status(c.status)}</span>`; els.queueList.appendChild(row); } }
+async function restore(event) { event.preventDefault(); if (!els.restoreFile.files.length) return; const form = new FormData(); form.append("backup", els.restoreFile.files[0]); await api(`/api/novels/${state.currentNovel.novel_id}/restore`, { method: "POST", body: form }); await openNovel(state.currentNovel.novel_id); switchTab("backups"); toast("Novel backup restored."); }
+async function saveSettings(event) { event.preventDefault(); state.currentNovel = await api(`/api/novels/${state.currentNovel.novel_id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: els.settingsTitle.value, source_language: els.sourceLanguage.value, target_language: els.targetLanguage.value, settings: { model: els.defaultModel.value } }) }); await loadNovels(); renderDetail(); toast("Settings saved."); }
+function bind() { els.homeButton.onclick = () => showView("library"); els.backToLibrary.onclick = () => showView("library"); els.novelSearch.oninput = renderNovels; els.novelSort.onchange = renderNovels; els.chapterSearch.oninput = renderChapters; els.chapterFilter.onchange = renderChapters; els.themeToggle.onclick = () => setTheme(document.body.classList.contains("dark") ? "light" : "dark"); tabs.forEach((b) => b.onclick = () => switchTab(b.dataset.tab)); readerTabs.forEach((b) => b.onclick = () => openReader(state.readerChapter, b.dataset.readerTab)); els.readerBack.onclick = () => switchTab("chapters"); els.prevChapter.onclick = () => adjacent(-1); els.nextChapter.onclick = () => adjacent(1); els.fontDown.onclick = () => { state.readerSize = Math.max(15, state.readerSize - 1); document.documentElement.style.setProperty("--reader-size", `${state.readerSize}px`); }; els.fontUp.onclick = () => { state.readerSize = Math.min(24, state.readerSize + 1); document.documentElement.style.setProperty("--reader-size", `${state.readerSize}px`); }; els.widthToggle.onclick = () => { state.readerWide = !state.readerWide; els.readerContent.classList.toggle("wide", state.readerWide); }; els.originalUploadForm.onsubmit = (e) => { e.preventDefault(); upload("original").catch((err) => toast(err.message, true)); }; els.referenceUploadForm.onsubmit = (e) => { e.preventDefault(); upload("reference").catch((err) => toast(err.message, true)); }; els.estimateBatch.onclick = () => buildEstimate().catch((err) => toast(err.message, true)); els.startBatch.onclick = () => startBatch().catch((err) => toast(err.message, true)); els.restoreNovelForm.onsubmit = (e) => restore(e).catch((err) => toast(err.message, true)); els.novelSettingsForm.onsubmit = (e) => saveSettings(e).catch((err) => toast(err.message, true)); els.addNovelButton.onclick = () => els.addNovelDialog.showModal ? els.addNovelDialog.showModal() : els.newNovelTitle.focus(); els.addNovelForm.onsubmit = async (e) => { e.preventDefault(); const title = els.newNovelTitle.value.trim(); if (!title) return; const novel = await api("/api/novels", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title }) }); els.newNovelTitle.value = ""; els.addNovelDialog.close(); await loadNovels(); openNovel(novel.novel_id); }; }
+async function init() { setTheme(localStorage.getItem("igt-theme") || "light"); bind(); try { await api("/api/health"); els.apiStatus.textContent = "Online"; els.apiStatus.classList.add("ok"); } catch { els.apiStatus.textContent = "Offline"; } await loadNovels(); }
+init().catch((error) => toast(error.message, true));

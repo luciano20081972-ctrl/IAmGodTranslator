@@ -159,6 +159,59 @@ class TranslationService:
         logger.info("Created estimated translation job %s with %s chapter(s)", job_id, len(queue))
         return self._public_state(state)
 
+    def create_job_from_existing_files(
+        self,
+        chinese_files: list[Path],
+        reference_files: list[Path] | None = None,
+        settings: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not chinese_files:
+            raise ValueError("Add at least one Original Story chapter before building a queue.")
+
+        job_id = uuid.uuid4().hex
+        job_dir = self.job_dir(job_id)
+        folders = self.job_folders(job_dir)
+
+        for folder in folders.values():
+            folder.mkdir(parents=True, exist_ok=True)
+
+        self._copy_baseline_files(job_dir)
+
+        for file in chinese_files:
+            if file.is_file():
+                shutil.copy2(file, unique_path(folders["chinese"], file.name))
+
+        for file in reference_files or []:
+            if file.is_file():
+                shutil.copy2(file, unique_path(folders["novelfire"], file.name))
+
+        chinese_chapters = self._parse_folder(folders["chinese"])
+        reference_chapters = self._parse_folder(folders["novelfire"])
+
+        if not chinese_chapters:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise ValueError("No Original Story .txt chapters were found.")
+
+        reference_by_number = {
+            chapter["number"]: chapter
+            for chapter in reference_chapters
+            if chapter.get("number") is not None
+        }
+
+        index = self._build_job_index(chinese_chapters, reference_by_number)
+        queue = build_queue(index)
+        save_queue(queue, folders["logs"] / "translation_queue.json")
+        self._write_json(folders["logs"] / "chapter_index.json", index)
+
+        state = self._initial_state(job_id, index, reference_by_number, settings=settings)
+        estimate = self._estimate_job(job_dir, state)
+        state["estimate"] = estimate
+        state["estimate_report"] = str(write_estimate_report(job_dir, estimate))
+        self._save_state(job_dir, state)
+
+        logger.info("Created estimated translation job %s from stored novel files", job_id)
+        return self._public_state(state)
+
     def start_job(self, job_id: str) -> None:
         existing = self._tasks.get(job_id)
 
