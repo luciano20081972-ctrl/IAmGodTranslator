@@ -37,8 +37,9 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
-DEFAULT_RENDER_DATA_DIR = Path("/var/data/IAmGodTranslator")
+DEFAULT_RENDER_DATA_DIR = Path("/var/data/godtranslator")
 BASELINE_FILES = ("memory.json", "glossary.json", "style.json")
+REQUIRED_DATA_FOLDERS = ("novels", "originals", "references", "ai_translations", "prompts", "backups", "uploads", "covers", "settings", "exports", "logs")
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
 MAX_BACKUP_BYTES = int(os.getenv("MAX_BACKUP_BYTES", str(500 * 1024 * 1024)))
 SECRET_PATTERN = re.compile(r"sk-[A-Za-z0-9_\-*]+")
@@ -78,9 +79,6 @@ def resolve_data_dir() -> Path:
     if configured:
         return Path(configured).expanduser()
 
-    if os.getenv("RENDER") and DEFAULT_RENDER_DATA_DIR.parent.exists():
-        return DEFAULT_RENDER_DATA_DIR
-
     return DEFAULT_DATA_DIR
 
 
@@ -103,6 +101,8 @@ class TranslationService:
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.backups_dir.mkdir(parents=True, exist_ok=True)
+        for folder_name in REQUIRED_DATA_FOLDERS:
+            (self.data_dir / folder_name).mkdir(parents=True, exist_ok=True)
 
         for filename in BASELINE_FILES:
             source = PROJECT_ROOT / filename

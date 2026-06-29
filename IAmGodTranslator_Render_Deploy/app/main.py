@@ -4,6 +4,8 @@ import logging
 import os
 import hmac
 import hashlib
+import shutil
+from pathlib import Path
 from typing import Annotated
 
 from dotenv import load_dotenv
@@ -11,6 +13,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Request, Response,
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.database import AppDatabase
 from app.novels import NovelManager
 from app.services import PROJECT_ROOT, TranslationService
 
@@ -25,10 +28,20 @@ TEMPLATE_DIR = PROJECT_ROOT / "templates"
 app = FastAPI(title="IAmGodTranslator", version="2.0.0")
 service = TranslationService()
 novels = NovelManager(service)
+database = AppDatabase(service.data_dir)
+database_error: str | None = None
+
+try:
+    database.initialize()
+except Exception as exc:  # pragma: no cover - public pages should stay up if the DB is unhealthy.
+    database_error = str(exc)
+    logging.getLogger(__name__).warning("Database initialization failed: %s", exc)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 ADMIN_COOKIE = "igt_admin"
+AUTH_COOKIE = "gt_session"
+REQUIRED_STORAGE_FOLDERS = ("novels", "originals", "references", "ai_translations", "prompts", "backups", "uploads", "covers", "settings", "exports", "logs")
 
 
 def admin_password() -> str | None:
@@ -51,6 +64,142 @@ def is_admin(request: Request) -> bool:
 def require_admin(request: Request) -> None:
     if not is_admin(request):
         raise HTTPException(status_code=401, detail="Admin login required.")
+
+
+def current_user(request: Request) -> dict[str, object] | None:
+    if database_error:
+        return None
+    try:
+        return database.user_for_session(request.cookies.get(AUTH_COOKIE))
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Session lookup failed: %s", exc)
+        return None
+
+
+def require_user(request: Request) -> dict[str, object]:
+    user = current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Login required.")
+    if user.get("disabled"):
+        raise HTTPException(status_code=403, detail="Account disabled.")
+    return user
+
+
+def safe_email_notice(kind: str, email: str, token: str | None) -> dict[str, object]:
+    smtp_ready = all(os.getenv(name) for name in ("SMTP_HOST", "SMTP_PORT", "SMTP_FROM"))
+    if smtp_ready:
+        logging.getLogger(__name__).info("%s email queued for %s", kind, email)
+    else:
+        logging.getLogger(__name__).info("%s email not sent because SMTP is not configured for %s", kind, email)
+    return {"smtp_configured": smtp_ready, "dev_token_available": bool(token and not smtp_ready)}
+
+
+def storage_health_report() -> dict[str, object]:
+    data_dir = service.data_dir.resolve()
+    configured = os.getenv("DATA_DIR")
+    warnings: list[str] = []
+
+    if configured and Path(configured).name.lower() == "date":
+        warnings.append("DATA_DIR appears to be set to 'date'. Use DATA_DIR=/var/data/godtranslator on Render.")
+    if os.getenv("RENDER") and not str(data_dir).replace("\\", "/").startswith("/var/data"):
+        warnings.append("Render production storage is not under /var/data. Add a persistent disk and set DATA_DIR=/var/data/godtranslator.")
+    if database_error:
+        warnings.append(f"Database warning: {database_error}")
+    if database.warning:
+        warnings.append(database.warning)
+
+    folders: dict[str, bool] = {}
+    for name in REQUIRED_STORAGE_FOLDERS:
+        folder = data_dir / name
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            folders[name] = folder.is_dir()
+        except OSError:
+            folders[name] = False
+
+    writable = False
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        test_file = data_dir / ".storage-write-test"
+        test_file.write_text("ok", encoding="utf-8")
+        writable = test_file.read_text(encoding="utf-8") == "ok"
+        test_file.unlink(missing_ok=True)
+    except OSError as exc:
+        warnings.append(f"Storage write test failed: {exc.__class__.__name__}")
+
+    def count(pattern: str) -> int:
+        try:
+            return sum(1 for path in data_dir.rglob(pattern) if path.is_file())
+        except OSError:
+            return 0
+
+    report = service.storage_status()
+    report.update(
+        {
+            "configured_data_dir": configured or "data",
+            "resolved_data_dir": str(data_dir),
+            "writable": writable,
+            "warnings": warnings,
+            "folders": folders,
+            "counts": {
+                "originals": count("original/*.txt") + count("originals/*.txt"),
+                "references": count("reference/*.txt") + count("references/*.txt"),
+                "ai_translations": count("ai/*.txt") + count("english/*.txt") + count("ai_translations/*.txt"),
+                "prompts": count("prompts/*.txt"),
+                "backups": count("*.zip"),
+                "covers_uploads": count("cover.*") + count("covers/*") + count("uploads/*"),
+            },
+            "database": database.status(),
+        }
+    )
+    return report
+
+
+def file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def migrate_local_data() -> dict[str, object]:
+    destination = service.data_dir.resolve()
+    source_candidates = [
+        PROJECT_ROOT / "date",
+        PROJECT_ROOT / "data",
+        PROJECT_ROOT / "Archive",
+        service.data_dir,
+    ]
+    copied = skipped = conflicts = 0
+    errors: list[str] = []
+    checked: list[str] = []
+    destination.mkdir(parents=True, exist_ok=True)
+
+    for source in dict.fromkeys(path.resolve() for path in source_candidates if path.exists()):
+        checked.append(str(source))
+        if source == destination or destination in source.parents:
+            skipped += 1
+            continue
+        for file in source.rglob("*"):
+            if not file.is_file():
+                continue
+            try:
+                relative = file.relative_to(source)
+                target = destination / relative
+                if target.exists():
+                    if file_digest(file) == file_digest(target):
+                        skipped += 1
+                    else:
+                        conflicts += 1
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(file, target)
+                copied += 1
+            except OSError as exc:
+                errors.append(f"{file}: {exc.__class__.__name__}")
+
+    return {"source_folders_checked": checked, "destination": str(destination), "copied": copied, "skipped_existing": skipped, "conflicts": conflicts, "errors": errors}
 
 
 @app.middleware("http")
@@ -149,13 +298,101 @@ async def reset_app_settings(request: Request) -> dict[str, object]:
     return novels.reset_app_settings()
 
 
+@app.post("/api/auth/register")
+async def auth_register(request: Request, response: Response, payload: Annotated[dict[str, object], Body()]) -> dict[str, object]:
+    try:
+        user, token = database.create_user(
+            str(payload.get("email") or ""),
+            str(payload.get("username") or ""),
+            str(payload.get("password") or ""),
+        )
+        session, expires_at = database.create_session(str(user["id"]))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        if "UNIQUE" in str(exc).upper():
+            raise HTTPException(status_code=400, detail="An account with that email already exists.") from exc
+        raise
+
+    response.set_cookie(AUTH_COOKIE, session, httponly=True, secure=request.url.scheme == "https", samesite="lax", expires=expires_at)
+    notice = safe_email_notice("verification", str(user["email"]), token)
+    return {"user": user, "email_verification_required": True, "email": notice}
+
+
+@app.post("/api/auth/login")
+async def auth_login(request: Request, response: Response, payload: Annotated[dict[str, object], Body()]) -> dict[str, object]:
+    user = database.authenticate(str(payload.get("email") or ""), str(payload.get("password") or ""))
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    session, expires_at = database.create_session(str(user["id"]))
+    response.set_cookie(AUTH_COOKIE, session, httponly=True, secure=request.url.scheme == "https", samesite="lax", expires=expires_at)
+    return {"user": user}
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request, response: Response) -> dict[str, object]:
+    database.delete_session(request.cookies.get(AUTH_COOKIE))
+    response.delete_cookie(AUTH_COOKIE)
+    return {"authenticated": False}
+
+
+@app.get("/api/auth/me")
+async def auth_me(request: Request) -> dict[str, object]:
+    user = current_user(request)
+    return {"authenticated": bool(user), "user": user}
+
+
+@app.post("/api/auth/resend-verification")
+async def auth_resend_verification(request: Request) -> dict[str, object]:
+    user = require_user(request)
+    return {"ok": True, "email": safe_email_notice("verification", str(user["email"]), None)}
+
+
+@app.get("/api/auth/verify-email")
+async def auth_verify_email(token: str) -> dict[str, object]:
+    if not token or not database.verify_email(token):
+        raise HTTPException(status_code=400, detail="Verification link is invalid or expired.")
+    return {"verified": True}
+
+
+@app.post("/api/auth/request-password-reset")
+async def auth_request_password_reset(payload: Annotated[dict[str, object], Body()]) -> dict[str, object]:
+    email = str(payload.get("email") or "").strip().lower()
+    token = database.create_reset_token(email) if email else None
+    notice = safe_email_notice("password reset", email or "unknown", token)
+    return {"ok": True, "message": "If that email exists, a password reset link will be sent.", "email": notice}
+
+
+@app.post("/api/auth/reset-password")
+async def auth_reset_password(payload: Annotated[dict[str, object], Body()]) -> dict[str, object]:
+    try:
+        ok = database.reset_password(str(payload.get("token") or ""), str(payload.get("password") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=400, detail="Reset link is invalid or expired.")
+    return {"reset": True}
+
+
+@app.get("/api/auth/google/status")
+async def google_status() -> dict[str, object]:
+    configured = all(os.getenv(name) for name in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI"))
+    return {"configured": configured, "enabled": False, "message": "Google login foundation is present; OAuth callback wiring is left for production setup."}
+
+
 @app.get("/api/storage")
 async def storage_status() -> dict[str, object]:
-    status = service.storage_status()
+    status = storage_health_report()
     status["novels"] = len(novels.list_novels())
     status["backend"] = os.getenv("STORAGE_BACKEND", "local").lower()
     status["supabase_enabled"] = novels.remote is not None
     return status
+
+
+@app.post("/api/admin/storage/migrate-local-data")
+async def migrate_storage(request: Request) -> dict[str, object]:
+    require_admin(request)
+    return migrate_local_data()
 
 
 @app.post("/api/admin/storage/sync-supabase")
@@ -164,6 +401,100 @@ async def sync_storage_to_supabase(request: Request) -> dict[str, object]:
     if novels.remote is None:
         raise HTTPException(status_code=400, detail="Supabase storage is not enabled.")
     return novels.sync_all_to_remote()
+
+
+@app.get("/api/me/library")
+async def my_library(request: Request) -> dict[str, object]:
+    user = require_user(request)
+    return database.library(str(user["id"]))
+
+
+@app.get("/api/reading-history")
+async def get_reading_history(request: Request) -> dict[str, object]:
+    user = require_user(request)
+    return {"reading_history": database.library(str(user["id"]))["reading_history"]}
+
+
+@app.post("/api/reading-history")
+async def save_reading_history(request: Request, payload: Annotated[dict[str, object], Body()]) -> dict[str, object]:
+    user = require_user(request)
+    try:
+        database.save_history(str(user["id"]), str(payload["novel_id"]), int(payload["chapter_number"]), str(payload.get("mode") or "ai"))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid reading history payload.") from exc
+    return {"saved": True}
+
+
+@app.post("/api/novels/{novel_id}/bookmark")
+async def add_novel_bookmark(request: Request, novel_id: str) -> dict[str, object]:
+    user = require_user(request)
+    database.set_novel_bookmark(str(user["id"]), novel_id, True)
+    return {"bookmarked": True}
+
+
+@app.delete("/api/novels/{novel_id}/bookmark")
+async def remove_novel_bookmark(request: Request, novel_id: str) -> dict[str, object]:
+    user = require_user(request)
+    database.set_novel_bookmark(str(user["id"]), novel_id, False)
+    return {"bookmarked": False}
+
+
+@app.post("/api/novels/{novel_id}/rating")
+async def set_novel_rating(request: Request, novel_id: str, payload: Annotated[dict[str, object], Body()]) -> dict[str, object]:
+    user = require_user(request)
+    try:
+        rating = int(payload.get("rating") or 0)
+        database.set_rating(str(user["id"]), novel_id, rating)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"rating": rating}
+
+
+@app.get("/api/novels/{novel_id}/rating")
+async def get_novel_rating(request: Request, novel_id: str) -> dict[str, object]:
+    user = require_user(request)
+    return {"rating": database.rating_for(str(user["id"]), novel_id)}
+
+
+@app.post("/api/novels/{novel_id}/chapters/{chapter_number}/bookmark")
+async def add_chapter_bookmark(request: Request, novel_id: str, chapter_number: int) -> dict[str, object]:
+    user = require_user(request)
+    database.set_chapter_bookmark(str(user["id"]), novel_id, chapter_number, True)
+    return {"bookmarked": True}
+
+
+@app.delete("/api/novels/{novel_id}/chapters/{chapter_number}/bookmark")
+async def remove_chapter_bookmark(request: Request, novel_id: str, chapter_number: int) -> dict[str, object]:
+    user = require_user(request)
+    database.set_chapter_bookmark(str(user["id"]), novel_id, chapter_number, False)
+    return {"bookmarked": False}
+
+
+@app.get("/api/admin/users")
+async def list_users(request: Request) -> dict[str, object]:
+    require_admin(request)
+    return {"users": database.users()}
+
+
+@app.patch("/api/admin/users/{user_id}/role")
+async def change_user_role(request: Request, user_id: str, payload: Annotated[dict[str, object], Body()]) -> dict[str, object]:
+    require_admin(request)
+    try:
+        user = database.update_user_role(user_id, str(payload.get("role") or "user"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return {"user": user}
+
+
+@app.patch("/api/admin/users/{user_id}/disabled")
+async def change_user_disabled(request: Request, user_id: str, payload: Annotated[dict[str, object], Body()]) -> dict[str, object]:
+    require_admin(request)
+    user = database.set_user_disabled(user_id, bool(payload.get("disabled")))
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return {"user": user}
 
 
 @app.get("/api/jobs")
