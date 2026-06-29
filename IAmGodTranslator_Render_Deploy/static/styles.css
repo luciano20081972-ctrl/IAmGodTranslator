@@ -1483,17 +1483,72 @@ input::placeholder { color:rgba(159,177,169,.62); }
   background:rgba(255,255,255,.04);
 }
 .reader-shell[data-theme="paper"] {
-  background:#171d19;
-  color:#f4ecd8;
+  background:#f5ecd9 !important;
+  color:#241d16;
 }
 .reader-shell[data-theme="dark"] {
-  background:#070a09;
+  background:#111614 !important;
   color:#eee7d5;
 }
 .reader-shell[data-theme="sepia"] {
-  background:#211b13;
-  color:#f0ddbc;
+  background:#ead6b4 !important;
+  color:#24190e;
 }
+.reader-shell[data-theme="oled"] { background:#000 !important; color:#fff; }
+.reader-shell[data-theme="green"] { background:#0b1d17 !important; color:#dff4e7; }
+.reader-shell[data-theme="gold"] { background:#17130d !important; color:#f2db9d; }
+.reader-shell[data-theme="paper"] .reader-content,
+.reader-shell[data-theme="sepia"] .reader-content { color:inherit; }
+.reader-shell[data-theme="oled"] .reader-content,
+.reader-shell[data-theme="green"] .reader-content,
+.reader-shell[data-theme="gold"] .reader-content,
+.reader-shell[data-theme="dark"] .reader-content { color:inherit; }
+.compact-control {
+  min-width:72px;
+  justify-content:center;
+  font-weight:800;
+}
+.admin-dashboard {
+  gap:16px;
+  margin-bottom:18px;
+}
+.admin-metrics,
+.storage-health {
+  display:grid;
+  gap:12px;
+}
+.storage-grid {
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  gap:10px;
+}
+.storage-grid div {
+  border:1px solid rgba(184,211,196,.12);
+  border-radius:12px;
+  padding:12px;
+  background:rgba(255,255,255,.04);
+}
+.storage-grid span,
+.user-row span {
+  display:block;
+  color:var(--muted);
+  font-size:.84rem;
+}
+.user-list {
+  display:grid;
+  gap:10px;
+}
+.user-row {
+  display:grid;
+  grid-template-columns:minmax(0,1fr) 120px auto;
+  gap:10px;
+  align-items:center;
+  border:1px solid rgba(184,211,196,.12);
+  border-radius:12px;
+  padding:12px;
+  background:rgba(255,255,255,.04);
+}
+.account-user-actions[hidden] { display:none; }
 
 dialog {
   border-color:rgba(184,211,196,.18);
@@ -1533,6 +1588,8 @@ dialog::backdrop { background:rgba(0,0,0,.68); backdrop-filter:blur(4px); }
   .reader-toolbar { gap:10px; }
   .reader-controls { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); }
   .reader-controls select { grid-column:1/-1; }
+  .compact-control { min-width:0; padding-inline:8px; }
+  .user-row { grid-template-columns:1fr; }
   .reader-tabs { justify-content:flex-start; }
   .reader-content {
     font-size:calc(var(--reader-size) - 1px);

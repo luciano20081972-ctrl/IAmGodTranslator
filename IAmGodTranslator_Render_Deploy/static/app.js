@@ -26,7 +26,9 @@ app.innerHTML = `
       <a class="secondary-button admin-only" id="quickBackupButton" href="#">Download Backup</a>
       <button class="link-button" id="supportButton" type="button">Thanks</button>
       <span class="status-chip" id="apiStatus">Checking</span>
-      <button class="secondary-button" id="adminButton" type="button">Login</button>
+      <button class="secondary-button" id="accountButton" type="button">Login</button>
+      <button class="primary-button" id="registerButton" type="button">Register</button>
+      <button class="secondary-button" id="adminButton" type="button">Admin</button>
       <button class="icon-button" id="themeToggle" type="button" aria-label="Toggle theme">&#9790;</button>
     </nav>
   </header>
@@ -90,7 +92,7 @@ app.innerHTML = `
 
       <section class="tab-panel" id="readerPanel">
         <div class="reader-shell" id="readerShell">
-          <div class="reader-toolbar"><button class="secondary-button" id="readerBack" type="button">Back to Novel</button><button class="secondary-button" id="readerLibrary" type="button">Back to Library</button><div class="reader-controls"><button class="secondary-button" id="chapterPickerButton" type="button">Chapters</button><button class="secondary-button" id="readerBookmarkButton" type="button">Bookmark</button><button class="icon-button" id="fontDown" type="button">A-</button><button class="icon-button" id="fontUp" type="button">A+</button><button class="icon-button" id="widthToggle" type="button">W</button><select id="readerTheme"><option value="paper">Paper</option><option value="dark">Dark</option><option value="sepia">Sepia</option><option value="oled">OLED Black</option><option value="green">Green Night</option><option value="gold">Gold Dark</option></select><button class="icon-button" id="readerSettingsButton" type="button">&#9881;</button><button class="icon-button" id="fullscreenReader" type="button">F</button></div></div>
+          <div class="reader-toolbar"><button class="secondary-button" id="readerBack" type="button">Back to Novel</button><button class="secondary-button" id="readerLibrary" type="button">Back to Library</button><div class="reader-controls"><button class="secondary-button" id="chapterPickerButton" type="button">Chapters</button><button class="secondary-button" id="readerBookmarkButton" type="button">Bookmark</button><button class="secondary-button compact-control" id="fontDown" type="button" title="Decrease font">A-</button><button class="secondary-button compact-control" id="fontUp" type="button" title="Increase font">A+</button><button class="secondary-button compact-control" id="widthToggle" type="button" title="Toggle page width">Width</button><select id="readerTheme" title="Reader theme"><option value="paper">Paper</option><option value="dark">Dark</option><option value="sepia">Sepia</option><option value="oled">OLED Black</option><option value="green">Green Night</option><option value="gold">Golden Dark</option></select><button class="secondary-button compact-control" id="readerSettingsButton" type="button" title="Reader settings">Settings</button><button class="secondary-button compact-control" id="fullscreenReader" type="button" title="Focus mode">Focus</button></div></div>
           <div class="reader-nav"><button class="secondary-button" id="prevChapter" type="button">Previous</button><button class="chapter-select-button" id="centerChapterPicker" type="button"><p class="eyebrow" id="readerChapterNumber">Chapter</p><h2 id="readerChapterTitle">Open a chapter</h2><p class="reader-progress" id="readerProgress">Choose a chapter to begin.</p></button><button class="secondary-button" id="nextChapter" type="button">Next</button></div>
           <div class="reader-tabs"><button class="reader-tab active" data-reader-tab="original" type="button">Original Story</button><button class="reader-tab" data-reader-tab="reference" type="button">Reference Translation</button><button class="reader-tab" data-reader-tab="ai" type="button">AI Translation</button></div>
           <aside class="chapter-picker" id="chapterPickerPanel" hidden></aside>
@@ -116,6 +118,7 @@ app.innerHTML = `
       <section class="tab-panel admin-only" id="backupsPanel"><div class="warning storage-warning">Render free storage may reset after redeploy or restart. Download backups often, especially after every translation batch.</div><div class="backup-summary" id="backupSummary">Current counts will appear after a novel loads.</div><div class="backup-grid"><a class="panel link-card" id="downloadEnglish" href="#">Download AI Translations ZIP</a><a class="panel link-card" id="downloadOriginal" href="#">Download Original Story ZIP</a><a class="panel link-card" id="downloadReference" href="#">Download Reference Translation ZIP</a><a class="panel link-card" id="downloadPrompts" href="#">Download Prompts ZIP</a><a class="panel link-card strong-link" id="downloadBackup" href="#">Download Full Novel Backup ZIP</a><form class="panel" id="restoreNovelForm"><h2>Restore Full Novel Backup ZIP</h2><input id="restoreFile" name="backup" type="file" accept=".zip,application/zip" required><button class="secondary-button" type="submit">Restore Full Novel Backup ZIP</button></form><form class="panel" id="importAiForm"><h2>Import AI Translated Chapters ZIP</h2><input id="importAiFile" name="translated_zip" type="file" accept=".zip,application/zip" required><button class="primary-button" type="submit">Import AI Translated Chapters ZIP</button></form><form class="panel" id="importOriginalForm"><h2>Import Original Story ZIP</h2><input id="importOriginalFile" name="original_zip" type="file" accept=".zip,application/zip" required><button class="primary-button" type="submit">Import Original Story ZIP</button></form><form class="panel" id="importReferenceForm"><h2>Import Reference Translation ZIP</h2><input id="importReferenceFile" name="reference_zip" type="file" accept=".zip,application/zip" required><button class="secondary-button" type="submit">Import Reference Translation ZIP</button></form><form class="panel" id="coverUploadForm"><h2>Novel Cover</h2><input id="coverFile" name="cover" type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" required><button class="secondary-button" type="submit">Upload Cover</button></form></div></section>
 
       <section class="tab-panel admin-only" id="settingsPanel">
+        <section class="panel admin-dashboard" id="adminDashboard"><h2>Admin Dashboard</h2><div class="admin-metrics" id="adminMetrics">Open Storage Health to refresh platform status.</div><div class="actions"><button class="secondary-button" id="checkStorageButton" type="button">Check Storage Again</button><button class="secondary-button" id="migrateStorageButton" type="button">Copy old local data into DATA_DIR</button></div><div class="storage-health" id="storageHealth">Storage health has not been checked yet.</div><h3>Users and Roles</h3><div class="user-list" id="adminUsersList">User list loads after admin login.</div></section>
         <form class="panel settings-grid" id="novelSettingsForm"><h2>Novel Metadata</h2><label><span>Novel title</span><input id="settingsTitle" type="text"></label><label><span>Source language</span><input id="sourceLanguage" type="text" value="Chinese"></label><label><span>Target language</span><input id="targetLanguage" type="text" value="English"></label><label><span>Default model</span><input id="defaultModel" type="text" value="gpt-4o-mini"></label><label><span>Tags, comma separated</span><input id="settingsTags" type="text"></label><label class="wide-field"><span>Summary</span><textarea id="settingsSummary" rows="4"></textarea></label><label><span>App version</span><input value="3.1 public reader admin UI" disabled></label><label><span>Storage mode</span><input id="storageModeDisplay" type="text" disabled></label><label><span>DATA_DIR</span><input id="dataDirDisplay" type="text" disabled></label><button class="primary-button" type="submit">Save Settings</button></form>
         <form class="panel settings-grid" id="appIconForm"><h2>Upload App / Library Icon</h2><input id="appIconFile" name="icon" type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" required><button class="secondary-button" type="submit">Upload App / Library Icon</button></form>
         <form class="panel settings-grid" id="appAppearanceForm"><h2>App Appearance</h2><label><span>App display name</span><input id="appDisplayName" type="text"></label><label><span>App subtitle</span><input id="appSubtitleInput" type="text"></label><label><span>Main accent</span><input id="themeMainAccent" type="color"></label><label><span>Button/highlight</span><input id="themeHighlight" type="color"></label><label><span>Header/logo accent</span><input id="themeLogoAccent" type="color"></label><label><span>Card background</span><input id="themeCardBackground" type="color"></label><label><span>Page background</span><input id="themePageBackground" type="color"></label><label><span>Reader background default</span><input id="themeReaderBackground" type="color"></label><label><span>Reader text default</span><input id="themeReaderText" type="color"></label><div class="actions"><button class="primary-button" type="submit">Save Appearance</button><button class="secondary-button" id="resetThemeButton" type="button">Reset Theme</button></div></form>
@@ -125,21 +128,22 @@ app.innerHTML = `
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 </div>
 <dialog id="addNovelDialog"><form id="addNovelForm"><h2>Add New Novel</h2><label><span>Title</span><input id="newNovelTitle" type="text" required></label><div class="actions"><button class="secondary-button" id="cancelAddNovel" type="button">Cancel</button><button class="primary-button" type="submit">Create</button></div></form></dialog>
+<dialog id="accountDialog"><form id="accountForm"><h2 id="accountTitle">Login</h2><p class="helper" id="accountMessage">Use an account to sync bookmarks, ratings, and reading history.</p><label><span>Email</span><input id="accountEmail" type="email" autocomplete="email" required></label><label id="accountUsernameWrap" hidden><span>Username</span><input id="accountUsername" type="text" autocomplete="username"></label><label><span>Password</span><input id="accountPassword" type="password" autocomplete="current-password" required></label><label id="accountConfirmWrap" hidden><span>Confirm password</span><input id="accountConfirm" type="password" autocomplete="new-password"></label><div class="actions"><button class="secondary-button" id="forgotPasswordButton" type="button">Forgot Password</button><button class="secondary-button" id="accountModeButton" type="button">Create account</button><button class="primary-button" id="accountSubmitButton" type="submit">Login</button></div><div class="actions account-user-actions" id="accountUserActions" hidden><button class="secondary-button" id="resendVerificationButton" type="button">Resend Verification</button><button class="secondary-button" id="logoutAccountButton" type="button">Logout</button></div><p class="helper">Google login not configured yet. Production OAuth can be enabled later with Google environment variables.</p></form></dialog>
 <dialog id="adminDialog"><form method="dialog" id="adminForm"><h2>Admin Login</h2><p class="helper" id="adminHelp">Admin tools are private.</p><label><span>Password</span><input id="adminPassword" type="password" autocomplete="current-password"></label><div class="actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" value="default">Login</button></div></form></dialog>`;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
-const state = { novels: [], appInfo: {}, admin: { enabled: false, authenticated: false }, workspaces: [{ id: "library", type: "library", title: "Library" }], activeWorkspaceId: "library", libraryMode: "home", currentNovel: null, chapters: [], filteredChapters: [], selectedChapters: new Set(), readerChapter: null, readerTab: "original", currentJob: null, pollTimer: null, readerSize: 18, readerWide: false, chapterPage: 1, pageSize: 50, pickerPage: 1, pickerPageSize: 50, pickerSearch: "", pickerNewest: false, searchTimer: null, readerPrefs: {}, ratings: {}, bookmarks: { novels: {}, chapters: {} }, history: {} };
+const state = { novels: [], appInfo: {}, admin: { enabled: false, authenticated: false }, auth: { authenticated: false, user: null }, accountMode: "login", workspaces: [{ id: "library", type: "library", title: "Library" }], activeWorkspaceId: "library", libraryMode: "home", currentNovel: null, chapters: [], filteredChapters: [], selectedChapters: new Set(), readerChapter: null, readerTab: "original", currentJob: null, pollTimer: null, readerSize: 18, readerWide: false, chapterPage: 1, pageSize: 50, pickerPage: 1, pickerPageSize: 50, pickerSearch: "", pickerNewest: false, searchTimer: null, readerPrefs: {}, ratings: {}, bookmarks: { novels: {}, chapters: {} }, history: {} };
 
 const els = {
-  apiStatus: $("#apiStatus"), homeButton: $("#homeButton"), themeToggle: $("#themeToggle"), globalSearch: $("#globalSearch"), brandMark: $("#brandMark"), brandName: $("#brandName"), brandSubtitle: $("#brandSubtitle"), libraryIcon: $("#libraryIcon"), workspaceTabs: $("#workspaceTabs"), breadcrumb: $("#breadcrumb"), adminButton: $("#adminButton"), adminDialog: $("#adminDialog"), adminForm: $("#adminForm"), adminPassword: $("#adminPassword"), adminHelp: $("#adminHelp"), supportButton: $("#supportButton"), supportPanel: $("#supportPanel"), mainNav: $$(".nav-button"), currentNovelPill: $("#currentNovelPill"), quickReaderButton: $("#quickReaderButton"), quickTranslateButton: $("#quickTranslateButton"), quickBackupButton: $("#quickBackupButton"),
+  apiStatus: $("#apiStatus"), homeButton: $("#homeButton"), themeToggle: $("#themeToggle"), globalSearch: $("#globalSearch"), brandMark: $("#brandMark"), brandName: $("#brandName"), brandSubtitle: $("#brandSubtitle"), libraryIcon: $("#libraryIcon"), workspaceTabs: $("#workspaceTabs"), breadcrumb: $("#breadcrumb"), accountButton: $("#accountButton"), registerButton: $("#registerButton"), accountDialog: $("#accountDialog"), accountForm: $("#accountForm"), accountTitle: $("#accountTitle"), accountMessage: $("#accountMessage"), accountEmail: $("#accountEmail"), accountUsername: $("#accountUsername"), accountUsernameWrap: $("#accountUsernameWrap"), accountPassword: $("#accountPassword"), accountConfirm: $("#accountConfirm"), accountConfirmWrap: $("#accountConfirmWrap"), accountModeButton: $("#accountModeButton"), accountSubmitButton: $("#accountSubmitButton"), forgotPasswordButton: $("#forgotPasswordButton"), accountUserActions: $("#accountUserActions"), resendVerificationButton: $("#resendVerificationButton"), logoutAccountButton: $("#logoutAccountButton"), adminButton: $("#adminButton"), adminDialog: $("#adminDialog"), adminForm: $("#adminForm"), adminPassword: $("#adminPassword"), adminHelp: $("#adminHelp"), supportButton: $("#supportButton"), supportPanel: $("#supportPanel"), mainNav: $$(".nav-button"), currentNovelPill: $("#currentNovelPill"), quickReaderButton: $("#quickReaderButton"), quickTranslateButton: $("#quickTranslateButton"), quickBackupButton: $("#quickBackupButton"),
   libraryView: $("#libraryView"), detailView: $("#detailView"), librarySections: $("#librarySections"), libraryToolbar: $("#libraryToolbar"), novelGrid: $("#novelGrid"), novelSearch: $("#novelSearch"), browseFilter: $("#browseFilter"), novelSort: $("#novelSort"), addNovelButton: $("#addNovelButton"), addNovelDialog: $("#addNovelDialog"), addNovelForm: $("#addNovelForm"), cancelAddNovel: $("#cancelAddNovel"), newNovelTitle: $("#newNovelTitle"),
   backToLibrary: $("#backToLibrary"), dashboardCover: $("#dashboardCover"), novelTitle: $("#novelTitle"), novelSummary: $("#novelSummary"), novelTags: $("#novelTags"), novelBookmarkButton: $("#novelBookmarkButton"), novelRating: $("#novelRating"), continueReadingButton: $("#continueReadingButton"), openChaptersButton: $("#openChaptersButton"), refreshNovelButton: $("#refreshNovelButton"), overviewReaderButton: $("#overviewReaderButton"), overviewTranslateButton: $("#overviewTranslateButton"), overviewBackupButton: $("#overviewBackupButton"), novelProgress: $("#novelProgress"), backupSummary: $("#backupSummary"), metricStorage: $("#metricStorage"), metricOriginal: $("#metricOriginal"), metricReference: $("#metricReference"), metricTranslated: $("#metricTranslated"), metricRemaining: $("#metricRemaining"), metricPercent: $("#metricPercent"), metricUpdated: $("#metricUpdated"), metricBackup: $("#metricBackup"), metricModel: $("#metricModel"), metricStatus: $("#metricStatus"),
   chapterSearch: $("#chapterSearch"), chapterFilter: $("#chapterFilter"), chapterSort: $("#chapterSort"), chapterPageSize: $("#chapterPageSize"), chapterJump: $("#chapterJump"), chapterList: $("#chapterList"), selectMissingAi: $("#selectMissingAi"), selectCurrentPage: $("#selectCurrentPage"), clearSelectedChapters: $("#clearSelectedChapters"), selectedChapterCount: $("#selectedChapterCount"), prevPage: $("#prevPage"), nextPage: $("#nextPage"), pageInfo: $("#pageInfo"),
   readerPanel: $("#readerPanel"), readerBack: $("#readerBack"), readerLibrary: $("#readerLibrary"), readerShell: $("#readerShell"), prevChapter: $("#prevChapter"), nextChapter: $("#nextChapter"), prevChapterBottom: $("#prevChapterBottom"), nextChapterBottom: $("#nextChapterBottom"), chapterPickerBottom: $("#chapterPickerBottom"), backToTopButton: $("#backToTopButton"), centerChapterPicker: $("#centerChapterPicker"), chapterPickerButton: $("#chapterPickerButton"), readerBookmarkButton: $("#readerBookmarkButton"), chapterPickerPanel: $("#chapterPickerPanel"), readerSettingsButton: $("#readerSettingsButton"), readerSettingsDrawer: $("#readerSettingsDrawer"), closeReaderSettings: $("#closeReaderSettings"), fullscreenReader: $("#fullscreenReader"), readerChapterNumber: $("#readerChapterNumber"), readerChapterTitle: $("#readerChapterTitle"), readerProgress: $("#readerProgress"), readerContent: $("#readerContent"), readerTheme: $("#readerTheme"), readerFontFamily: $("#readerFontFamily"), readerFontSize: $("#readerFontSize"), readerLineHeight: $("#readerLineHeight"), readerParagraphSpacing: $("#readerParagraphSpacing"), readerPageWidth: $("#readerPageWidth"), readerTextAlign: $("#readerTextAlign"), readerBackground: $("#readerBackground"), readerAccent: $("#readerAccent"), readerAllowCopy: $("#readerAllowCopy"), fontDown: $("#fontDown"), fontUp: $("#fontUp"), widthToggle: $("#widthToggle"),
   originalUploadForm: $("#originalUploadForm"), referenceUploadForm: $("#referenceUploadForm"), originalFiles: $("#originalFiles"), referenceFiles: $("#referenceFiles"), model: $("#model"), maxTotalBudget: $("#maxTotalBudget"), maxCostPerChapter: $("#maxCostPerChapter"), retryFailedChapters: $("#retryFailedChapters"), batchSize: $("#batchSize"), stopWhenBudgetReached: $("#stopWhenBudgetReached"), estimateBatch: $("#estimateBatch"), startBatch: $("#startBatch"), estimateBox: $("#estimateBox"), jobProgress: $("#jobProgress"), queueList: $("#queueList"),
   importOriginalForm: $("#importOriginalForm"), importOriginalFile: $("#importOriginalFile"), importReferenceForm: $("#importReferenceForm"), importReferenceFile: $("#importReferenceFile"), importAiForm: $("#importAiForm"), importAiFile: $("#importAiFile"), coverUploadForm: $("#coverUploadForm"), coverFile: $("#coverFile"), downloadOriginal: $("#downloadOriginal"), downloadReference: $("#downloadReference"), downloadEnglish: $("#downloadEnglish"), downloadPrompts: $("#downloadPrompts"), downloadBackup: $("#downloadBackup"), restoreNovelForm: $("#restoreNovelForm"), restoreFile: $("#restoreFile"),
-  novelSettingsForm: $("#novelSettingsForm"), settingsTitle: $("#settingsTitle"), settingsSummary: $("#settingsSummary"), settingsTags: $("#settingsTags"), sourceLanguage: $("#sourceLanguage"), targetLanguage: $("#targetLanguage"), defaultModel: $("#defaultModel"), storageModeDisplay: $("#storageModeDisplay"), dataDirDisplay: $("#dataDirDisplay"), appIconForm: $("#appIconForm"), appIconFile: $("#appIconFile"), appAppearanceForm: $("#appAppearanceForm"), appDisplayName: $("#appDisplayName"), appSubtitleInput: $("#appSubtitleInput"), themeMainAccent: $("#themeMainAccent"), themeHighlight: $("#themeHighlight"), themeLogoAccent: $("#themeLogoAccent"), themeCardBackground: $("#themeCardBackground"), themePageBackground: $("#themePageBackground"), themeReaderBackground: $("#themeReaderBackground"), themeReaderText: $("#themeReaderText"), resetThemeButton: $("#resetThemeButton"), toast: $("#toast")
+  adminMetrics: $("#adminMetrics"), storageHealth: $("#storageHealth"), checkStorageButton: $("#checkStorageButton"), migrateStorageButton: $("#migrateStorageButton"), adminUsersList: $("#adminUsersList"), novelSettingsForm: $("#novelSettingsForm"), settingsTitle: $("#settingsTitle"), settingsSummary: $("#settingsSummary"), settingsTags: $("#settingsTags"), sourceLanguage: $("#sourceLanguage"), targetLanguage: $("#targetLanguage"), defaultModel: $("#defaultModel"), storageModeDisplay: $("#storageModeDisplay"), dataDirDisplay: $("#dataDirDisplay"), appIconForm: $("#appIconForm"), appIconFile: $("#appIconFile"), appAppearanceForm: $("#appAppearanceForm"), appDisplayName: $("#appDisplayName"), appSubtitleInput: $("#appSubtitleInput"), themeMainAccent: $("#themeMainAccent"), themeHighlight: $("#themeHighlight"), themeLogoAccent: $("#themeLogoAccent"), themeCardBackground: $("#themeCardBackground"), themePageBackground: $("#themePageBackground"), themeReaderBackground: $("#themeReaderBackground"), themeReaderText: $("#themeReaderText"), resetThemeButton: $("#resetThemeButton"), toast: $("#toast")
 };
 
 const tabs = $$(".tab");
@@ -165,7 +169,7 @@ function updateMainNav(active = null) {
   els.breadcrumb.querySelector("[data-crumb-library]")?.addEventListener("click", () => setLibraryMode("library", "bookmarked"));
 }
 function showView(name) { els.libraryView.classList.toggle("active", name === "library"); els.detailView.classList.toggle("active", name === "detail"); updateMainNav(name === "library" ? state.libraryMode : activePanelName()); }
-function switchTab(tab) { if (!state.admin.authenticated && ["translate", "backups", "settings"].includes(tab)) { toast("Admin login required.", true); return; } tabs.forEach((button) => button.classList.toggle("active", button.dataset.tab === tab)); panels.forEach((panel) => panel.classList.toggle("active", panel.id === `${tab}Panel`)); updateMainNav(tab); }
+function switchTab(tab) { if (!state.admin.authenticated && ["translate", "backups", "settings"].includes(tab)) { toast("Admin login required.", true); return; } tabs.forEach((button) => button.classList.toggle("active", button.dataset.tab === tab)); panels.forEach((panel) => panel.classList.toggle("active", panel.id === `${tab}Panel`)); updateMainNav(tab); if (tab === "settings" && state.admin.authenticated) { refreshStorageHealth().catch((err) => toast(err.message, true)); refreshAdminUsers().catch((err) => toast(err.message, true)); } }
 function coverMarkup(novel, className = "cover") { return novel.cover_url ? `<img class="${className}" src="${esc(novel.cover_url)}" alt="">` : `<div class="${className} placeholder-cover"><span>${esc(novel.title.slice(0, 2).toUpperCase() || "IG")}</span></div>`; }
 function renderIcon(container, url) { container.innerHTML = url ? `<img src="${esc(url)}" alt="">` : "<span>IG</span>"; }
 function progressPercent(counts = {}) { const original = Number(counts.original_files || counts.total_chapters || 0); const translated = Number(counts.translated_chapters || 0); return original ? Math.min(100, Math.round((translated / original) * 100)) : 0; }
@@ -175,18 +179,69 @@ function loadLocalUiState() {
   try { state.history = JSON.parse(localStorage.getItem("igt-reading-history") || "{}"); } catch { state.history = {}; }
 }
 function saveLocalUiState() { localStorage.setItem("igt-ratings", JSON.stringify(state.ratings)); localStorage.setItem("igt-bookmarks", JSON.stringify(state.bookmarks)); localStorage.setItem("igt-reading-history", JSON.stringify(state.history)); }
+function applyBackendLibrary(data = {}) {
+  if (!state.auth.authenticated) return;
+  state.bookmarks = { novels: {}, chapters: {} };
+  state.ratings = {};
+  state.history = {};
+  for (const item of data.novel_bookmarks || []) state.bookmarks.novels[item.novel_id] = true;
+  for (const item of data.chapter_bookmarks || []) state.bookmarks.chapters[chapterKey(item.novel_id, item.chapter_number)] = true;
+  for (const item of data.ratings || []) state.ratings[item.novel_id] = Number(item.rating);
+  for (const item of data.reading_history || []) {
+    const memory = { novel_id: item.novel_id, chapter: Number(item.chapter_number), mode: item.mode || "ai", updated_at: item.updated_at };
+    state.history[chapterKey(item.novel_id, item.chapter_number)] = memory;
+    localStorage.setItem(lastReaderKey(item.novel_id), JSON.stringify(memory));
+    localStorage.setItem("igt-last-reader", JSON.stringify(memory));
+  }
+}
+async function loadBackendLibrary() {
+  if (!state.auth.authenticated) return;
+  applyBackendLibrary(await api("/api/me/library"));
+  renderNovels();
+  if (state.currentNovel) { renderDetail(); renderChapters(); updateReaderBookmarkState(); }
+}
 function ratingFor(novelId) { return Number(state.ratings[novelId] || 0); }
 function isNovelBookmarked(novelId) { return Boolean(state.bookmarks.novels[novelId]); }
 function chapterKey(novelId, chapter) { return `${novelId}:${Number(chapter)}`; }
 function isChapterBookmarked(novelId, chapter) { return Boolean(state.bookmarks.chapters[chapterKey(novelId, chapter)]); }
 function chapterHistory(novelId, chapter) { return state.history[chapterKey(novelId, chapter)] || null; }
-function toggleNovelBookmark(novelId) { state.bookmarks.novels[novelId] = !state.bookmarks.novels[novelId]; if (!state.bookmarks.novels[novelId]) delete state.bookmarks.novels[novelId]; saveLocalUiState(); renderNovels(); if (state.currentNovel?.novel_id === novelId) renderDetail(); }
-function toggleChapterBookmark(novelId, chapter) { const key = chapterKey(novelId, chapter); state.bookmarks.chapters[key] = !state.bookmarks.chapters[key]; if (!state.bookmarks.chapters[key]) delete state.bookmarks.chapters[key]; saveLocalUiState(); renderChapters(); renderChapterPicker(); if (Number(state.readerChapter) === Number(chapter)) updateReaderBookmarkState(); }
-function setRating(novelId, rating) { if (!state.admin.authenticated) { toast("Login required to rate.", true); return; } state.ratings[novelId] = rating; saveLocalUiState(); renderNovels(); if (state.currentNovel?.novel_id === novelId) renderDetail(); toast(`Rated ${rating} star${rating === 1 ? "" : "s"}.`); }
+async function toggleNovelBookmark(novelId) {
+  const next = !state.bookmarks.novels[novelId];
+  state.bookmarks.novels[novelId] = next;
+  if (!next) delete state.bookmarks.novels[novelId];
+  if (!state.auth.authenticated) saveLocalUiState();
+  renderNovels();
+  if (state.currentNovel?.novel_id === novelId) renderDetail();
+  if (!state.auth.authenticated) return;
+  try { await api(`/api/novels/${novelId}/bookmark`, { method: next ? "POST" : "DELETE" }); }
+  catch (err) { state.bookmarks.novels[novelId] = !next; if (next) delete state.bookmarks.novels[novelId]; renderNovels(); if (state.currentNovel?.novel_id === novelId) renderDetail(); toast(err.message, true); }
+}
+async function toggleChapterBookmark(novelId, chapter) {
+  const key = chapterKey(novelId, chapter);
+  const next = !state.bookmarks.chapters[key];
+  state.bookmarks.chapters[key] = next;
+  if (!next) delete state.bookmarks.chapters[key];
+  if (!state.auth.authenticated) saveLocalUiState();
+  renderChapters();
+  renderChapterPicker();
+  if (Number(state.readerChapter) === Number(chapter)) updateReaderBookmarkState();
+  if (!state.auth.authenticated) return;
+  try { await api(`/api/novels/${novelId}/chapters/${Number(chapter)}/bookmark`, { method: next ? "POST" : "DELETE" }); }
+  catch (err) { state.bookmarks.chapters[key] = !next; if (next) delete state.bookmarks.chapters[key]; renderChapters(); renderChapterPicker(); updateReaderBookmarkState(); toast(err.message, true); }
+}
+async function setRating(novelId, rating) {
+  if (!state.auth.authenticated) { openAccountDialog("login"); toast("Login required to rate.", true); return; }
+  const previous = state.ratings[novelId] || 0;
+  state.ratings[novelId] = rating;
+  renderNovels();
+  if (state.currentNovel?.novel_id === novelId) renderDetail();
+  try { await api(`/api/novels/${novelId}/rating`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rating }) }); toast(`Rated ${rating} star${rating === 1 ? "" : "s"}.`); }
+  catch (err) { state.ratings[novelId] = previous; renderNovels(); if (state.currentNovel?.novel_id === novelId) renderDetail(); toast(err.message, true); }
+}
 function starMarkup(novelId, interactive = false) { const rating = ratingFor(novelId); return `<span class="stars ${interactive ? "interactive" : ""}">${[1,2,3,4,5].map((value) => `<button type="button" ${interactive ? `data-rating="${value}"` : "disabled"} class="${value <= rating ? "filled" : ""}" aria-label="${value} star">&#9733;</button>`).join("")}</span><span class="rating-value">${rating ? rating.toFixed(1) : "Not rated"}</span>`; }
 function readCountFor(novelId) { return Object.keys(state.history).filter((key) => key.startsWith(`${novelId}:`)).length; }
 function lastReaderKey(novelId) { return `igt-last-reader:${novelId}`; }
-function saveReaderMemory() { if (!state.currentNovel || !state.readerChapter) return; const item = { novel_id: state.currentNovel.novel_id, chapter: state.readerChapter, mode: state.readerTab, updated_at: new Date().toISOString() }; localStorage.setItem("igt-last-reader", JSON.stringify(item)); localStorage.setItem(lastReaderKey(state.currentNovel.novel_id), JSON.stringify(item)); state.history[chapterKey(state.currentNovel.novel_id, state.readerChapter)] = item; saveLocalUiState(); }
+function saveReaderMemory() { if (!state.currentNovel || !state.readerChapter) return; const item = { novel_id: state.currentNovel.novel_id, chapter: state.readerChapter, mode: state.readerTab, updated_at: new Date().toISOString() }; localStorage.setItem("igt-last-reader", JSON.stringify(item)); localStorage.setItem(lastReaderKey(state.currentNovel.novel_id), JSON.stringify(item)); state.history[chapterKey(state.currentNovel.novel_id, state.readerChapter)] = item; if (state.auth.authenticated) api("/api/reading-history", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ novel_id: item.novel_id, chapter_number: item.chapter, mode: item.mode }) }).catch((err) => toast(err.message, true)); else saveLocalUiState(); }
 function loadReaderMemory(novelId = state.currentNovel?.novel_id) { try { return JSON.parse(localStorage.getItem(lastReaderKey(novelId)) || localStorage.getItem("igt-last-reader") || "{}"); } catch { return {}; } }
 function firstReadableChapter() { return state.chapters[0]?.chapter || null; }
 function targetReaderChapter() { const memory = loadReaderMemory(); return state.chapters.some((chapter) => Number(chapter.chapter) === Number(memory.chapter)) ? Number(memory.chapter) : firstReadableChapter(); }
@@ -220,7 +275,7 @@ function applyAppInfo() {
     els.themeReaderText.value = theme.reader_text || "#efe8d5";
   }
 }
-function defaultReaderPrefs() { return { fontFamily: "default", fontSize: 19, lineHeight: 1.9, paragraphSpacing: 14, pageWidth: "820px", textAlign: "left", background: getComputedStyle(document.documentElement).getPropertyValue("--reader-bg").trim() || "#0f1513", accent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#68d1b4", allowCopy: true }; }
+function defaultReaderPrefs() { return { fontFamily: "default", fontSize: 19, lineHeight: 1.9, paragraphSpacing: 14, pageWidth: "820px", textAlign: "left", theme: "dark", background: getComputedStyle(document.documentElement).getPropertyValue("--reader-bg").trim() || "#0f1513", accent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#68d1b4", allowCopy: true }; }
 function loadReaderPrefs() { try { state.readerPrefs = { ...defaultReaderPrefs(), ...JSON.parse(localStorage.getItem("igt-reader-prefs") || "{}") }; } catch { state.readerPrefs = defaultReaderPrefs(); } applyReaderPrefs(); }
 function saveReaderPrefs() { localStorage.setItem("igt-reader-prefs", JSON.stringify(state.readerPrefs)); applyReaderPrefs(); }
 function applyReaderPrefs() {
@@ -235,6 +290,8 @@ function applyReaderPrefs() {
   els.readerContent.style.textAlign = p.textAlign;
   els.readerContent.style.userSelect = p.allowCopy ? "text" : "none";
   els.readerShell.style.background = p.background;
+  els.readerShell.dataset.theme = p.theme || "dark";
+  els.readerTheme.value = p.theme || "dark";
   els.readerFontFamily.value = p.fontFamily;
   els.readerFontSize.value = p.fontSize;
   els.readerLineHeight.value = p.lineHeight;
@@ -369,9 +426,104 @@ function closeAddNovelDialog() {
 }
 
 async function loadAdminStatus() { state.admin = await api("/api/admin/status").catch(() => ({ enabled: false, authenticated: false })); renderAdminState(); }
+async function loadAuthState() {
+  state.auth = await api("/api/auth/me").catch(() => ({ authenticated: false, user: null }));
+  renderAuthState();
+  if (state.auth.authenticated) await loadBackendLibrary().catch((err) => toast(err.message, true));
+}
 async function loadAppInfo() { state.appInfo = await api("/api/app").catch(() => ({})); applyAppInfo(); applyReaderPrefs(); }
 async function loadNovels() { els.novelGrid.innerHTML = '<div class="empty-state">Loading library...</div>'; state.novels = (await api("/api/novels")).novels || []; renderNovels(); }
-function renderAdminState() { document.body.classList.toggle("is-admin", state.admin.authenticated); els.adminButton.textContent = state.admin.authenticated ? "Admin / Logout" : "Login"; els.adminHelp.textContent = state.admin.enabled ? "Enter your admin password to open the control panel." : "Login is disabled because ADMIN_PASSWORD is not set. Private tools are hidden."; if (!state.admin.authenticated && ["translatePanel", "backupsPanel", "settingsPanel"].some((id) => document.getElementById(id).classList.contains("active"))) switchTab("chapters"); }
+function renderAdminState() { document.body.classList.toggle("is-admin", state.admin.authenticated); els.adminButton.textContent = state.admin.authenticated ? "Admin / Lock" : "Admin"; els.adminHelp.textContent = state.admin.enabled ? "Enter your admin password to open the control panel." : "Login is disabled because ADMIN_PASSWORD is not set. Private tools are hidden."; if (!state.admin.authenticated && ["translatePanel", "backupsPanel", "settingsPanel"].some((id) => document.getElementById(id).classList.contains("active"))) switchTab("chapters"); }
+function renderAuthState() {
+  const user = state.auth.user;
+  els.accountButton.textContent = user ? `${user.username || user.email}` : "Login";
+  els.registerButton.hidden = Boolean(user);
+  els.accountMessage.textContent = user ? `${user.email} · ${user.role}${user.email_verified ? " · verified" : " · email not verified"}` : "Use an account to sync bookmarks, ratings, and reading history.";
+  els.accountUserActions.hidden = !user;
+}
+function readerThemeBackground(theme) {
+  return ({ paper: "#f5ecd9", dark: "#111614", sepia: "#ead6b4", oled: "#000000", green: "#0b1d17", gold: "#17130d" }[theme] || "#111614");
+}
+function openAccountDialog(mode = state.auth.authenticated ? "settings" : "login") {
+  state.accountMode = mode;
+  const user = state.auth.user;
+  const registering = mode === "register";
+  const reset = mode === "reset";
+  els.accountTitle.textContent = user && mode === "settings" ? "Account Settings" : reset ? "Forgot Password" : registering ? "Register" : "Login";
+  els.accountUsernameWrap.hidden = !registering;
+  els.accountConfirmWrap.hidden = !registering;
+  els.accountPassword.required = !reset;
+  els.accountPassword.parentElement.hidden = reset || Boolean(user);
+  els.accountSubmitButton.textContent = reset ? "Send Reset Link" : registering ? "Create Account" : "Login";
+  els.accountSubmitButton.hidden = Boolean(user);
+  els.accountModeButton.textContent = registering ? "Already have an account?" : "Create account";
+  els.forgotPasswordButton.hidden = reset || Boolean(user);
+  if (user) {
+    els.accountEmail.value = user.email || "";
+    els.accountUsername.value = user.username || "";
+    els.accountPassword.value = "";
+    els.accountEmail.required = false;
+  } else {
+    els.accountEmail.required = true;
+  }
+  if (els.accountDialog.showModal) els.accountDialog.showModal(); else els.accountEmail.focus();
+}
+async function submitAccount(event) {
+  event.preventDefault();
+  if (state.accountMode === "settings") return;
+  const email = els.accountEmail.value.trim();
+  if (state.accountMode === "reset") {
+    const result = await api("/api/auth/request-password-reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
+    els.accountMessage.textContent = result.message || "If an account exists for this email, a reset link was sent.";
+    toast("Password reset request sent.");
+    return;
+  }
+  if (state.accountMode === "register") {
+    if (els.accountPassword.value !== els.accountConfirm.value) return toast("Passwords do not match.", true);
+    await api("/api/auth/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, username: els.accountUsername.value.trim(), password: els.accountPassword.value }) });
+    els.accountMessage.textContent = "Check your email to verify your account. If email is not configured, admin can finish SMTP setup later.";
+  } else {
+    await api("/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password: els.accountPassword.value }) });
+  }
+  els.accountPassword.value = "";
+  els.accountConfirm.value = "";
+  await loadAuthState();
+  await loadNovels();
+  toast(state.accountMode === "register" ? "Account created." : "Logged in.");
+  if (els.accountDialog.open) els.accountDialog.close();
+}
+async function logoutAccount() {
+  await api("/api/auth/logout", { method: "POST" });
+  state.auth = { authenticated: false, user: null };
+  loadLocalUiState();
+  renderAuthState();
+  renderNovels();
+  if (state.currentNovel) { renderDetail(); renderChapters(); }
+  toast("Logged out.");
+}
+async function refreshStorageHealth() {
+  const storage = await api("/api/storage");
+  const counts = storage.counts || {};
+  const folders = storage.folders || {};
+  const warnings = storage.warnings || [];
+  els.storageHealth.innerHTML = `<div class="warning">Your files are only safe after DATA_DIR points to persistent storage.</div><div class="storage-grid"><div><span>DATA_DIR</span><strong>${esc(storage.configured_data_dir || storage.data_dir)}</strong></div><div><span>Resolved path</span><strong>${esc(storage.resolved_data_dir || storage.data_dir)}</strong></div><div><span>Writable</span><strong>${storage.writable ? "true" : "false"}</strong></div><div><span>Database</span><strong>${esc(storage.database?.backend || "unknown")} ${storage.database?.exists ? "ready" : "missing"}</strong></div><div><span>Original</span><strong>${counts.originals || storage.saved_chinese_chapters || 0}</strong></div><div><span>Reference</span><strong>${counts.references || storage.saved_novelfire_references || 0}</strong></div><div><span>AI</span><strong>${counts.ai_translations || storage.saved_translations || 0}</strong></div><div><span>Prompts</span><strong>${counts.prompts || 0}</strong></div><div><span>Backups</span><strong>${counts.backups || 0}</strong></div><div><span>Covers/uploads</span><strong>${counts.covers_uploads || 0}</strong></div></div><p class="helper">Folders: ${Object.entries(folders).map(([name, ok]) => `${esc(name)} ${ok ? "ok" : "missing"}`).join(" · ") || "not reported"}</p>${warnings.length ? `<div class="warning">${warnings.map(esc).join("<br>")}</div>` : ""}`;
+  const totalOriginal = state.novels.reduce((sum, novel) => sum + Number(novel.counts?.original_files || 0), 0);
+  const totalReference = state.novels.reduce((sum, novel) => sum + Number(novel.counts?.reference_files || 0), 0);
+  const totalAi = state.novels.reduce((sum, novel) => sum + Number(novel.counts?.translated_chapters || 0), 0);
+  els.adminMetrics.innerHTML = `<div class="storage-grid"><div><span>Novels</span><strong>${state.novels.length}</strong></div><div><span>Original chapters</span><strong>${totalOriginal}</strong></div><div><span>Reference chapters</span><strong>${totalReference}</strong></div><div><span>AI translations</span><strong>${totalAi}</strong></div></div>`;
+}
+async function refreshAdminUsers() {
+  const data = await api("/api/admin/users");
+  const users = data.users || [];
+  if (!users.length) { els.adminUsersList.innerHTML = '<div class="empty-state compact-empty">No accounts yet.</div>'; return; }
+  els.adminUsersList.innerHTML = users.map((user) => `<article class="user-row" data-user="${esc(user.id)}"><div><strong>${esc(user.username || user.email)}</strong><span>${esc(user.email)} · ${user.email_verified ? "verified" : "unverified"} · ${user.disabled ? "disabled" : "enabled"} · ${date(user.created_at)}</span></div><select data-role><option value="user">user</option><option value="paid">paid</option><option value="admin">admin</option></select><button class="secondary-button" data-disable type="button">${user.disabled ? "Enable" : "Disable"}</button></article>`).join("");
+  els.adminUsersList.querySelectorAll(".user-row").forEach((row, index) => {
+    const user = users[index];
+    row.querySelector("[data-role]").value = user.role;
+    row.querySelector("[data-role]").onchange = async (event) => { await api(`/api/admin/users/${user.id}/role`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role: event.target.value }) }); toast("Role updated."); };
+    row.querySelector("[data-disable]").onclick = async () => { await api(`/api/admin/users/${user.id}/disabled`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ disabled: !user.disabled }) }); await refreshAdminUsers(); toast("User status updated."); };
+  });
+}
 
 function renderLibrarySections() {
   const novels = state.novels.slice();
@@ -707,13 +859,23 @@ function bind() {
   els.fontDown.onclick = () => { state.readerSize = Math.max(15, state.readerSize - 1); document.documentElement.style.setProperty("--reader-size", `${state.readerSize}px`); };
   els.fontUp.onclick = () => { state.readerSize = Math.min(24, state.readerSize + 1); document.documentElement.style.setProperty("--reader-size", `${state.readerSize}px`); };
   els.widthToggle.onclick = () => { state.readerWide = !state.readerWide; els.readerContent.classList.toggle("wide", state.readerWide); };
-  els.readerTheme.onchange = () => els.readerShell.dataset.theme = els.readerTheme.value;
+  els.readerTheme.onchange = () => { state.readerPrefs.theme = els.readerTheme.value; state.readerPrefs.background = readerThemeBackground(els.readerTheme.value); saveReaderPrefs(); };
   els.readerSettingsButton.onclick = () => { els.readerSettingsDrawer.hidden = false; };
   els.closeReaderSettings.onclick = () => { els.readerSettingsDrawer.hidden = true; };
   [["fontFamily", els.readerFontFamily], ["fontSize", els.readerFontSize], ["lineHeight", els.readerLineHeight], ["paragraphSpacing", els.readerParagraphSpacing], ["pageWidth", els.readerPageWidth], ["textAlign", els.readerTextAlign], ["background", els.readerBackground], ["accent", els.readerAccent]].forEach(([key, input]) => { input.oninput = () => { state.readerPrefs[key] = ["fontSize", "paragraphSpacing"].includes(key) ? Number(input.value) : key === "lineHeight" ? Number(input.value) : input.value; saveReaderPrefs(); }; });
   els.readerAllowCopy.onchange = () => { state.readerPrefs.allowCopy = els.readerAllowCopy.checked; saveReaderPrefs(); };
   els.adminButton.onclick = () => state.admin.authenticated ? logout().catch((err) => toast(err.message, true)) : (els.adminDialog.showModal ? els.adminDialog.showModal() : els.adminPassword.focus());
   els.adminForm.onsubmit = (event) => login(event).catch((err) => toast(err.message, true));
+  els.accountButton.onclick = () => openAccountDialog(state.auth.authenticated ? "settings" : "login");
+  els.registerButton.onclick = () => openAccountDialog("register");
+  els.accountForm.onsubmit = (event) => submitAccount(event).catch((err) => toast(err.message, true));
+  els.accountModeButton.onclick = () => openAccountDialog(state.accountMode === "register" ? "login" : "register");
+  els.forgotPasswordButton.onclick = () => openAccountDialog("reset");
+  els.logoutAccountButton.onclick = () => logoutAccount().catch((err) => toast(err.message, true));
+  els.resendVerificationButton.onclick = async () => { await api("/api/auth/resend-verification", { method: "POST" }); toast("Verification email requested."); };
+  els.accountDialog.addEventListener("click", (event) => { if (event.target === els.accountDialog) els.accountDialog.close(); });
+  els.checkStorageButton.onclick = () => refreshStorageHealth().catch((err) => toast(err.message, true));
+  els.migrateStorageButton.onclick = async () => { if (!window.confirm("Copy old local data into the configured DATA_DIR? Existing different files will be skipped, not overwritten.")) return; const report = await api("/api/admin/storage/migrate-local-data", { method: "POST" }); await refreshStorageHealth(); toast(`Migration copied ${report.copied || 0}, skipped ${report.skipped_existing || 0}, conflicts ${report.conflicts || 0}.`); };
   els.originalUploadForm.onsubmit = (event) => { event.preventDefault(); upload("original").catch((err) => toast(err.message, true)); };
   els.referenceUploadForm.onsubmit = (event) => { event.preventDefault(); upload("reference").catch((err) => toast(err.message, true)); };
   els.estimateBatch.onclick = () => buildEstimate().catch((err) => toast(err.message, true));
@@ -752,6 +914,6 @@ function bind() {
   window.addEventListener("hashchange", handleRouteChange);
 }
 
-function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=12").then((registration) => registration.update()).catch(() => {}); }
-async function init() { registerServiceWorker(); if (!window.location.hash) pushRoute(libraryRoute(), true); setTheme(localStorage.getItem("igt-theme") || "dark"); loadLocalUiState(); bind(); loadReaderPrefs(); renderWorkspaces(); await loadAppInfo(); await loadAdminStatus(); try { await api("/api/health"); els.apiStatus.textContent = "Online"; els.apiStatus.classList.add("ok"); } catch { els.apiStatus.textContent = "Offline"; } await loadNovels(); await applyRouteFromLocation(); }
+function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=16").then((registration) => registration.update()).catch(() => {}); }
+async function init() { registerServiceWorker(); if (!window.location.hash) pushRoute(libraryRoute(), true); setTheme(localStorage.getItem("igt-theme") || "dark"); loadLocalUiState(); bind(); loadReaderPrefs(); renderWorkspaces(); await loadAppInfo(); await loadAdminStatus(); await loadAuthState(); try { await api("/api/health"); els.apiStatus.textContent = "Online"; els.apiStatus.classList.add("ok"); } catch { els.apiStatus.textContent = "Offline"; } await loadNovels(); if (state.auth.authenticated) await loadBackendLibrary().catch((err) => toast(err.message, true)); await applyRouteFromLocation(); }
 init().catch((error) => toast(error.message, true));
