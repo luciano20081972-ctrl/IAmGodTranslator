@@ -87,7 +87,7 @@ app.innerHTML = `
 
       <section class="tab-panel" id="readerPanel">
         <div class="reader-shell" id="readerShell">
-          <div class="reader-toolbar"><button class="secondary-button" id="readerBack" type="button">Back to Novel</button><button class="secondary-button" id="readerLibrary" type="button">Back to Library</button><div class="reader-controls"><button class="secondary-button" id="chapterPickerButton" type="button">Chapters</button><button class="icon-button" id="fontDown" type="button">A-</button><button class="icon-button" id="fontUp" type="button">A+</button><button class="icon-button" id="widthToggle" type="button">W</button><select id="readerTheme"><option value="paper">Paper</option><option value="dark">Dark</option><option value="sepia">Sepia</option></select><button class="icon-button" id="readerSettingsButton" type="button">S</button><button class="icon-button" id="fullscreenReader" type="button">F</button></div></div>
+          <div class="reader-toolbar"><button class="secondary-button" id="readerBack" type="button">Back to Novel</button><button class="secondary-button" id="readerLibrary" type="button">Back to Library</button><div class="reader-controls"><button class="secondary-button" id="chapterPickerButton" type="button">Chapters</button><button class="secondary-button" id="readerBookmarkButton" type="button">Bookmark</button><button class="icon-button" id="fontDown" type="button">A-</button><button class="icon-button" id="fontUp" type="button">A+</button><button class="icon-button" id="widthToggle" type="button">W</button><select id="readerTheme"><option value="paper">Paper</option><option value="dark">Dark</option><option value="sepia">Sepia</option><option value="oled">OLED Black</option><option value="green">Green Night</option><option value="gold">Gold Dark</option></select><button class="icon-button" id="readerSettingsButton" type="button">S</button><button class="icon-button" id="fullscreenReader" type="button">F</button></div></div>
           <div class="reader-nav"><button class="secondary-button" id="prevChapter" type="button">Previous</button><button class="chapter-select-button" id="centerChapterPicker" type="button"><p class="eyebrow" id="readerChapterNumber">Chapter</p><h2 id="readerChapterTitle">Open a chapter</h2><p class="reader-progress" id="readerProgress">Choose a chapter to begin.</p></button><button class="secondary-button" id="nextChapter" type="button">Next</button></div>
           <div class="reader-tabs"><button class="reader-tab active" data-reader-tab="original" type="button">Original Story</button><button class="reader-tab" data-reader-tab="reference" type="button">Reference Translation</button><button class="reader-tab" data-reader-tab="ai" type="button">AI Translation</button></div>
           <aside class="chapter-picker" id="chapterPickerPanel" hidden></aside>
@@ -126,14 +126,14 @@ app.innerHTML = `
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
-const state = { novels: [], appInfo: {}, admin: { enabled: false, authenticated: false }, workspaces: [{ id: "library", type: "library", title: "Library" }], activeWorkspaceId: "library", currentNovel: null, chapters: [], filteredChapters: [], readerChapter: null, readerTab: "original", currentJob: null, pollTimer: null, readerSize: 18, readerWide: false, chapterPage: 1, pageSize: 50, searchTimer: null, readerPrefs: {} };
+const state = { novels: [], appInfo: {}, admin: { enabled: false, authenticated: false }, workspaces: [{ id: "library", type: "library", title: "Library" }], activeWorkspaceId: "library", currentNovel: null, chapters: [], filteredChapters: [], selectedChapters: new Set(), readerChapter: null, readerTab: "original", currentJob: null, pollTimer: null, readerSize: 18, readerWide: false, chapterPage: 1, pageSize: 50, pickerPage: 1, pickerPageSize: 50, pickerSearch: "", pickerNewest: false, searchTimer: null, readerPrefs: {}, ratings: {}, bookmarks: { novels: {}, chapters: {} }, history: {} };
 
 const els = {
-  apiStatus: $("#apiStatus"), homeButton: $("#homeButton"), themeToggle: $("#themeToggle"), brandMark: $("#brandMark"), brandName: $("#brandName"), brandSubtitle: $("#brandSubtitle"), libraryIcon: $("#libraryIcon"), workspaceTabs: $("#workspaceTabs"), adminButton: $("#adminButton"), adminDialog: $("#adminDialog"), adminForm: $("#adminForm"), adminPassword: $("#adminPassword"), adminHelp: $("#adminHelp"), supportButton: $("#supportButton"), supportPanel: $("#supportPanel"), mainNav: $$(".nav-button"), currentNovelPill: $("#currentNovelPill"), quickReaderButton: $("#quickReaderButton"), quickTranslateButton: $("#quickTranslateButton"), quickBackupButton: $("#quickBackupButton"),
-  libraryView: $("#libraryView"), detailView: $("#detailView"), novelGrid: $("#novelGrid"), novelSearch: $("#novelSearch"), novelSort: $("#novelSort"), addNovelButton: $("#addNovelButton"), addNovelDialog: $("#addNovelDialog"), addNovelForm: $("#addNovelForm"), cancelAddNovel: $("#cancelAddNovel"), newNovelTitle: $("#newNovelTitle"),
-  backToLibrary: $("#backToLibrary"), dashboardCover: $("#dashboardCover"), novelTitle: $("#novelTitle"), novelSummary: $("#novelSummary"), novelTags: $("#novelTags"), continueReadingButton: $("#continueReadingButton"), openChaptersButton: $("#openChaptersButton"), refreshNovelButton: $("#refreshNovelButton"), overviewReaderButton: $("#overviewReaderButton"), overviewTranslateButton: $("#overviewTranslateButton"), overviewBackupButton: $("#overviewBackupButton"), novelProgress: $("#novelProgress"), backupSummary: $("#backupSummary"), metricStorage: $("#metricStorage"), metricOriginal: $("#metricOriginal"), metricReference: $("#metricReference"), metricTranslated: $("#metricTranslated"), metricRemaining: $("#metricRemaining"), metricBackup: $("#metricBackup"), metricModel: $("#metricModel"), metricStatus: $("#metricStatus"),
-  chapterSearch: $("#chapterSearch"), chapterFilter: $("#chapterFilter"), chapterSort: $("#chapterSort"), chapterPageSize: $("#chapterPageSize"), chapterJump: $("#chapterJump"), chapterList: $("#chapterList"), prevPage: $("#prevPage"), nextPage: $("#nextPage"), pageInfo: $("#pageInfo"),
-  readerBack: $("#readerBack"), readerLibrary: $("#readerLibrary"), readerShell: $("#readerShell"), prevChapter: $("#prevChapter"), nextChapter: $("#nextChapter"), prevChapterBottom: $("#prevChapterBottom"), nextChapterBottom: $("#nextChapterBottom"), chapterPickerButton: $("#chapterPickerButton"), chapterPickerPanel: $("#chapterPickerPanel"), readerSettingsButton: $("#readerSettingsButton"), readerSettingsDrawer: $("#readerSettingsDrawer"), closeReaderSettings: $("#closeReaderSettings"), fullscreenReader: $("#fullscreenReader"), readerChapterNumber: $("#readerChapterNumber"), readerChapterTitle: $("#readerChapterTitle"), readerProgress: $("#readerProgress"), readerContent: $("#readerContent"), readerTheme: $("#readerTheme"), readerFontFamily: $("#readerFontFamily"), readerFontSize: $("#readerFontSize"), readerLineHeight: $("#readerLineHeight"), readerParagraphSpacing: $("#readerParagraphSpacing"), readerPageWidth: $("#readerPageWidth"), readerTextAlign: $("#readerTextAlign"), readerBackground: $("#readerBackground"), readerAccent: $("#readerAccent"), readerAllowCopy: $("#readerAllowCopy"), fontDown: $("#fontDown"), fontUp: $("#fontUp"), widthToggle: $("#widthToggle"),
+  apiStatus: $("#apiStatus"), homeButton: $("#homeButton"), themeToggle: $("#themeToggle"), globalSearch: $("#globalSearch"), brandMark: $("#brandMark"), brandName: $("#brandName"), brandSubtitle: $("#brandSubtitle"), libraryIcon: $("#libraryIcon"), workspaceTabs: $("#workspaceTabs"), adminButton: $("#adminButton"), adminDialog: $("#adminDialog"), adminForm: $("#adminForm"), adminPassword: $("#adminPassword"), adminHelp: $("#adminHelp"), supportButton: $("#supportButton"), supportPanel: $("#supportPanel"), mainNav: $$(".nav-button"), currentNovelPill: $("#currentNovelPill"), quickReaderButton: $("#quickReaderButton"), quickTranslateButton: $("#quickTranslateButton"), quickBackupButton: $("#quickBackupButton"),
+  libraryView: $("#libraryView"), detailView: $("#detailView"), librarySections: $("#librarySections"), novelGrid: $("#novelGrid"), novelSearch: $("#novelSearch"), browseFilter: $("#browseFilter"), novelSort: $("#novelSort"), addNovelButton: $("#addNovelButton"), addNovelDialog: $("#addNovelDialog"), addNovelForm: $("#addNovelForm"), cancelAddNovel: $("#cancelAddNovel"), newNovelTitle: $("#newNovelTitle"),
+  backToLibrary: $("#backToLibrary"), dashboardCover: $("#dashboardCover"), novelTitle: $("#novelTitle"), novelSummary: $("#novelSummary"), novelTags: $("#novelTags"), novelBookmarkButton: $("#novelBookmarkButton"), novelRating: $("#novelRating"), continueReadingButton: $("#continueReadingButton"), openChaptersButton: $("#openChaptersButton"), refreshNovelButton: $("#refreshNovelButton"), overviewReaderButton: $("#overviewReaderButton"), overviewTranslateButton: $("#overviewTranslateButton"), overviewBackupButton: $("#overviewBackupButton"), novelProgress: $("#novelProgress"), backupSummary: $("#backupSummary"), metricStorage: $("#metricStorage"), metricOriginal: $("#metricOriginal"), metricReference: $("#metricReference"), metricTranslated: $("#metricTranslated"), metricRemaining: $("#metricRemaining"), metricPercent: $("#metricPercent"), metricUpdated: $("#metricUpdated"), metricBackup: $("#metricBackup"), metricModel: $("#metricModel"), metricStatus: $("#metricStatus"),
+  chapterSearch: $("#chapterSearch"), chapterFilter: $("#chapterFilter"), chapterSort: $("#chapterSort"), chapterPageSize: $("#chapterPageSize"), chapterJump: $("#chapterJump"), chapterList: $("#chapterList"), selectMissingAi: $("#selectMissingAi"), selectCurrentPage: $("#selectCurrentPage"), clearSelectedChapters: $("#clearSelectedChapters"), selectedChapterCount: $("#selectedChapterCount"), prevPage: $("#prevPage"), nextPage: $("#nextPage"), pageInfo: $("#pageInfo"),
+  readerPanel: $("#readerPanel"), readerBack: $("#readerBack"), readerLibrary: $("#readerLibrary"), readerShell: $("#readerShell"), prevChapter: $("#prevChapter"), nextChapter: $("#nextChapter"), prevChapterBottom: $("#prevChapterBottom"), nextChapterBottom: $("#nextChapterBottom"), chapterPickerBottom: $("#chapterPickerBottom"), backToTopButton: $("#backToTopButton"), centerChapterPicker: $("#centerChapterPicker"), chapterPickerButton: $("#chapterPickerButton"), readerBookmarkButton: $("#readerBookmarkButton"), chapterPickerPanel: $("#chapterPickerPanel"), readerSettingsButton: $("#readerSettingsButton"), readerSettingsDrawer: $("#readerSettingsDrawer"), closeReaderSettings: $("#closeReaderSettings"), fullscreenReader: $("#fullscreenReader"), readerChapterNumber: $("#readerChapterNumber"), readerChapterTitle: $("#readerChapterTitle"), readerProgress: $("#readerProgress"), readerContent: $("#readerContent"), readerTheme: $("#readerTheme"), readerFontFamily: $("#readerFontFamily"), readerFontSize: $("#readerFontSize"), readerLineHeight: $("#readerLineHeight"), readerParagraphSpacing: $("#readerParagraphSpacing"), readerPageWidth: $("#readerPageWidth"), readerTextAlign: $("#readerTextAlign"), readerBackground: $("#readerBackground"), readerAccent: $("#readerAccent"), readerAllowCopy: $("#readerAllowCopy"), fontDown: $("#fontDown"), fontUp: $("#fontUp"), widthToggle: $("#widthToggle"),
   originalUploadForm: $("#originalUploadForm"), referenceUploadForm: $("#referenceUploadForm"), originalFiles: $("#originalFiles"), referenceFiles: $("#referenceFiles"), model: $("#model"), maxTotalBudget: $("#maxTotalBudget"), maxCostPerChapter: $("#maxCostPerChapter"), retryFailedChapters: $("#retryFailedChapters"), batchSize: $("#batchSize"), stopWhenBudgetReached: $("#stopWhenBudgetReached"), estimateBatch: $("#estimateBatch"), startBatch: $("#startBatch"), estimateBox: $("#estimateBox"), jobProgress: $("#jobProgress"), queueList: $("#queueList"),
   importOriginalForm: $("#importOriginalForm"), importOriginalFile: $("#importOriginalFile"), importReferenceForm: $("#importReferenceForm"), importReferenceFile: $("#importReferenceFile"), importAiForm: $("#importAiForm"), importAiFile: $("#importAiFile"), coverUploadForm: $("#coverUploadForm"), coverFile: $("#coverFile"), downloadOriginal: $("#downloadOriginal"), downloadReference: $("#downloadReference"), downloadEnglish: $("#downloadEnglish"), downloadPrompts: $("#downloadPrompts"), downloadBackup: $("#downloadBackup"), restoreNovelForm: $("#restoreNovelForm"), restoreFile: $("#restoreFile"),
   novelSettingsForm: $("#novelSettingsForm"), settingsTitle: $("#settingsTitle"), settingsSummary: $("#settingsSummary"), settingsTags: $("#settingsTags"), sourceLanguage: $("#sourceLanguage"), targetLanguage: $("#targetLanguage"), defaultModel: $("#defaultModel"), storageModeDisplay: $("#storageModeDisplay"), dataDirDisplay: $("#dataDirDisplay"), appIconForm: $("#appIconForm"), appIconFile: $("#appIconFile"), appAppearanceForm: $("#appAppearanceForm"), appDisplayName: $("#appDisplayName"), appSubtitleInput: $("#appSubtitleInput"), themeMainAccent: $("#themeMainAccent"), themeHighlight: $("#themeHighlight"), themeLogoAccent: $("#themeLogoAccent"), themeCardBackground: $("#themeCardBackground"), themePageBackground: $("#themePageBackground"), themeReaderBackground: $("#themeReaderBackground"), themeReaderText: $("#themeReaderText"), resetThemeButton: $("#resetThemeButton"), toast: $("#toast")
@@ -150,7 +150,7 @@ function date(value) { if (!value) return "Never"; try { return new Intl.DateTim
 function status(value) { return ({ completed: "translated", estimated: "queued", running: "translating", test_completed: "translated" }[value] || value || "unknown"); }
 function money(value) { return `$${Number(value || 0).toFixed(4)}`; }
 
-function setTheme(theme) { const dark = theme === "dark"; document.body.classList.toggle("dark", dark); localStorage.setItem("igt-theme", dark ? "dark" : "light"); }
+function setTheme(theme) { const dark = theme === "dark"; document.body.classList.toggle("dark", dark); document.body.classList.toggle("light", !dark); localStorage.setItem("igt-theme", dark ? "dark" : "light"); }
 function updateMainNav(active = null) {
   const selected = active || (els.libraryView.classList.contains("active") ? "library" : activePanelName());
   els.mainNav.forEach((button) => button.classList.toggle("active", button.dataset.mainNav === selected));
@@ -162,11 +162,29 @@ function switchTab(tab) { if (!state.admin.authenticated && ["translate", "backu
 function coverMarkup(novel, className = "cover") { return novel.cover_url ? `<img class="${className}" src="${esc(novel.cover_url)}" alt="">` : `<div class="${className} placeholder-cover"><span>${esc(novel.title.slice(0, 2).toUpperCase() || "IG")}</span></div>`; }
 function renderIcon(container, url) { container.innerHTML = url ? `<img src="${esc(url)}" alt="">` : "<span>IG</span>"; }
 function progressPercent(counts = {}) { const original = Number(counts.original_files || counts.total_chapters || 0); const translated = Number(counts.translated_chapters || 0); return original ? Math.min(100, Math.round((translated / original) * 100)) : 0; }
+function loadLocalUiState() {
+  try { state.ratings = JSON.parse(localStorage.getItem("igt-ratings") || "{}"); } catch { state.ratings = {}; }
+  try { state.bookmarks = { novels: {}, chapters: {}, ...JSON.parse(localStorage.getItem("igt-bookmarks") || "{}") }; } catch { state.bookmarks = { novels: {}, chapters: {} }; }
+  try { state.history = JSON.parse(localStorage.getItem("igt-reading-history") || "{}"); } catch { state.history = {}; }
+}
+function saveLocalUiState() { localStorage.setItem("igt-ratings", JSON.stringify(state.ratings)); localStorage.setItem("igt-bookmarks", JSON.stringify(state.bookmarks)); localStorage.setItem("igt-reading-history", JSON.stringify(state.history)); }
+function ratingFor(novelId) { return Number(state.ratings[novelId] || 0); }
+function isNovelBookmarked(novelId) { return Boolean(state.bookmarks.novels[novelId]); }
+function chapterKey(novelId, chapter) { return `${novelId}:${Number(chapter)}`; }
+function isChapterBookmarked(novelId, chapter) { return Boolean(state.bookmarks.chapters[chapterKey(novelId, chapter)]); }
+function chapterHistory(novelId, chapter) { return state.history[chapterKey(novelId, chapter)] || null; }
+function toggleNovelBookmark(novelId) { state.bookmarks.novels[novelId] = !state.bookmarks.novels[novelId]; if (!state.bookmarks.novels[novelId]) delete state.bookmarks.novels[novelId]; saveLocalUiState(); renderNovels(); if (state.currentNovel?.novel_id === novelId) renderDetail(); }
+function toggleChapterBookmark(novelId, chapter) { const key = chapterKey(novelId, chapter); state.bookmarks.chapters[key] = !state.bookmarks.chapters[key]; if (!state.bookmarks.chapters[key]) delete state.bookmarks.chapters[key]; saveLocalUiState(); renderChapters(); renderChapterPicker(); if (Number(state.readerChapter) === Number(chapter)) updateReaderBookmarkState(); }
+function setRating(novelId, rating) { state.ratings[novelId] = rating; saveLocalUiState(); renderNovels(); if (state.currentNovel?.novel_id === novelId) renderDetail(); toast(`Rated ${rating} star${rating === 1 ? "" : "s"}.`); }
+function starMarkup(novelId, interactive = false) { const rating = ratingFor(novelId); return `<span class="stars ${interactive ? "interactive" : ""}">${[1,2,3,4,5].map((value) => `<button type="button" ${interactive ? `data-rating="${value}"` : "disabled"} class="${value <= rating ? "filled" : ""}" aria-label="${value} star">★</button>`).join("")}</span><span class="rating-value">${rating ? rating.toFixed(1) : "Not rated"}</span>`; }
+function readCountFor(novelId) { return Object.keys(state.history).filter((key) => key.startsWith(`${novelId}:`)).length; }
 function lastReaderKey(novelId) { return `igt-last-reader:${novelId}`; }
-function saveReaderMemory() { if (!state.currentNovel || !state.readerChapter) return; localStorage.setItem("igt-last-reader", JSON.stringify({ novel_id: state.currentNovel.novel_id, chapter: state.readerChapter, mode: state.readerTab })); localStorage.setItem(lastReaderKey(state.currentNovel.novel_id), JSON.stringify({ chapter: state.readerChapter, mode: state.readerTab })); }
+function saveReaderMemory() { if (!state.currentNovel || !state.readerChapter) return; const item = { novel_id: state.currentNovel.novel_id, chapter: state.readerChapter, mode: state.readerTab, updated_at: new Date().toISOString() }; localStorage.setItem("igt-last-reader", JSON.stringify(item)); localStorage.setItem(lastReaderKey(state.currentNovel.novel_id), JSON.stringify(item)); state.history[chapterKey(state.currentNovel.novel_id, state.readerChapter)] = item; saveLocalUiState(); }
 function loadReaderMemory(novelId = state.currentNovel?.novel_id) { try { return JSON.parse(localStorage.getItem(lastReaderKey(novelId)) || localStorage.getItem("igt-last-reader") || "{}"); } catch { return {}; } }
 function firstReadableChapter() { return state.chapters[0]?.chapter || null; }
 function targetReaderChapter() { const memory = loadReaderMemory(); return state.chapters.some((chapter) => Number(chapter.chapter) === Number(memory.chapter)) ? Number(memory.chapter) : firstReadableChapter(); }
+function novelMatchesBrowse(novel, filter) { const p = progressPercent(novel.counts); if (filter === "in-progress") return p > 0 && p < 100; if (filter === "completed") return p >= 100; if (filter === "has-reference") return novel.counts.reference_files > 0; if (filter === "missing-reference") return novel.counts.reference_files === 0; if (filter === "has-ai") return novel.counts.translated_chapters > 0; if (filter === "needs-translation") return novel.counts.remaining_chapters > 0; if (filter === "bookmarked") return isNovelBookmarked(novel.novel_id); if (filter === "recently-read") return readCountFor(novel.novel_id) > 0; return true; }
+function sortNovels(novels, sort) { return novels.sort((a, b) => sort === "name" ? a.title.localeCompare(b.title) : sort === "progress" ? progressPercent(b.counts) - progressPercent(a.counts) : sort === "rating" ? ratingFor(b.novel_id) - ratingFor(a.novel_id) : sort === "translated" ? b.counts.translated_chapters - a.counts.translated_chapters : sort === "remaining" ? a.counts.remaining_chapters - b.counts.remaining_chapters : String(b.updated_at).localeCompare(String(a.updated_at))); }
 function applyAppInfo() {
   const info = state.appInfo || {};
   const theme = info.theme || {};
@@ -346,18 +364,47 @@ async function loadAppInfo() { state.appInfo = await api("/api/app").catch(() =>
 async function loadNovels() { els.novelGrid.innerHTML = '<div class="empty-state">Loading library...</div>'; state.novels = (await api("/api/novels")).novels || []; renderNovels(); }
 function renderAdminState() { document.body.classList.toggle("is-admin", state.admin.authenticated); els.adminButton.textContent = state.admin.authenticated ? "Logout" : "Admin"; els.adminHelp.textContent = state.admin.enabled ? "Enter the admin password to unlock private controls." : "Admin login is disabled because ADMIN_PASSWORD is not set. Private tools are hidden."; if (!state.admin.authenticated && ["translatePanel", "backupsPanel", "settingsPanel"].some((id) => document.getElementById(id).classList.contains("active"))) switchTab("chapters"); }
 
+function renderLibrarySections() {
+  const novels = state.novels.slice();
+  const last = loadReaderMemory();
+  const featured = novels.find((novel) => novel.novel_id === last.novel_id) || novels[0];
+  const mostTranslated = sortNovels(novels.slice(), "translated").slice(0, 4);
+  const recentlyUpdated = sortNovels(novels.slice(), "updated").slice(0, 4);
+  const needsTranslation = novels.filter((novel) => novel.counts.remaining_chapters > 0).slice(0, 4);
+  const complete = novels.filter((novel) => progressPercent(novel.counts) >= 100).slice(0, 4);
+  const rated = sortNovels(novels.slice(), "rating").filter((novel) => ratingFor(novel.novel_id)).slice(0, 4);
+  const cards = (items) => items.length ? items.map((novel) => `<button class="mini-novel-card" type="button" data-novel="${esc(novel.novel_id)}"><strong>${esc(novel.title)}</strong><span>${progressPercent(novel.counts)}% translated · ${ratingFor(novel.novel_id) || "No"} rating</span></button>`).join("") : '<div class="empty-state compact-empty">Nothing here yet.</div>';
+  els.librarySections.innerHTML = `
+    <section class="featured-card" id="continue-section">${featured ? `${coverMarkup(featured, "featured-cover")}<div><p class="eyebrow">Featured / Continue Reading</p><h2>${esc(featured.title)}</h2><p>${esc(featured.summary || "Ready when you are.")}</p><div class="progress-track"><div class="progress-fill" style="width:${progressPercent(featured.counts)}%"></div></div><div class="hero-actions"><button class="primary-button" data-continue="${esc(featured.novel_id)}" type="button">Resume ${last.chapter ? `Chapter ${last.chapter}` : "Reading"}</button><button class="secondary-button" data-manage="${esc(featured.novel_id)}" type="button">Manage</button></div></div>` : '<div class="empty-state">Add a novel to begin.</div>'}</section>
+    <section class="discovery-grid" id="rankings-section">
+      <div class="discovery-panel"><p class="eyebrow">Most Translated</p>${cards(mostTranslated)}</div>
+      <div class="discovery-panel"><p class="eyebrow">Recently Updated</p>${cards(recentlyUpdated)}</div>
+      <div class="discovery-panel"><p class="eyebrow">Highest Rated</p>${cards(rated)}</div>
+      <div class="discovery-panel"><p class="eyebrow">Needs Translation</p>${cards(needsTranslation)}</div>
+      <div class="discovery-panel"><p class="eyebrow">Completed / Fully Translated</p>${cards(complete)}</div>
+      <div class="discovery-panel" id="updates-section"><p class="eyebrow">Recently Added Chapters</p>${cards(recentlyUpdated)}</div>
+    </section>`;
+  els.librarySections.querySelectorAll("[data-manage]").forEach((button) => button.onclick = () => openNovel(button.dataset.manage));
+  els.librarySections.querySelectorAll("[data-continue]").forEach((button) => button.onclick = async () => { await openNovel(button.dataset.continue, { initialTab: "reader" }); const memory = loadReaderMemory(button.dataset.continue); openReader(memory.chapter || firstReadableChapter(), memory.mode || state.readerTab); });
+  els.librarySections.querySelectorAll("[data-novel]").forEach((button) => button.onclick = () => openNovel(button.dataset.novel));
+}
+
 function renderNovels() {
   const q = els.novelSearch.value.toLowerCase();
   const sort = els.novelSort.value;
-  let novels = state.novels.filter((novel) => novel.title.toLowerCase().includes(q));
-  novels.sort((a, b) => sort === "name" ? a.title.localeCompare(b.title) : sort === "translated" ? b.counts.translated_chapters - a.counts.translated_chapters : String(b.updated_at).localeCompare(String(a.updated_at)));
+  const filter = els.browseFilter.value;
+  let novels = state.novels.filter((novel) => novelMatchesBrowse(novel, filter) && `${novel.title} ${novel.summary || ""} ${(novel.tags || []).join(" ")}`.toLowerCase().includes(q));
+  novels = sortNovels(novels, sort);
+  renderLibrarySections();
   els.novelGrid.innerHTML = novels.length ? "" : '<div class="empty-state">No novels found. Add a novel to begin.</div>';
   for (const novel of novels) {
     const card = document.createElement("article");
     card.className = "novel-card";
     const percent = progressPercent(novel.counts);
-    card.innerHTML = `${coverMarkup(novel, "library-cover")}<div class="novel-card-body"><div><h2>${esc(novel.title)}</h2><p class="card-meta">${esc(novel.summary || "Novel ready for reading.")}</p></div><div class="tag-row">${(novel.tags || []).slice(0, 3).map((tag) => `<span>${esc(tag)}</span>`).join("")}</div><div class="progress-track"><div class="progress-fill" style="width:${percent}%"></div></div><div class="card-stats"><div><span>Original</span><strong>${novel.counts.original_files}</strong></div><div><span>Reference</span><strong>${novel.counts.reference_files}</strong></div><div><span>AI</span><strong>${novel.counts.translated_chapters}</strong></div><div><span>Remaining</span><strong>${novel.counts.remaining_chapters}</strong></div></div><p class="card-meta">Updated ${date(novel.updated_at)} · ${percent}% translated</p><div class="card-actions"><button class="primary-button continue-card" type="button">Continue Reading</button><button class="secondary-button manage-card" type="button">Manage</button></div></div>`;
+    card.innerHTML = `${coverMarkup(novel, "library-cover")}<div class="novel-card-body"><div class="card-title-row"><h2>${esc(novel.title)}</h2><button class="bookmark-button card-bookmark ${isNovelBookmarked(novel.novel_id) ? "active" : ""}" type="button">${isNovelBookmarked(novel.novel_id) ? "Bookmarked" : "Bookmark"}</button></div><p class="card-meta">${esc(novel.summary || "Novel ready for reading.")}</p><div class="card-rating">${starMarkup(novel.novel_id)}</div><div class="tag-row">${(novel.tags || []).slice(0, 3).map((tag) => `<span>${esc(tag)}</span>`).join("")}</div><div class="progress-track"><div class="progress-fill" style="width:${percent}%"></div></div><div class="card-stats"><div><span>Original</span><strong>${novel.counts.original_files}</strong></div><div><span>Reference</span><strong>${novel.counts.reference_files}</strong></div><div><span>AI</span><strong>${novel.counts.translated_chapters}</strong></div><div><span>Remaining</span><strong>${novel.counts.remaining_chapters}</strong></div></div><p class="card-meta">Updated ${date(novel.updated_at)} · ${percent}% translated · ${readCountFor(novel.novel_id)} read</p><div class="card-actions"><button class="primary-button continue-card" type="button">Continue Reading</button><button class="secondary-button reader-card" type="button">Open Reader</button><button class="secondary-button manage-card" type="button">Manage</button></div></div>`;
+    card.querySelector(".card-bookmark").addEventListener("click", () => toggleNovelBookmark(novel.novel_id));
     card.querySelector(".manage-card").addEventListener("click", () => openNovel(novel.novel_id));
+    card.querySelector(".reader-card").addEventListener("click", async () => { await openNovel(novel.novel_id, { initialTab: "reader" }); openReader(firstReadableChapter(), state.readerTab); });
     card.querySelector(".continue-card").addEventListener("click", async () => { await openNovel(novel.novel_id, { initialTab: "reader" }); const memory = loadReaderMemory(novel.novel_id); openReader(memory.chapter || firstReadableChapter(), memory.mode || state.readerTab); });
     els.novelGrid.appendChild(card);
   }
@@ -383,18 +430,25 @@ async function openNovel(id, options = {}) {
 
 function renderDetail() {
   const n = state.currentNovel, c = n.counts;
+  const percent = progressPercent(c);
   els.novelTitle.textContent = n.title;
   els.novelSummary.textContent = n.summary || "No summary yet.";
+  els.novelBookmarkButton.textContent = isNovelBookmarked(n.novel_id) ? "Bookmarked" : "Bookmark";
+  els.novelBookmarkButton.classList.toggle("active", isNovelBookmarked(n.novel_id));
+  els.novelRating.innerHTML = starMarkup(n.novel_id, true);
+  els.novelRating.querySelectorAll("[data-rating]").forEach((button) => button.onclick = () => setRating(n.novel_id, Number(button.dataset.rating)));
   els.novelTags.innerHTML = (n.tags || []).length ? n.tags.map((tag) => `<span>${esc(tag)}</span>`).join("") : "<span>Novel</span>";
   els.metricStorage.textContent = n.storage_mode;
   els.metricOriginal.textContent = c.original_files;
   els.metricReference.textContent = c.reference_files;
   els.metricTranslated.textContent = c.translated_chapters;
   els.metricRemaining.textContent = c.remaining_chapters;
+  els.metricPercent.textContent = `${percent}%`;
+  els.metricUpdated.textContent = date(n.updated_at);
   els.metricBackup.textContent = date(n.last_backup_at);
   els.metricModel.textContent = n.current_model;
   els.metricStatus.textContent = status(n.status);
-  els.novelProgress.style.width = `${progressPercent(c)}%`;
+  els.novelProgress.style.width = `${percent}%`;
   els.backupSummary.textContent = `Original ${c.original_files} · Reference ${c.reference_files} · AI ${c.translated_chapters} · Remaining ${c.remaining_chapters} · Last backup ${date(n.last_backup_at)}`;
   els.dashboardCover.innerHTML = n.cover_url ? `<img src="${esc(n.cover_url)}" alt="">` : `<span>${esc(n.title.slice(0, 2).toUpperCase() || "IG")}</span>`;
   els.downloadOriginal.href = `/api/novels/${n.novel_id}/download/original`;
@@ -413,7 +467,7 @@ function renderDetail() {
 }
 
 function modeBadge(label, available) { return `<span class="badge ${available ? "translated" : "missing"}">${label}: ${available ? "available" : "missing"}</span>`; }
-function chapterMatchesFilter(chapter, filter) { if (filter === "has-original") return chapter.has_original; if (filter === "has-reference") return chapter.has_reference; if (filter === "has-ai") return chapter.has_translation; if (filter === "missing-ai") return !chapter.has_translation; if (filter === "missing-reference") return !chapter.has_reference; if (filter === "ready") return chapter.has_original && !chapter.has_translation; if (filter === "failed") return status(chapter.status) === "failed"; return true; }
+function chapterMatchesFilter(chapter, filter) { const novelId = state.currentNovel?.novel_id; if (filter === "has-original") return chapter.has_original; if (filter === "has-reference") return chapter.has_reference; if (filter === "has-ai") return chapter.has_translation; if (filter === "missing-ai") return !chapter.has_translation; if (filter === "missing-reference") return !chapter.has_reference; if (filter === "bookmarked") return isChapterBookmarked(novelId, chapter.chapter); if (filter === "recently-read") return Boolean(chapterHistory(novelId, chapter.chapter)); if (filter === "ready") return chapter.has_original && !chapter.has_translation; if (filter === "failed") return status(chapter.status) === "failed"; return true; }
 function filteredChapters() {
   const q = els.chapterSearch.value.toLowerCase();
   const f = els.chapterFilter.value;
@@ -423,6 +477,7 @@ function filteredChapters() {
     if (sort === "desc") return b.chapter - a.chapter;
     if (sort === "missing-ai") return Number(a.has_translation) - Number(b.has_translation) || a.chapter - b.chapter;
     if (sort === "translated") return Number(b.has_translation) - Number(a.has_translation) || a.chapter - b.chapter;
+    if (sort === "title") return String(a.title || "").localeCompare(String(b.title || "")) || a.chapter - b.chapter;
     return a.chapter - b.chapter;
   });
 }
@@ -438,17 +493,22 @@ function renderChapters() {
   els.nextPage.disabled = state.chapterPage >= totalPages;
   els.chapterList.innerHTML = chapters.length ? "" : '<div class="empty-state">No chapters match this view.</div>';
   for (const c of chapters) {
+    const key = chapterKey(state.currentNovel.novel_id, c.chapter);
+    const read = chapterHistory(state.currentNovel.novel_id, c.chapter);
     const row = document.createElement("article");
     row.className = "chapter-row";
-    row.innerHTML = `<div><div class="chapter-title">${String(c.chapter).padStart(4, "0")} - ${esc(c.title || "Untitled")}</div><div class="chapter-meta mode-badges">${modeBadge("Original", c.has_original)} ${modeBadge("Reference", c.has_reference)} ${modeBadge("AI", c.has_translation)} <span class="badge ${esc(status(c.status))}">${esc(status(c.status))}</span></div></div><div class="chapter-actions"></div>`;
-    const read = document.createElement("button");
-    read.className = "primary-button";
-    read.textContent = "Read";
-    read.addEventListener("click", () => openReader(c.chapter, state.readerTab));
+    row.innerHTML = `<div class="chapter-select"><input type="checkbox" ${state.selectedChapters.has(key) ? "checked" : ""} aria-label="Select chapter ${c.chapter}"><button class="bookmark-button chapter-bookmark ${isChapterBookmarked(state.currentNovel.novel_id, c.chapter) ? "active" : ""}" type="button">${isChapterBookmarked(state.currentNovel.novel_id, c.chapter) ? "★" : "☆"}</button></div><div><div class="chapter-title">${String(c.chapter).padStart(4, "0")} - ${esc(c.title || "Untitled")}</div><div class="chapter-meta mode-badges">${modeBadge("Original", c.has_original)} ${modeBadge("Reference", c.has_reference)} ${modeBadge("AI", c.has_translation)} <span class="badge ${esc(status(c.status))}">${esc(status(c.status))}</span> ${read ? `<span class="badge translated">Read ${date(read.updated_at)}</span>` : '<span class="badge missing">Unread</span>'}</div></div><div class="chapter-actions"></div>`;
+    row.querySelector("input").addEventListener("change", (event) => { if (event.target.checked) state.selectedChapters.add(key); else state.selectedChapters.delete(key); renderSelectedCount(); });
+    row.querySelector(".chapter-bookmark").addEventListener("click", () => toggleChapterBookmark(state.currentNovel.novel_id, c.chapter));
+    const readButton = document.createElement("button");
+    readButton.className = "primary-button";
+    readButton.textContent = "Open Reader";
+    readButton.addEventListener("click", () => openReader(c.chapter, state.readerTab));
     row.addEventListener("dblclick", () => openReader(c.chapter, state.readerTab));
-    row.querySelector(".chapter-actions").appendChild(read);
+    row.querySelector(".chapter-actions").appendChild(readButton);
     els.chapterList.appendChild(row);
   }
+  renderSelectedCount();
   renderChapterPicker();
 }
 
@@ -469,6 +529,7 @@ async function openReader(chapter, tab = state.readerTab, options = {}) {
   const sorted = state.chapters.slice().sort((a, b) => a.chapter - b.chapter);
   const position = sorted.findIndex((item) => Number(item.chapter) === Number(c.chapter)) + 1;
   els.readerProgress.textContent = `Chapter ${position || 1} of ${sorted.length} · ${progressPercent(state.currentNovel?.counts)}% AI translated · Mode: ${state.readerTab === "ai" ? "AI Translation" : state.readerTab === "reference" ? "Reference Translation" : "Original Story"}`;
+  updateReaderBookmarkState();
   readerTabs.forEach((button) => button.classList.toggle("active", button.dataset.readerTab === state.readerTab));
   renderChapterPicker();
   await loadReaderText();
@@ -500,8 +561,38 @@ function setReaderText(text) {
   els.readerContent.innerHTML = paragraphs.length ? paragraphs.map((part) => `<p>${esc(part)}</p>`).join("") : "";
 }
 
+function renderSelectedCount() { if (els.selectedChapterCount) els.selectedChapterCount.textContent = `${state.selectedChapters.size} selected`; }
+function updateReaderBookmarkState() {
+  const bookmarked = state.currentNovel && state.readerChapter ? isChapterBookmarked(state.currentNovel.novel_id, state.readerChapter) : false;
+  els.centerChapterPicker.classList.toggle("bookmarked", bookmarked);
+  els.readerBookmarkButton.classList.toggle("active", bookmarked);
+  els.readerBookmarkButton.textContent = bookmarked ? "Bookmarked" : "Bookmark";
+}
 function adjacent(offset) { const chapters = state.chapters.slice().sort((a, b) => a.chapter - b.chapter); const i = chapters.findIndex((c) => c.chapter === state.readerChapter); if (chapters[i + offset]) openReader(chapters[i + offset].chapter, state.readerTab); }
-function renderChapterPicker() { if (!els.chapterPickerPanel) return; const chapters = state.chapters.slice().sort((a, b) => a.chapter - b.chapter); els.chapterPickerPanel.innerHTML = chapters.map((c) => `<button class="chapter-picker-item ${c.chapter === state.readerChapter ? "active" : ""}" type="button" data-chapter="${c.chapter}">${String(c.chapter).padStart(4, "0")} ${esc(c.title || "")}</button>`).join(""); els.chapterPickerPanel.querySelectorAll("button").forEach((button) => button.addEventListener("click", () => { els.chapterPickerPanel.hidden = true; openReader(Number(button.dataset.chapter), state.readerTab); })); }
+function pickerChapters() {
+  const q = state.pickerSearch.toLowerCase();
+  const chapters = state.chapters.filter((chapter) => `${chapter.chapter} ${chapter.title}`.toLowerCase().includes(q));
+  chapters.sort((a, b) => state.pickerNewest ? b.chapter - a.chapter : a.chapter - b.chapter);
+  return chapters;
+}
+function renderChapterPicker() {
+  if (!els.chapterPickerPanel || !state.currentNovel) return;
+  const chapters = pickerChapters();
+  const totalPages = Math.max(1, Math.ceil(chapters.length / state.pickerPageSize));
+  state.pickerPage = Math.min(Math.max(1, state.pickerPage), totalPages);
+  const start = (state.pickerPage - 1) * state.pickerPageSize;
+  const page = chapters.slice(start, start + state.pickerPageSize);
+  els.chapterPickerPanel.innerHTML = `<div class="picker-head"><div><p class="eyebrow">Chapter selector</p><strong>${chapters.length} chapters</strong></div><button class="icon-button" data-picker-close type="button">x</button></div><div class="picker-tools"><input data-picker-search type="search" placeholder="Search chapter" value="${esc(state.pickerSearch)}"><select data-picker-size><option value="25">25</option><option value="50">50</option><option value="100">100</option></select><button class="secondary-button" data-picker-sort type="button">${state.pickerNewest ? "Newest first" : "Oldest first"}</button><button class="secondary-button" data-picker-bookmarks type="button">Bookmarked</button></div><div class="picker-list">${page.length ? page.map((c) => `<button class="chapter-picker-item ${c.chapter === state.readerChapter ? "active" : ""}" type="button" data-chapter="${c.chapter}"><span>${isChapterBookmarked(state.currentNovel.novel_id, c.chapter) ? "★" : "☆"} ${String(c.chapter).padStart(4, "0")} ${esc(c.title || "")}</span><small>${c.has_translation ? "AI" : "Missing AI"}${chapterHistory(state.currentNovel.novel_id, c.chapter) ? " · Read" : ""}</small></button>`).join("") : '<div class="empty-state compact-empty">No chapters match.</div>'}</div><div class="pager"><button class="secondary-button" data-picker-prev type="button">Previous</button><span>Page ${state.pickerPage} of ${totalPages}</span><button class="secondary-button" data-picker-next type="button">Next</button></div>`;
+  els.chapterPickerPanel.querySelector("[data-picker-size]").value = String(state.pickerPageSize);
+  els.chapterPickerPanel.querySelector("[data-picker-close]").onclick = () => { els.chapterPickerPanel.hidden = true; };
+  els.chapterPickerPanel.querySelector("[data-picker-search]").oninput = (event) => { state.pickerSearch = event.target.value; state.pickerPage = 1; clearTimeout(state.searchTimer); state.searchTimer = setTimeout(renderChapterPicker, 120); };
+  els.chapterPickerPanel.querySelector("[data-picker-size]").onchange = (event) => { state.pickerPageSize = Number(event.target.value || 50); state.pickerPage = 1; renderChapterPicker(); };
+  els.chapterPickerPanel.querySelector("[data-picker-sort]").onclick = () => { state.pickerNewest = !state.pickerNewest; state.pickerPage = 1; renderChapterPicker(); };
+  els.chapterPickerPanel.querySelector("[data-picker-bookmarks]").onclick = () => { state.pickerSearch = ""; const first = state.chapters.find((c) => isChapterBookmarked(state.currentNovel.novel_id, c.chapter)); if (first) openReader(first.chapter, state.readerTab); else toast("No bookmarked chapters yet.", true); };
+  els.chapterPickerPanel.querySelector("[data-picker-prev]").onclick = () => { state.pickerPage -= 1; renderChapterPicker(); };
+  els.chapterPickerPanel.querySelector("[data-picker-next]").onclick = () => { state.pickerPage += 1; renderChapterPicker(); };
+  els.chapterPickerPanel.querySelectorAll("[data-chapter]").forEach((button) => button.addEventListener("click", () => { els.chapterPickerPanel.hidden = true; openReader(Number(button.dataset.chapter), state.readerTab); }));
+}
 
 async function upload(kind) { const input = kind === "original" ? els.originalFiles : els.referenceFiles; if (!input.files.length) return toast("Choose files first.", true); const form = new FormData(); for (const file of input.files) form.append(kind, file); await api(`/api/novels/${state.currentNovel.novel_id}/upload/${kind}`, { method: "POST", body: form }); input.value = ""; await openNovel(state.currentNovel.novel_id); switchTab("translate"); toast(kind === "original" ? "Original Story uploaded." : "Reference Translation uploaded."); }
 function settings(startNow = false) { return { model: els.model.value, max_total_budget: els.maxTotalBudget.value, max_cost_per_chapter: els.maxCostPerChapter.value, retry_failed_chapters: Number(els.retryFailedChapters.value || 0), batch_size: Number(els.batchSize.value || 25), stop_when_budget_reached: els.stopWhenBudgetReached.checked, show_estimate_before_starting: true, test_chapter_only: false, start_now: startNow }; }
@@ -535,11 +626,15 @@ async function logout() { await api("/api/admin/logout", { method: "POST" }); aw
 function debounceChapters() { clearTimeout(state.searchTimer); state.searchTimer = setTimeout(() => { state.chapterPage = 1; renderChapters(); }, 180); }
 async function openCurrentReader() { if (!state.currentNovel) { const last = loadReaderMemory(); if (last.novel_id) return openNovel(last.novel_id, { initialTab: "reader" }).then(() => openReader(last.chapter || firstReadableChapter(), last.mode || state.readerTab)); return toast("Open a novel first.", true); } return openReader(targetReaderChapter(), loadReaderMemory().mode || state.readerTab); }
 async function refreshCurrentNovel(tab = activePanelName()) { if (!state.currentNovel) return; await openNovel(state.currentNovel.novel_id, { initialTab: tab, skipSave: true, skipHistory: true }); toast("Novel data refreshed."); }
+function scrollLibrarySection(id) { showLibrary(); requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" })); }
+function cycleTheme() { const current = localStorage.getItem("igt-theme") || "dark"; const next = current === "dark" ? "light" : current === "light" ? "system" : "dark"; if (next === "system") { document.body.classList.toggle("dark", matchMedia("(prefers-color-scheme: dark)").matches); localStorage.setItem("igt-theme", "system"); toast("Theme set to system."); } else { setTheme(next); toast(`Theme set to ${next}.`); } }
 function bind() {
   els.homeButton.onclick = () => showLibrary();
   els.backToLibrary.onclick = () => showLibrary();
   els.supportButton.onclick = () => { els.supportPanel.hidden = !els.supportPanel.hidden; };
   els.novelSearch.oninput = renderNovels;
+  els.globalSearch.oninput = () => { if (state.currentNovel && els.detailView.classList.contains("active")) { els.chapterSearch.value = els.globalSearch.value; debounceChapters(); switchTab("chapters"); } else { els.novelSearch.value = els.globalSearch.value; renderNovels(); } };
+  els.browseFilter.onchange = renderNovels;
   els.novelSort.onchange = renderNovels;
   els.chapterSearch.oninput = debounceChapters;
   els.chapterFilter.onchange = () => { state.chapterPage = 1; renderChapters(); };
@@ -548,10 +643,16 @@ function bind() {
   els.chapterJump.onchange = () => { const chapter = Number(els.chapterJump.value); const index = filteredChapters().findIndex((c) => c.chapter === chapter); if (index >= 0) { state.chapterPage = Math.floor(index / state.pageSize) + 1; renderChapters(); } };
   els.prevPage.onclick = () => { state.chapterPage -= 1; renderChapters(); };
   els.nextPage.onclick = () => { state.chapterPage += 1; renderChapters(); };
-  els.themeToggle.onclick = () => setTheme(document.body.classList.contains("dark") ? "light" : "dark");
+  els.selectMissingAi.onclick = () => { state.selectedChapters = new Set(state.chapters.filter((c) => !c.has_translation).map((c) => chapterKey(state.currentNovel.novel_id, c.chapter))); renderChapters(); };
+  els.selectCurrentPage.onclick = () => { const start = (state.chapterPage - 1) * state.pageSize; state.filteredChapters.slice(start, start + state.pageSize).forEach((c) => state.selectedChapters.add(chapterKey(state.currentNovel.novel_id, c.chapter))); renderChapters(); };
+  els.clearSelectedChapters.onclick = () => { state.selectedChapters.clear(); renderChapters(); };
+  els.themeToggle.onclick = cycleTheme;
   els.mainNav.forEach((button) => button.onclick = () => {
     const target = button.dataset.mainNav;
     if (target === "library") return showLibrary();
+    if (target === "browse") return scrollLibrarySection("libraryView");
+    if (target === "rankings") return scrollLibrarySection("rankings-section");
+    if (target === "updates") return scrollLibrarySection("updates-section");
     if (!state.currentNovel) return toast("Open a novel first.", true);
     if (target === "reader") return openCurrentReader().catch((err) => toast(err.message, true));
     switchTab(target);
@@ -559,6 +660,7 @@ function bind() {
   els.quickReaderButton.onclick = () => openCurrentReader().catch((err) => toast(err.message, true));
   els.quickTranslateButton.onclick = () => state.currentNovel ? switchTab("translate") : toast("Open a novel first.", true);
   els.continueReadingButton.onclick = () => openCurrentReader().catch((err) => toast(err.message, true));
+  els.novelBookmarkButton.onclick = () => state.currentNovel && toggleNovelBookmark(state.currentNovel.novel_id);
   els.overviewReaderButton.onclick = () => openCurrentReader().catch((err) => toast(err.message, true));
   els.openChaptersButton.onclick = () => switchTab("chapters");
   els.refreshNovelButton.onclick = () => refreshCurrentNovel(activePanelName()).catch((err) => toast(err.message, true));
@@ -572,6 +674,11 @@ function bind() {
   els.nextChapter.onclick = () => adjacent(1);
   els.prevChapterBottom.onclick = () => adjacent(-1);
   els.nextChapterBottom.onclick = () => adjacent(1);
+  els.chapterPickerBottom.onclick = () => { renderChapterPicker(); els.chapterPickerPanel.hidden = false; };
+  els.centerChapterPicker.onclick = () => { renderChapterPicker(); els.chapterPickerPanel.hidden = false; };
+  els.centerChapterPicker.oncontextmenu = (event) => { event.preventDefault(); if (state.currentNovel && state.readerChapter) toggleChapterBookmark(state.currentNovel.novel_id, state.readerChapter); };
+  els.readerBookmarkButton.onclick = () => { if (state.currentNovel && state.readerChapter) toggleChapterBookmark(state.currentNovel.novel_id, state.readerChapter); };
+  els.backToTopButton.onclick = () => els.readerShell.scrollIntoView({ behavior: "smooth", block: "start" });
   els.chapterPickerButton.onclick = () => { renderChapterPicker(); els.chapterPickerPanel.hidden = !els.chapterPickerPanel.hidden; };
   els.fullscreenReader.onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); else if (els.readerShell.requestFullscreen) els.readerShell.requestFullscreen(); };
   els.fontDown.onclick = () => { state.readerSize = Math.max(15, state.readerSize - 1); document.documentElement.style.setProperty("--reader-size", `${state.readerSize}px`); };
@@ -602,10 +709,24 @@ function bind() {
   els.addNovelDialog.addEventListener("click", (event) => { if (event.target === els.addNovelDialog) closeAddNovelDialog(); });
   els.addNovelDialog.addEventListener("close", () => els.addNovelForm.reset());
   els.addNovelForm.onsubmit = async (event) => { event.preventDefault(); if (!els.addNovelForm.reportValidity()) return; const title = els.newNovelTitle.value.trim(); const novel = await api("/api/novels", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title }) }); closeAddNovelDialog(); await loadNovels(); openNovel(novel.novel_id); };
+  document.querySelectorAll("[data-footer-nav]").forEach((button) => button.onclick = () => {
+    const target = button.dataset.footerNav;
+    if (target === "rankings") return scrollLibrarySection("rankings-section");
+    if (target === "updates") return scrollLibrarySection("updates-section");
+    if (target === "reader") return openCurrentReader().catch((err) => toast(err.message, true));
+    if (target === "backups" || target === "settings") return state.currentNovel ? switchTab(target) : toast("Open a novel first.", true);
+    showLibrary();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.target && ["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName)) return;
+    if (event.key === "ArrowLeft" && els.readerPanel.classList.contains("active")) adjacent(-1);
+    if (event.key === "ArrowRight" && els.readerPanel.classList.contains("active")) adjacent(1);
+    if (event.key === "Escape") { els.chapterPickerPanel.hidden = true; els.readerSettingsDrawer.hidden = true; }
+  });
   window.addEventListener("popstate", handleRouteChange);
   window.addEventListener("hashchange", handleRouteChange);
 }
 
-function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=9").then((registration) => registration.update()).catch(() => {}); }
-async function init() { registerServiceWorker(); if (!window.location.hash) pushRoute(libraryRoute(), true); setTheme(localStorage.getItem("igt-theme") || "dark"); bind(); loadReaderPrefs(); renderWorkspaces(); await loadAppInfo(); await loadAdminStatus(); try { await api("/api/health"); els.apiStatus.textContent = "Online"; els.apiStatus.classList.add("ok"); } catch { els.apiStatus.textContent = "Offline"; } await loadNovels(); await applyRouteFromLocation(); }
+function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=10").then((registration) => registration.update()).catch(() => {}); }
+async function init() { registerServiceWorker(); if (!window.location.hash) pushRoute(libraryRoute(), true); const savedTheme = localStorage.getItem("igt-theme") || "dark"; if (savedTheme === "system") document.body.classList.toggle("dark", matchMedia("(prefers-color-scheme: dark)").matches); else setTheme(savedTheme); loadLocalUiState(); bind(); loadReaderPrefs(); renderWorkspaces(); await loadAppInfo(); await loadAdminStatus(); try { await api("/api/health"); els.apiStatus.textContent = "Online"; els.apiStatus.classList.add("ok"); } catch { els.apiStatus.textContent = "Offline"; } await loadNovels(); await applyRouteFromLocation(); }
 init().catch((error) => toast(error.message, true));
