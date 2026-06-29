@@ -17,6 +17,19 @@ from modules.chapter import chapter_from_filename, parse_chapter, read_text
 
 DEFAULT_NOVEL_ID = "i-am-god"
 DEFAULT_NOVEL_TITLE = "I Am God"
+DEFAULT_APP_SETTINGS = {
+    "name": "IAmGodTranslator",
+    "subtitle": "Novel library",
+    "theme": {
+        "main_accent": "#68d1b4",
+        "highlight": "#d6bf7a",
+        "logo_accent": "#68d1b4",
+        "card_background": "#111816",
+        "page_background": "#080d0c",
+        "reader_background": "#0f1513",
+        "reader_text": "#efe8d5",
+    },
+}
 
 
 def slugify(value: str) -> str:
@@ -212,13 +225,49 @@ class NovelManager:
         target = icon_dir / f"app-icon{suffix}"
         with open(target, "wb") as output:
             output.write(await upload.read())
-        return {"icon_url": f"/api/app-icon?v={int(target.stat().st_mtime)}"}
+        return self.app_settings()
 
     def app_icon_path(self) -> Path | None:
         for path in (self.data_dir / "app").glob("app-icon.*"):
             if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
                 return path
         return None
+
+    def app_settings_path(self) -> Path:
+        return self.data_dir / "app" / "settings.json"
+
+    def app_settings(self) -> dict[str, Any]:
+        settings = json.loads(json.dumps(DEFAULT_APP_SETTINGS))
+        path = self.app_settings_path()
+        if path.exists():
+            try:
+                saved = self.read_json(path)
+                settings.update({key: saved[key] for key in ("name", "subtitle") if isinstance(saved.get(key), str)})
+                if isinstance(saved.get("theme"), dict):
+                    settings["theme"].update({key: str(value) for key, value in saved["theme"].items() if key in settings["theme"]})
+            except (OSError, json.JSONDecodeError):
+                pass
+        icon = self.app_icon_path()
+        settings["icon_url"] = f"/api/app-icon?v={int(icon.stat().st_mtime)}" if icon else None
+        return settings
+
+    def update_app_settings(self, updates: dict[str, Any]) -> dict[str, Any]:
+        settings = self.app_settings()
+        for key in ("name", "subtitle"):
+            if isinstance(updates.get(key), str):
+                settings[key] = updates[key].strip() or DEFAULT_APP_SETTINGS[key]
+        if isinstance(updates.get("theme"), dict):
+            for key in DEFAULT_APP_SETTINGS["theme"]:
+                if isinstance(updates["theme"].get(key), str) and updates["theme"][key].strip():
+                    settings["theme"][key] = updates["theme"][key].strip()
+        self.write_json(self.app_settings_path(), {"name": settings["name"], "subtitle": settings["subtitle"], "theme": settings["theme"]})
+        return self.app_settings()
+
+    def reset_app_settings(self) -> dict[str, Any]:
+        path = self.app_settings_path()
+        if path.exists():
+            path.unlink()
+        return self.app_settings()
 
     def create_batch(self, novel_id: str, settings: dict[str, Any]) -> dict[str, Any]:
         batch_size = max(1, min(200, int(settings.get("batch_size") or 25)))

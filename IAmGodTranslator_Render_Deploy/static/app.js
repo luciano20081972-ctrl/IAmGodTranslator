@@ -5,7 +5,7 @@ app.innerHTML = `
   <header class="topbar">
     <button class="brand" id="homeButton" type="button">
       <span class="brand-mark" id="brandMark">IG</span>
-      <span><strong>IAmGodTranslator</strong><small>Novel library</small></span>
+      <span><strong id="brandName">IAmGodTranslator</strong><small id="brandSubtitle">Novel library</small></span>
     </button>
     <nav class="header-links">
       <button class="link-button" id="supportButton" type="button">Thanks</button>
@@ -54,10 +54,11 @@ app.innerHTML = `
 
       <section class="tab-panel" id="readerPanel">
         <div class="reader-shell" id="readerShell">
-          <div class="reader-toolbar"><button class="secondary-button" id="readerBack" type="button">Back to Novel</button><button class="secondary-button" id="readerLibrary" type="button">Back to Library</button><div class="reader-controls"><button class="secondary-button" id="chapterPickerButton" type="button">Chapters</button><button class="icon-button" id="fontDown" type="button">A-</button><button class="icon-button" id="fontUp" type="button">A+</button><button class="icon-button" id="widthToggle" type="button">W</button><select id="readerTheme"><option value="paper">Paper</option><option value="dark">Dark</option><option value="sepia">Sepia</option></select><button class="icon-button" id="fullscreenReader" type="button">F</button></div></div>
+          <div class="reader-toolbar"><button class="secondary-button" id="readerBack" type="button">Back to Novel</button><button class="secondary-button" id="readerLibrary" type="button">Back to Library</button><div class="reader-controls"><button class="secondary-button" id="chapterPickerButton" type="button">Chapters</button><button class="icon-button" id="fontDown" type="button">A-</button><button class="icon-button" id="fontUp" type="button">A+</button><button class="icon-button" id="widthToggle" type="button">W</button><select id="readerTheme"><option value="paper">Paper</option><option value="dark">Dark</option><option value="sepia">Sepia</option></select><button class="icon-button" id="readerSettingsButton" type="button">S</button><button class="icon-button" id="fullscreenReader" type="button">F</button></div></div>
           <div class="reader-nav"><button class="secondary-button" id="prevChapter" type="button">Previous</button><div><p class="eyebrow" id="readerChapterNumber">Chapter</p><h2 id="readerChapterTitle">Open a chapter</h2></div><button class="secondary-button" id="nextChapter" type="button">Next</button></div>
           <div class="reader-tabs"><button class="reader-tab active" data-reader-tab="original" type="button">Original Story</button><button class="reader-tab" data-reader-tab="reference" type="button">Reference Translation</button><button class="reader-tab" data-reader-tab="ai" type="button">AI Translation</button></div>
           <aside class="chapter-picker" id="chapterPickerPanel" hidden></aside>
+          <aside class="reader-settings-drawer" id="readerSettingsDrawer" hidden><div class="drawer-head"><h2>Reader Settings</h2><button class="icon-button" id="closeReaderSettings" type="button">x</button></div><label><span>Font family</span><select id="readerFontFamily"><option value="default">Default</option><option value="dyslexic">Dyslexic fallback</option><option value="system">Roboto/system</option><option value="serif">Lora/serif</option></select></label><label><span>Font size</span><input id="readerFontSize" type="range" min="14" max="34" value="19"></label><label><span>Line height</span><input id="readerLineHeight" type="range" min="1.2" max="2" step="0.05" value="1.9"></label><label><span>Paragraph spacing</span><input id="readerParagraphSpacing" type="range" min="0" max="32" value="14"></label><label><span>Page width</span><select id="readerPageWidth"><option value="680px">Narrow</option><option value="820px">Normal</option><option value="1040px">Wide</option></select></label><label><span>Text alignment</span><select id="readerTextAlign"><option value="left">Left</option><option value="center">Center</option><option value="justify">Justify</option></select></label><label><span>Reader background</span><select id="readerBackground"><option value="#0f1513">Dark</option><option value="#202426">Soft gray</option><option value="#211b13">Sepia brown</option><option value="#111d14">Dark olive</option><option value="#0d1728">Dark navy</option></select></label><label><span>Highlight color</span><input id="readerAccent" type="color" value="#68d1b4"></label><label class="check"><input id="readerAllowCopy" type="checkbox" checked> Allow copy/text selection</label></aside>
           <article class="reader-content" id="readerContent">Select a chapter from the chapter library.</article>
           <div class="reader-bottom-nav"><button class="secondary-button" id="prevChapterBottom" type="button">Previous Chapter</button><button class="secondary-button" id="nextChapterBottom" type="button">Next Chapter</button></div>
         </div>
@@ -80,6 +81,7 @@ app.innerHTML = `
       <section class="tab-panel admin-only" id="settingsPanel">
         <form class="panel settings-grid" id="novelSettingsForm"><h2>Novel Metadata</h2><label><span>Novel title</span><input id="settingsTitle" type="text"></label><label><span>Source language</span><input id="sourceLanguage" type="text" value="Chinese"></label><label><span>Target language</span><input id="targetLanguage" type="text" value="English"></label><label><span>Default model</span><input id="defaultModel" type="text" value="gpt-4o-mini"></label><label><span>Tags, comma separated</span><input id="settingsTags" type="text"></label><label class="wide-field"><span>Summary</span><textarea id="settingsSummary" rows="4"></textarea></label><label><span>App version</span><input value="3.1 public reader admin UI" disabled></label><label><span>Storage mode</span><input id="storageModeDisplay" type="text" disabled></label><label><span>DATA_DIR</span><input id="dataDirDisplay" type="text" disabled></label><button class="primary-button" type="submit">Save Settings</button></form>
         <form class="panel settings-grid" id="appIconForm"><h2>Upload App / Library Icon</h2><input id="appIconFile" name="icon" type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" required><button class="secondary-button" type="submit">Upload App / Library Icon</button></form>
+        <form class="panel settings-grid" id="appAppearanceForm"><h2>App Appearance</h2><label><span>App display name</span><input id="appDisplayName" type="text"></label><label><span>App subtitle</span><input id="appSubtitleInput" type="text"></label><label><span>Main accent</span><input id="themeMainAccent" type="color"></label><label><span>Button/highlight</span><input id="themeHighlight" type="color"></label><label><span>Header/logo accent</span><input id="themeLogoAccent" type="color"></label><label><span>Card background</span><input id="themeCardBackground" type="color"></label><label><span>Page background</span><input id="themePageBackground" type="color"></label><label><span>Reader background default</span><input id="themeReaderBackground" type="color"></label><label><span>Reader text default</span><input id="themeReaderText" type="color"></label><div class="actions"><button class="primary-button" type="submit">Save Appearance</button><button class="secondary-button" id="resetThemeButton" type="button">Reset Theme</button></div></form>
       </section>
     </section>
   </main>
@@ -90,17 +92,17 @@ app.innerHTML = `
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
-const state = { novels: [], appInfo: {}, admin: { enabled: false, authenticated: false }, workspaces: [{ id: "library", type: "library", title: "Library" }], activeWorkspaceId: "library", currentNovel: null, chapters: [], filteredChapters: [], readerChapter: null, readerTab: "original", currentJob: null, pollTimer: null, readerSize: 18, readerWide: false, chapterPage: 1, pageSize: 50, searchTimer: null };
+const state = { novels: [], appInfo: {}, admin: { enabled: false, authenticated: false }, workspaces: [{ id: "library", type: "library", title: "Library" }], activeWorkspaceId: "library", currentNovel: null, chapters: [], filteredChapters: [], readerChapter: null, readerTab: "original", currentJob: null, pollTimer: null, readerSize: 18, readerWide: false, chapterPage: 1, pageSize: 50, searchTimer: null, readerPrefs: {} };
 
 const els = {
-  apiStatus: $("#apiStatus"), homeButton: $("#homeButton"), themeToggle: $("#themeToggle"), brandMark: $("#brandMark"), libraryIcon: $("#libraryIcon"), workspaceTabs: $("#workspaceTabs"), adminButton: $("#adminButton"), adminDialog: $("#adminDialog"), adminForm: $("#adminForm"), adminPassword: $("#adminPassword"), adminHelp: $("#adminHelp"), supportButton: $("#supportButton"), supportPanel: $("#supportPanel"),
+  apiStatus: $("#apiStatus"), homeButton: $("#homeButton"), themeToggle: $("#themeToggle"), brandMark: $("#brandMark"), brandName: $("#brandName"), brandSubtitle: $("#brandSubtitle"), libraryIcon: $("#libraryIcon"), workspaceTabs: $("#workspaceTabs"), adminButton: $("#adminButton"), adminDialog: $("#adminDialog"), adminForm: $("#adminForm"), adminPassword: $("#adminPassword"), adminHelp: $("#adminHelp"), supportButton: $("#supportButton"), supportPanel: $("#supportPanel"),
   libraryView: $("#libraryView"), detailView: $("#detailView"), novelGrid: $("#novelGrid"), novelSearch: $("#novelSearch"), novelSort: $("#novelSort"), addNovelButton: $("#addNovelButton"), addNovelDialog: $("#addNovelDialog"), addNovelForm: $("#addNovelForm"), cancelAddNovel: $("#cancelAddNovel"), newNovelTitle: $("#newNovelTitle"),
   backToLibrary: $("#backToLibrary"), dashboardCover: $("#dashboardCover"), novelTitle: $("#novelTitle"), novelSummary: $("#novelSummary"), novelTags: $("#novelTags"), metricStorage: $("#metricStorage"), metricOriginal: $("#metricOriginal"), metricReference: $("#metricReference"), metricTranslated: $("#metricTranslated"), metricRemaining: $("#metricRemaining"), metricBackup: $("#metricBackup"), metricModel: $("#metricModel"), metricStatus: $("#metricStatus"),
   chapterSearch: $("#chapterSearch"), chapterFilter: $("#chapterFilter"), chapterJump: $("#chapterJump"), chapterList: $("#chapterList"), prevPage: $("#prevPage"), nextPage: $("#nextPage"), pageInfo: $("#pageInfo"),
-  readerBack: $("#readerBack"), readerLibrary: $("#readerLibrary"), readerShell: $("#readerShell"), prevChapter: $("#prevChapter"), nextChapter: $("#nextChapter"), prevChapterBottom: $("#prevChapterBottom"), nextChapterBottom: $("#nextChapterBottom"), chapterPickerButton: $("#chapterPickerButton"), chapterPickerPanel: $("#chapterPickerPanel"), fullscreenReader: $("#fullscreenReader"), readerChapterNumber: $("#readerChapterNumber"), readerChapterTitle: $("#readerChapterTitle"), readerContent: $("#readerContent"), readerTheme: $("#readerTheme"), fontDown: $("#fontDown"), fontUp: $("#fontUp"), widthToggle: $("#widthToggle"),
+  readerBack: $("#readerBack"), readerLibrary: $("#readerLibrary"), readerShell: $("#readerShell"), prevChapter: $("#prevChapter"), nextChapter: $("#nextChapter"), prevChapterBottom: $("#prevChapterBottom"), nextChapterBottom: $("#nextChapterBottom"), chapterPickerButton: $("#chapterPickerButton"), chapterPickerPanel: $("#chapterPickerPanel"), readerSettingsButton: $("#readerSettingsButton"), readerSettingsDrawer: $("#readerSettingsDrawer"), closeReaderSettings: $("#closeReaderSettings"), fullscreenReader: $("#fullscreenReader"), readerChapterNumber: $("#readerChapterNumber"), readerChapterTitle: $("#readerChapterTitle"), readerContent: $("#readerContent"), readerTheme: $("#readerTheme"), readerFontFamily: $("#readerFontFamily"), readerFontSize: $("#readerFontSize"), readerLineHeight: $("#readerLineHeight"), readerParagraphSpacing: $("#readerParagraphSpacing"), readerPageWidth: $("#readerPageWidth"), readerTextAlign: $("#readerTextAlign"), readerBackground: $("#readerBackground"), readerAccent: $("#readerAccent"), readerAllowCopy: $("#readerAllowCopy"), fontDown: $("#fontDown"), fontUp: $("#fontUp"), widthToggle: $("#widthToggle"),
   originalUploadForm: $("#originalUploadForm"), referenceUploadForm: $("#referenceUploadForm"), originalFiles: $("#originalFiles"), referenceFiles: $("#referenceFiles"), model: $("#model"), maxTotalBudget: $("#maxTotalBudget"), maxCostPerChapter: $("#maxCostPerChapter"), retryFailedChapters: $("#retryFailedChapters"), batchSize: $("#batchSize"), stopWhenBudgetReached: $("#stopWhenBudgetReached"), estimateBatch: $("#estimateBatch"), startBatch: $("#startBatch"), estimateBox: $("#estimateBox"), jobProgress: $("#jobProgress"), queueList: $("#queueList"),
   importOriginalForm: $("#importOriginalForm"), importOriginalFile: $("#importOriginalFile"), importReferenceForm: $("#importReferenceForm"), importReferenceFile: $("#importReferenceFile"), importAiForm: $("#importAiForm"), importAiFile: $("#importAiFile"), coverUploadForm: $("#coverUploadForm"), coverFile: $("#coverFile"), downloadOriginal: $("#downloadOriginal"), downloadReference: $("#downloadReference"), downloadEnglish: $("#downloadEnglish"), downloadPrompts: $("#downloadPrompts"), downloadBackup: $("#downloadBackup"), restoreNovelForm: $("#restoreNovelForm"), restoreFile: $("#restoreFile"),
-  novelSettingsForm: $("#novelSettingsForm"), settingsTitle: $("#settingsTitle"), settingsSummary: $("#settingsSummary"), settingsTags: $("#settingsTags"), sourceLanguage: $("#sourceLanguage"), targetLanguage: $("#targetLanguage"), defaultModel: $("#defaultModel"), storageModeDisplay: $("#storageModeDisplay"), dataDirDisplay: $("#dataDirDisplay"), appIconForm: $("#appIconForm"), appIconFile: $("#appIconFile"), toast: $("#toast")
+  novelSettingsForm: $("#novelSettingsForm"), settingsTitle: $("#settingsTitle"), settingsSummary: $("#settingsSummary"), settingsTags: $("#settingsTags"), sourceLanguage: $("#sourceLanguage"), targetLanguage: $("#targetLanguage"), defaultModel: $("#defaultModel"), storageModeDisplay: $("#storageModeDisplay"), dataDirDisplay: $("#dataDirDisplay"), appIconForm: $("#appIconForm"), appIconFile: $("#appIconFile"), appAppearanceForm: $("#appAppearanceForm"), appDisplayName: $("#appDisplayName"), appSubtitleInput: $("#appSubtitleInput"), themeMainAccent: $("#themeMainAccent"), themeHighlight: $("#themeHighlight"), themeLogoAccent: $("#themeLogoAccent"), themeCardBackground: $("#themeCardBackground"), themePageBackground: $("#themePageBackground"), themeReaderBackground: $("#themeReaderBackground"), themeReaderText: $("#themeReaderText"), resetThemeButton: $("#resetThemeButton"), toast: $("#toast")
 };
 
 const tabs = $$(".tab");
@@ -119,6 +121,90 @@ function showView(name) { els.libraryView.classList.toggle("active", name === "l
 function switchTab(tab) { if (!state.admin.authenticated && ["translate", "backups", "settings"].includes(tab)) { toast("Admin login required.", true); return; } tabs.forEach((button) => button.classList.toggle("active", button.dataset.tab === tab)); panels.forEach((panel) => panel.classList.toggle("active", panel.id === `${tab}Panel`)); }
 function coverMarkup(novel, className = "cover") { return novel.cover_url ? `<img class="${className}" src="${esc(novel.cover_url)}" alt="">` : `<div class="${className} placeholder-cover"><span>${esc(novel.title.slice(0, 2).toUpperCase() || "IG")}</span></div>`; }
 function renderIcon(container, url) { container.innerHTML = url ? `<img src="${esc(url)}" alt="">` : "<span>IG</span>"; }
+function applyAppInfo() {
+  const info = state.appInfo || {};
+  const theme = info.theme || {};
+  document.documentElement.style.setProperty("--accent", theme.main_accent || "#68d1b4");
+  document.documentElement.style.setProperty("--accent-2", theme.highlight || "#d6bf7a");
+  document.documentElement.style.setProperty("--logo-accent", theme.logo_accent || theme.main_accent || "#68d1b4");
+  document.documentElement.style.setProperty("--surface", theme.card_background || "#111816");
+  document.documentElement.style.setProperty("--bg", theme.page_background || "#080d0c");
+  document.documentElement.style.setProperty("--reader-bg", theme.reader_background || "#0f1513");
+  document.documentElement.style.setProperty("--reader-text", theme.reader_text || "#efe8d5");
+  els.brandName.textContent = info.name || "IAmGodTranslator";
+  els.brandSubtitle.textContent = info.subtitle || "Novel library";
+  renderIcon(els.brandMark, info.icon_url);
+  renderIcon(els.libraryIcon, info.icon_url);
+  if (els.appDisplayName) {
+    els.appDisplayName.value = info.name || "IAmGodTranslator";
+    els.appSubtitleInput.value = info.subtitle || "Novel library";
+    els.themeMainAccent.value = theme.main_accent || "#68d1b4";
+    els.themeHighlight.value = theme.highlight || "#d6bf7a";
+    els.themeLogoAccent.value = theme.logo_accent || "#68d1b4";
+    els.themeCardBackground.value = theme.card_background || "#111816";
+    els.themePageBackground.value = theme.page_background || "#080d0c";
+    els.themeReaderBackground.value = theme.reader_background || "#0f1513";
+    els.themeReaderText.value = theme.reader_text || "#efe8d5";
+  }
+}
+function defaultReaderPrefs() { return { fontFamily: "default", fontSize: 19, lineHeight: 1.9, paragraphSpacing: 14, pageWidth: "820px", textAlign: "left", background: getComputedStyle(document.documentElement).getPropertyValue("--reader-bg").trim() || "#0f1513", accent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#68d1b4", allowCopy: true }; }
+function loadReaderPrefs() { try { state.readerPrefs = { ...defaultReaderPrefs(), ...JSON.parse(localStorage.getItem("igt-reader-prefs") || "{}") }; } catch { state.readerPrefs = defaultReaderPrefs(); } applyReaderPrefs(); }
+function saveReaderPrefs() { localStorage.setItem("igt-reader-prefs", JSON.stringify(state.readerPrefs)); applyReaderPrefs(); }
+function applyReaderPrefs() {
+  const p = { ...defaultReaderPrefs(), ...state.readerPrefs };
+  const fonts = { default: 'Georgia,"Times New Roman",serif', dyslexic: '"Comic Sans MS","Trebuchet MS",system-ui,sans-serif', system: 'system-ui,-apple-system,"Segoe UI",sans-serif', serif: 'Georgia,"Times New Roman",serif' };
+  document.documentElement.style.setProperty("--reader-size", `${p.fontSize}px`);
+  document.documentElement.style.setProperty("--reader-line-height", String(p.lineHeight));
+  document.documentElement.style.setProperty("--reader-paragraph-spacing", `${p.paragraphSpacing}px`);
+  document.documentElement.style.setProperty("--reader-width", p.pageWidth);
+  document.documentElement.style.setProperty("--reader-active", p.accent);
+  els.readerContent.style.fontFamily = fonts[p.fontFamily] || fonts.default;
+  els.readerContent.style.textAlign = p.textAlign;
+  els.readerContent.style.userSelect = p.allowCopy ? "text" : "none";
+  els.readerShell.style.background = p.background;
+  els.readerFontFamily.value = p.fontFamily;
+  els.readerFontSize.value = p.fontSize;
+  els.readerLineHeight.value = p.lineHeight;
+  els.readerParagraphSpacing.value = p.paragraphSpacing;
+  els.readerPageWidth.value = p.pageWidth;
+  els.readerTextAlign.value = p.textAlign;
+  els.readerBackground.value = p.background;
+  els.readerAccent.value = p.accent;
+  els.readerAllowCopy.checked = Boolean(p.allowCopy);
+}
+function libraryRoute() { return "#/library"; }
+function novelRoute(novelId) { return `#/novel/${encodeURIComponent(novelId)}`; }
+function readerRoute(novelId, chapter, mode = state.readerTab) { return `#/novel/${encodeURIComponent(novelId)}/chapter/${Number(chapter)}?mode=${encodeURIComponent(mode || "original")}`; }
+function pushRoute(hash, replace = false) { if (window.location.hash === hash) return; const method = replace ? "replaceState" : "pushState"; history[method]({}, "", hash); }
+function parsedRoute() {
+  const hash = window.location.hash || libraryRoute();
+  const [path, query = ""] = hash.replace(/^#\/?/, "").split("?");
+  const parts = path.split("/").filter(Boolean);
+  const params = new URLSearchParams(query);
+  if (!parts.length || parts[0] === "library") return { type: "library" };
+  if (parts[0] === "novel" && parts[1] && parts[2] === "chapter" && parts[3]) return { type: "reader", novelId: decodeURIComponent(parts[1]), chapter: Number(parts[3]), mode: params.get("mode") || "original" };
+  if (parts[0] === "novel" && parts[1]) return { type: "novel", novelId: decodeURIComponent(parts[1]) };
+  return { type: "library" };
+}
+async function applyRouteFromLocation() {
+  const route = parsedRoute();
+  if (route.type === "library") {
+    showLibrary({ skipHistory: true });
+    return;
+  }
+  if (route.type === "novel") {
+    await openNovel(route.novelId, { skipHistory: true, skipSave: true });
+    return;
+  }
+  if (route.type === "reader") {
+    await openNovel(route.novelId, { skipHistory: true, skipSave: true, initialTab: "reader" });
+    await openReader(route.chapter, route.mode, { skipHistory: true });
+  }
+}
+function handleRouteChange() {
+  clearTimeout(handleRouteChange.timer);
+  handleRouteChange.timer = setTimeout(() => applyRouteFromLocation().catch((err) => toast(err.message, true)), 0);
+}
 function activePanelName() { const panel = panels.find((item) => item.classList.contains("active")); return panel ? panel.id.replace("Panel", "") : "chapters"; }
 function currentWorkspace() { return state.workspaces.find((workspace) => workspace.id === state.activeWorkspaceId); }
 function workspaceFor(id) { return state.workspaces.find((workspace) => workspace.id === id); }
@@ -152,7 +238,7 @@ function renderWorkspaces() {
     els.workspaceTabs.appendChild(tab);
   }
 }
-async function activateWorkspace(id) {
+async function activateWorkspace(id, options = {}) {
   if (id === state.activeWorkspaceId) return;
   saveCurrentWorkspace();
   const workspace = workspaceFor(id);
@@ -161,9 +247,11 @@ async function activateWorkspace(id) {
   if (workspace.type === "library") {
     showView("library");
     renderWorkspaces();
+    if (!options.skipHistory) pushRoute(libraryRoute());
     return;
   }
   await loadNovelWorkspace(workspace);
+  if (!options.skipHistory && workspace.type === "novel") pushRoute(novelRoute(workspace.novelId));
 }
 async function loadNovelWorkspace(workspace) {
   const data = await api(`/api/novels/${workspace.novelId}/library`);
@@ -193,7 +281,7 @@ function closeWorkspace(id) {
     renderWorkspaces();
   }
 }
-function showLibrary() { saveCurrentWorkspace(); state.activeWorkspaceId = "library"; showView("library"); renderWorkspaces(); }
+function showLibrary(options = {}) { if (!options.skipSave) saveCurrentWorkspace(); state.activeWorkspaceId = "library"; showView("library"); renderWorkspaces(); if (!options.skipHistory) pushRoute(libraryRoute()); }
 async function backToNovelWorkspace() {
   if (!state.currentNovel) return showLibrary();
   saveCurrentWorkspace();
@@ -208,7 +296,7 @@ function closeAddNovelDialog() {
 }
 
 async function loadAdminStatus() { state.admin = await api("/api/admin/status").catch(() => ({ enabled: false, authenticated: false })); renderAdminState(); }
-async function loadAppInfo() { state.appInfo = await api("/api/app").catch(() => ({})); renderIcon(els.brandMark, state.appInfo.icon_url); renderIcon(els.libraryIcon, state.appInfo.icon_url); }
+async function loadAppInfo() { state.appInfo = await api("/api/app").catch(() => ({})); applyAppInfo(); applyReaderPrefs(); }
 async function loadNovels() { els.novelGrid.innerHTML = '<div class="empty-state">Loading library...</div>'; state.novels = (await api("/api/novels")).novels || []; renderNovels(); }
 function renderAdminState() { document.body.classList.toggle("is-admin", state.admin.authenticated); els.adminButton.textContent = state.admin.authenticated ? "Logout" : "Admin"; els.adminHelp.textContent = state.admin.enabled ? "Enter the admin password to unlock private controls." : "Admin login is disabled because ADMIN_PASSWORD is not set. Private tools are hidden."; if (!state.admin.authenticated && ["translatePanel", "backupsPanel", "settingsPanel"].some((id) => document.getElementById(id).classList.contains("active"))) switchTab("chapters"); }
 
@@ -227,8 +315,8 @@ function renderNovels() {
   }
 }
 
-async function openNovel(id) {
-  saveCurrentWorkspace();
+async function openNovel(id, options = {}) {
+  if (!options.skipSave) saveCurrentWorkspace();
   const data = await api(`/api/novels/${id}/library`);
   state.currentNovel = data.novel;
   state.chapters = data.chapters || [];
@@ -240,8 +328,9 @@ async function openNovel(id) {
   renderDetail();
   renderChapters();
   renderQueue();
-  switchTab("chapters");
+  switchTab(options.initialTab || "chapters");
   renderWorkspaces();
+  if (!options.skipHistory) pushRoute(novelRoute(id));
 }
 
 function renderDetail() {
@@ -325,6 +414,7 @@ async function openReader(chapter, tab = state.readerTab, options = {}) {
     workspace.readerTab = state.readerTab;
     renderWorkspaces();
   }
+  if (!options.skipHistory && state.currentNovel) pushRoute(readerRoute(state.currentNovel.novel_id, state.readerChapter, state.readerTab));
   api("/api/reader/last", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ novel_id: state.currentNovel.novel_id, chapter: state.readerChapter }) }).catch(() => {});
 }
 
@@ -334,10 +424,14 @@ async function loadReaderText() {
   els.readerContent.textContent = "Loading...";
   try {
     const data = await api(`/api/novels/${state.currentNovel.novel_id}/chapters/${state.readerChapter}/${endpoint}`);
-    els.readerContent.textContent = data.text && data.text.trim() ? data.text : missing[state.readerTab];
+    setReaderText(data.text && data.text.trim() ? data.text : missing[state.readerTab]);
   } catch (_error) {
-    els.readerContent.textContent = missing[state.readerTab] || "Chapter text not available.";
+    setReaderText(missing[state.readerTab] || "Chapter text not available.");
   }
+}
+function setReaderText(text) {
+  const paragraphs = String(text || "").split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean);
+  els.readerContent.innerHTML = paragraphs.length ? paragraphs.map((part) => `<p>${esc(part)}</p>`).join("") : "";
 }
 
 function adjacent(offset) { const chapters = state.chapters.slice().sort((a, b) => a.chapter - b.chapter); const i = chapters.findIndex((c) => c.chapter === state.readerChapter); if (chapters[i + offset]) openReader(chapters[i + offset].chapter, state.readerTab); }
@@ -355,7 +449,18 @@ async function importOriginalZip(event) { event.preventDefault(); if (!els.impor
 async function importReferenceZip(event) { event.preventDefault(); if (!els.importReferenceFile.files.length) return toast("Choose a Reference Translation ZIP first.", true); const form = new FormData(); form.append("reference_zip", els.importReferenceFile.files[0]); const result = await api(`/api/novels/${state.currentNovel.novel_id}/import/reference`, { method: "POST", body: form }); els.importReferenceFile.value = ""; await openNovel(state.currentNovel.novel_id); switchTab("backups"); toast(`Imported ${result.imported} valid reference chapters.`); }
 async function importAiTranslations(event) { event.preventDefault(); if (!els.importAiFile.files.length) return toast("Choose an AI translated chapters ZIP first.", true); const form = new FormData(); form.append("translated_zip", els.importAiFile.files[0]); const result = await api(`/api/novels/${state.currentNovel.novel_id}/import/ai-translations`, { method: "POST", body: form }); els.importAiFile.value = ""; await openNovel(state.currentNovel.novel_id); switchTab("backups"); toast(`Imported ${result.imported} AI translated chapters.`); }
 async function uploadCover(event) { event.preventDefault(); if (!els.coverFile.files.length) return toast("Choose a cover image first.", true); const form = new FormData(); form.append("cover", els.coverFile.files[0]); const result = await api(`/api/novels/${state.currentNovel.novel_id}/cover`, { method: "POST", body: form }); els.coverFile.value = ""; state.currentNovel = result.novel; state.chapters = result.chapters || state.chapters; await loadNovels(); renderDetail(); toast("Cover uploaded."); }
-async function uploadAppIcon(event) { event.preventDefault(); if (!els.appIconFile.files.length) return toast("Choose an app icon first.", true); const form = new FormData(); form.append("icon", els.appIconFile.files[0]); state.appInfo = await api("/api/admin/app-icon", { method: "POST", body: form }); els.appIconFile.value = ""; renderIcon(els.brandMark, state.appInfo.icon_url); renderIcon(els.libraryIcon, state.appInfo.icon_url); toast("App icon uploaded."); }
+async function uploadAppIcon(event) { event.preventDefault(); if (!els.appIconFile.files.length) return toast("Choose an app icon first.", true); const form = new FormData(); form.append("icon", els.appIconFile.files[0]); state.appInfo = await api("/api/admin/app-icon", { method: "POST", body: form }); els.appIconFile.value = ""; applyAppInfo(); toast("App icon uploaded."); }
+async function saveAppAppearance(event) {
+  event.preventDefault();
+  state.appInfo = await api("/api/admin/app-settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: els.appDisplayName.value, subtitle: els.appSubtitleInput.value, theme: { main_accent: els.themeMainAccent.value, highlight: els.themeHighlight.value, logo_accent: els.themeLogoAccent.value, card_background: els.themeCardBackground.value, page_background: els.themePageBackground.value, reader_background: els.themeReaderBackground.value, reader_text: els.themeReaderText.value } }) });
+  applyAppInfo();
+  toast("Appearance saved.");
+}
+async function resetAppAppearance() {
+  state.appInfo = await api("/api/admin/app-settings/reset", { method: "POST" });
+  applyAppInfo();
+  toast("Theme reset.");
+}
 async function saveSettings(event) { event.preventDefault(); state.currentNovel = await api(`/api/novels/${state.currentNovel.novel_id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: els.settingsTitle.value, summary: els.settingsSummary.value, tags: els.settingsTags.value, source_language: els.sourceLanguage.value, target_language: els.targetLanguage.value, settings: { model: els.defaultModel.value } }) }); await loadNovels(); renderDetail(); toast("Settings saved."); }
 
 async function login(event) { event.preventDefault(); await api("/api/admin/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: els.adminPassword.value }) }); els.adminPassword.value = ""; els.adminDialog.close(); await loadAdminStatus(); toast("Admin unlocked."); }
@@ -388,6 +493,10 @@ function bind() {
   els.fontUp.onclick = () => { state.readerSize = Math.min(24, state.readerSize + 1); document.documentElement.style.setProperty("--reader-size", `${state.readerSize}px`); };
   els.widthToggle.onclick = () => { state.readerWide = !state.readerWide; els.readerContent.classList.toggle("wide", state.readerWide); };
   els.readerTheme.onchange = () => els.readerShell.dataset.theme = els.readerTheme.value;
+  els.readerSettingsButton.onclick = () => { els.readerSettingsDrawer.hidden = false; };
+  els.closeReaderSettings.onclick = () => { els.readerSettingsDrawer.hidden = true; };
+  [["fontFamily", els.readerFontFamily], ["fontSize", els.readerFontSize], ["lineHeight", els.readerLineHeight], ["paragraphSpacing", els.readerParagraphSpacing], ["pageWidth", els.readerPageWidth], ["textAlign", els.readerTextAlign], ["background", els.readerBackground], ["accent", els.readerAccent]].forEach(([key, input]) => { input.oninput = () => { state.readerPrefs[key] = ["fontSize", "paragraphSpacing"].includes(key) ? Number(input.value) : key === "lineHeight" ? Number(input.value) : input.value; saveReaderPrefs(); }; });
+  els.readerAllowCopy.onchange = () => { state.readerPrefs.allowCopy = els.readerAllowCopy.checked; saveReaderPrefs(); };
   els.adminButton.onclick = () => state.admin.authenticated ? logout().catch((err) => toast(err.message, true)) : (els.adminDialog.showModal ? els.adminDialog.showModal() : els.adminPassword.focus());
   els.adminForm.onsubmit = (event) => login(event).catch((err) => toast(err.message, true));
   els.originalUploadForm.onsubmit = (event) => { event.preventDefault(); upload("original").catch((err) => toast(err.message, true)); };
@@ -399,6 +508,8 @@ function bind() {
   els.importAiForm.onsubmit = (event) => importAiTranslations(event).catch((err) => toast(err.message, true));
   els.coverUploadForm.onsubmit = (event) => uploadCover(event).catch((err) => toast(err.message, true));
   els.appIconForm.onsubmit = (event) => uploadAppIcon(event).catch((err) => toast(err.message, true));
+  els.appAppearanceForm.onsubmit = (event) => saveAppAppearance(event).catch((err) => toast(err.message, true));
+  els.resetThemeButton.onclick = () => resetAppAppearance().catch((err) => toast(err.message, true));
   els.restoreNovelForm.onsubmit = (event) => restore(event).catch((err) => toast(err.message, true));
   els.novelSettingsForm.onsubmit = (event) => saveSettings(event).catch((err) => toast(err.message, true));
   els.addNovelButton.onclick = () => els.addNovelDialog.showModal ? els.addNovelDialog.showModal() : els.newNovelTitle.focus();
@@ -406,8 +517,10 @@ function bind() {
   els.addNovelDialog.addEventListener("click", (event) => { if (event.target === els.addNovelDialog) closeAddNovelDialog(); });
   els.addNovelDialog.addEventListener("close", () => els.addNovelForm.reset());
   els.addNovelForm.onsubmit = async (event) => { event.preventDefault(); if (!els.addNovelForm.reportValidity()) return; const title = els.newNovelTitle.value.trim(); const novel = await api("/api/novels", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title }) }); closeAddNovelDialog(); await loadNovels(); openNovel(novel.novel_id); };
+  window.addEventListener("popstate", handleRouteChange);
+  window.addEventListener("hashchange", handleRouteChange);
 }
 
-function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=6").then((registration) => registration.update()).catch(() => {}); }
-async function init() { registerServiceWorker(); setTheme(localStorage.getItem("igt-theme") || "dark"); bind(); renderWorkspaces(); await loadAppInfo(); await loadAdminStatus(); try { await api("/api/health"); els.apiStatus.textContent = "Online"; els.apiStatus.classList.add("ok"); } catch { els.apiStatus.textContent = "Offline"; } await loadNovels(); }
+function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=8").then((registration) => registration.update()).catch(() => {}); }
+async function init() { registerServiceWorker(); if (!window.location.hash) pushRoute(libraryRoute(), true); setTheme(localStorage.getItem("igt-theme") || "dark"); bind(); loadReaderPrefs(); renderWorkspaces(); await loadAppInfo(); await loadAdminStatus(); try { await api("/api/health"); els.apiStatus.textContent = "Online"; els.apiStatus.classList.add("ok"); } catch { els.apiStatus.textContent = "Offline"; } await loadNovels(); await applyRouteFromLocation(); }
 init().catch((error) => toast(error.message, true));

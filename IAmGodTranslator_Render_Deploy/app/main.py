@@ -95,8 +95,7 @@ async def health() -> dict[str, str]:
 
 @app.get("/api/app")
 async def app_info() -> dict[str, object]:
-    icon = novels.app_icon_path()
-    return {"icon_url": f"/api/app-icon?v={int(icon.stat().st_mtime)}" if icon else None}
+    return novels.app_settings()
 
 
 @app.get("/api/app-icon")
@@ -136,6 +135,18 @@ async def upload_app_icon(request: Request, icon: Annotated[UploadFile, File(des
         return JSONResponse(await novels.upload_app_icon(icon), status_code=201)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.patch("/api/admin/app-settings")
+async def update_app_settings(request: Request, payload: Annotated[dict[str, object], Body()]) -> dict[str, object]:
+    require_admin(request)
+    return novels.update_app_settings(payload)
+
+
+@app.post("/api/admin/app-settings/reset")
+async def reset_app_settings(request: Request) -> dict[str, object]:
+    require_admin(request)
+    return novels.reset_app_settings()
 
 
 @app.get("/api/storage")
