@@ -44,9 +44,12 @@ ADMIN_PASSWORD=choose a private admin password
 LOG_LEVEL=INFO
 MAX_UPLOAD_BYTES=52428800
 DATA_DIR=/var/data/IAmGodTranslator
+STORAGE_BACKEND=local
 ```
 
-Do not commit `.env`. Set `ADMIN_PASSWORD` on Render or the admin tools stay hidden and locked. For long jobs, attach a Render persistent disk mounted at `/var/data`.
+To persist through Supabase Storage instead, set `STORAGE_BACKEND=supabase`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `SUPABASE_BUCKET=novel-data` in Render. Keep the Supabase service role key only in backend environment variables.
+
+Do not commit `.env`. Set `ADMIN_PASSWORD` on Render or the admin tools stay hidden and locked. For long jobs, attach a Render persistent disk mounted at `/var/data` or use Supabase Storage.
 
 ## Data Layout
 

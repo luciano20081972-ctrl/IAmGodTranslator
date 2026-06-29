@@ -153,7 +153,17 @@ async def reset_app_settings(request: Request) -> dict[str, object]:
 async def storage_status() -> dict[str, object]:
     status = service.storage_status()
     status["novels"] = len(novels.list_novels())
+    status["backend"] = os.getenv("STORAGE_BACKEND", "local").lower()
+    status["supabase_enabled"] = novels.remote is not None
     return status
+
+
+@app.post("/api/admin/storage/sync-supabase")
+async def sync_storage_to_supabase(request: Request) -> dict[str, object]:
+    require_admin(request)
+    if novels.remote is None:
+        raise HTTPException(status_code=400, detail="Supabase storage is not enabled.")
+    return novels.sync_all_to_remote()
 
 
 @app.get("/api/jobs")

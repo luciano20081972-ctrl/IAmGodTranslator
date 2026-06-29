@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import json
+import logging
+import os
 import re
 import shutil
 import zipfile
@@ -12,8 +14,11 @@ from typing import Any
 from fastapi import UploadFile
 
 from app.services import TranslationService, safe_filename, unique_path, utc_now
+from app.storage import SupabaseStorage
 from modules.chapter import chapter_from_filename, parse_chapter, read_text
 
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_NOVEL_ID = "i-am-god"
 DEFAULT_NOVEL_TITLE = "I Am God"
@@ -42,9 +47,53 @@ class NovelManager:
         self.data_dir = root_service.data_dir
         self.novels_dir = self.data_dir / "novels"
         self.reader_state_path = self.data_dir / "reader_state.json"
+        self.remote = self.build_remote_storage()
         self.novels_dir.mkdir(parents=True, exist_ok=True)
+        self.restore_remote_snapshot()
         self.ensure_default_novel()
         self.migrate_legacy_jobs()
+
+    def build_remote_storage(self) -> SupabaseStorage | None:
+        if (os.getenv("STORAGE_BACKEND") or "local").lower() != "supabase":
+            return None
+        return SupabaseStorage()
+
+    def restore_remote_snapshot(self) -> None:
+        if self.remote is None:
+            return
+        try:
+            self.remote.download_tree("app", self.data_dir / "app")
+            self.remote.download_tree("novels", self.novels_dir)
+        except Exception:
+            logger.exception("Failed to restore Supabase storage snapshot")
+
+    def sync_all_to_remote(self) -> dict[str, int]:
+        if self.remote is None:
+            return {"copied": 0, "failed": 0}
+        counts = {"copied": 0, "failed": 0}
+        for root, prefix in ((self.data_dir / "app", "app"), (self.novels_dir, "novels")):
+            result = self.remote.upload_tree(root, prefix)
+            counts["copied"] += result["copied"]
+            counts["failed"] += result["failed"]
+        return counts
+
+    def sync_to_remote(self, novel_id: str | None = None) -> None:
+        if self.remote is None:
+            return
+        try:
+            if novel_id:
+                self.remote.upload_tree(self.novel_dir(novel_id), f"novels/{novel_id}")
+                self.write_novel_index()
+            else:
+                self.remote.upload_tree(self.data_dir / "app", "app")
+        except Exception:
+            logger.exception("Failed to sync local files to Supabase")
+
+    def write_novel_index(self) -> None:
+        if self.remote is None:
+            return
+        index = [{"novel_id": item["novel_id"], "title": item.get("title", "")} for item in self.iter_metadata()]
+        self.remote.write_text("novels/index.json", json.dumps(index, indent=2, ensure_ascii=False))
 
     def service_for(self, novel_id: str) -> TranslationService:
         return TranslationService(data_dir=self.novel_dir(novel_id), translator=self.root_service.translator)
@@ -83,6 +132,7 @@ class NovelManager:
             },
         }
         self.write_json(self.metadata_path(candidate), metadata)
+        self.sync_to_remote(candidate)
         return self.decorate_novel(metadata)
 
     def update_novel(self, novel_id: str, updates: dict[str, Any]) -> dict[str, Any]:
@@ -98,12 +148,16 @@ class NovelManager:
             metadata.setdefault("settings", {}).update(updates["settings"])
         metadata["updated_at"] = utc_now()
         self.write_json(self.metadata_path(novel_id), metadata)
+        self.sync_to_remote(novel_id)
         return self.decorate_novel(metadata)
 
     def delete_novel(self, novel_id: str) -> None:
         if novel_id == DEFAULT_NOVEL_ID:
             raise ValueError("The migrated I Am God novel cannot be deleted from the API.")
         shutil.rmtree(self.novel_dir(novel_id), ignore_errors=True)
+        if self.remote is not None:
+            self.remote.delete(f"novels/{novel_id}")
+            self.write_novel_index()
 
     def list_novels(self) -> list[dict[str, Any]]:
         return sorted((self.decorate_novel(item) for item in self.iter_metadata()), key=lambda item: item.get("updated_at") or "", reverse=True)
@@ -117,11 +171,13 @@ class NovelManager:
     async def upload_original(self, novel_id: str, uploads: list[UploadFile]) -> dict[str, Any]:
         await self.service_for(novel_id)._save_uploads(uploads, self.folders(novel_id)["original"])
         self.touch(novel_id)
+        self.sync_to_remote(novel_id)
         return self.library(novel_id)
 
     async def upload_reference(self, novel_id: str, uploads: list[UploadFile]) -> dict[str, Any]:
         await self.service_for(novel_id)._save_uploads(uploads, self.folders(novel_id)["reference"])
         self.touch(novel_id)
+        self.sync_to_remote(novel_id)
         return self.library(novel_id)
 
     async def import_ai_translations(self, novel_id: str, upload: UploadFile) -> dict[str, Any]:
@@ -149,6 +205,7 @@ class NovelManager:
                 imported += 1
 
         self.touch(novel_id)
+        self.sync_to_remote(novel_id)
         return {"imported": imported, **self.library(novel_id)}
 
     async def import_original_zip(self, novel_id: str, upload: UploadFile) -> dict[str, Any]:
@@ -191,6 +248,7 @@ class NovelManager:
                 imported += 1
 
         self.touch(novel_id)
+        self.sync_to_remote(novel_id)
         return {"imported": imported, "duplicates": duplicates}
 
     async def upload_cover(self, novel_id: str, upload: UploadFile) -> dict[str, Any]:
@@ -210,6 +268,7 @@ class NovelManager:
         metadata.setdefault("settings", {})["cover_file"] = str(target.relative_to(self.novel_dir(novel_id)))
         metadata["updated_at"] = utc_now()
         self.write_json(self.metadata_path(novel_id), metadata)
+        self.sync_to_remote(novel_id)
         return self.library(novel_id)
 
     async def upload_app_icon(self, upload: UploadFile) -> dict[str, Any]:
@@ -219,16 +278,18 @@ class NovelManager:
             raise ValueError("App icon must be jpg, jpeg, png, or webp.")
         icon_dir = self.data_dir / "app"
         icon_dir.mkdir(parents=True, exist_ok=True)
-        for old_icon in icon_dir.glob("app-icon.*"):
-            if old_icon.is_file():
-                old_icon.unlink()
-        target = icon_dir / f"app-icon{suffix}"
+        for pattern in ("icon.*", "app-icon.*"):
+            for old_icon in icon_dir.glob(pattern):
+                if old_icon.is_file():
+                    old_icon.unlink()
+        target = icon_dir / f"icon{suffix}"
         with open(target, "wb") as output:
             output.write(await upload.read())
+        self.sync_to_remote()
         return self.app_settings()
 
     def app_icon_path(self) -> Path | None:
-        for path in (self.data_dir / "app").glob("app-icon.*"):
+        for path in list((self.data_dir / "app").glob("icon.*")) + list((self.data_dir / "app").glob("app-icon.*")):
             if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
                 return path
         return None
@@ -261,12 +322,15 @@ class NovelManager:
                 if isinstance(updates["theme"].get(key), str) and updates["theme"][key].strip():
                     settings["theme"][key] = updates["theme"][key].strip()
         self.write_json(self.app_settings_path(), {"name": settings["name"], "subtitle": settings["subtitle"], "theme": settings["theme"]})
+        self.sync_to_remote()
         return self.app_settings()
 
     def reset_app_settings(self) -> dict[str, Any]:
         path = self.app_settings_path()
         if path.exists():
             path.unlink()
+        if self.remote is not None:
+            self.remote.delete("app/settings.json")
         return self.app_settings()
 
     def create_batch(self, novel_id: str, settings: dict[str, Any]) -> dict[str, Any]:
@@ -280,11 +344,13 @@ class NovelManager:
         reference_files = [references[int(chapter["chapter"])] for chapter in candidates if int(chapter["chapter"]) in references]
         job = self.service_for(novel_id).create_job_from_existing_files(chinese_files, reference_files, settings)
         self.touch(novel_id)
+        self.sync_to_remote(novel_id)
         return job
 
     def start_job(self, novel_id: str, job_id: str) -> None:
         self.service_for(novel_id).start_job(job_id)
         self.touch(novel_id)
+        self.sync_to_remote(novel_id)
 
     def resume_incomplete_jobs(self) -> int:
         return sum(self.service_for(item["novel_id"]).resume_incomplete_jobs() for item in self.iter_metadata())
@@ -373,6 +439,7 @@ class NovelManager:
                 with archive.open(member) as source, open(destination, "wb") as output:
                     shutil.copyfileobj(source, output)
         self.touch(novel_id)
+        self.sync_to_remote(novel_id)
         return self.library(novel_id)
 
     def last_reader(self) -> dict[str, Any]:
@@ -389,6 +456,7 @@ class NovelManager:
         return state
 
     def chapters(self, novel_id: str) -> list[dict[str, Any]]:
+        self.sync_to_remote(novel_id)
         chapters: dict[int, dict[str, Any]] = {}
         for file in sorted(self.folders(novel_id)["original"].rglob("*.txt")):
             parsed = parse_chapter(file)

@@ -29,9 +29,21 @@ ADMIN_PASSWORD=choose a private admin password
 LOG_LEVEL=INFO
 MAX_UPLOAD_BYTES=52428800
 DATA_DIR=/var/data/IAmGodTranslator
+STORAGE_BACKEND=local
 ```
 
 Never commit `.env`. Without `ADMIN_PASSWORD`, admin login is disabled and private controls remain hidden.
+
+For Supabase Storage persistence instead of local Render disk storage, set:
+
+```env
+STORAGE_BACKEND=supabase
+SUPABASE_URL=your Supabase project URL
+SUPABASE_SERVICE_ROLE_KEY=your service role key
+SUPABASE_BUCKET=novel-data
+```
+
+Keep `SUPABASE_SERVICE_ROLE_KEY` only in Render environment variables. It is used by the FastAPI backend and must never be exposed in frontend JavaScript.
 
 ## Persistent Disk
 
