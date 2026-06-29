@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_NOVEL_ID = "i-am-god"
 DEFAULT_NOVEL_TITLE = "I Am God"
 DEFAULT_APP_SETTINGS = {
-    "name": "IAmGodTranslator",
-    "subtitle": "Novel library",
+    "name": "GodTranslator",
+    "subtitle": "Novel Library",
     "theme": {
         "main_accent": "#68d1b4",
         "highlight": "#d6bf7a",

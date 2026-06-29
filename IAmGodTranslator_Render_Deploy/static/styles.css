@@ -636,6 +636,106 @@ textarea {
   }
 }
 
+/* v3.2 focused public/admin polish */
+@media (min-width:1024px) {
+  .topbar {
+    grid-template-columns:auto minmax(520px,1fr) auto;
+    gap:12px;
+  }
+  .main-nav {
+    flex-wrap:nowrap;
+    justify-content:center;
+    overflow:visible;
+  }
+  .nav-button {
+    padding:7px 8px;
+    font-size:.86rem;
+  }
+  .header-links {
+    flex-wrap:nowrap;
+  }
+  .global-search {
+    min-width:210px;
+    max-width:260px;
+  }
+  .contextual-action[hidden] {
+    display:none;
+  }
+}
+
+.breadcrumb {
+  max-width:1440px;
+  margin:0 auto 14px;
+  color:var(--muted);
+  display:flex;
+  gap:8px;
+  align-items:center;
+  font-size:.9rem;
+}
+.breadcrumb button {
+  border:0;
+  background:transparent;
+  color:var(--muted);
+  padding:0;
+  cursor:pointer;
+}
+.breadcrumb strong { color:var(--text); }
+
+body.light .topbar,
+body.light .workspace-tabs,
+body.light .toolbar,
+body.light .panel,
+body.light .chapter-row,
+body.light .metrics-grid>div,
+body.light .discovery-panel,
+body.light .site-footer,
+body.light .reader-shell {
+  background:#fffaf0;
+  color:#17211e;
+}
+body.light .tab,
+body.light .reader-tab,
+body.light .secondary-button,
+body.light .icon-button,
+body.light input,
+body.light select,
+body.light textarea {
+  background:#fffdf7;
+  color:#17211e;
+  border-color:rgba(28,45,39,.18);
+}
+body.light .chapter-title,
+body.light .metrics-grid strong,
+body.light .reader-content {
+  color:#17211e;
+}
+body.light .tag-row span {
+  color:#285d50;
+  background:rgba(22,124,107,.09);
+}
+body.light .reader-shell[data-theme="paper"] {
+  background:#fffaf0;
+  color:#17211e;
+}
+
+@media (max-width:1023px) {
+  .topbar {
+    grid-template-columns:1fr auto;
+  }
+  .main-nav {
+    grid-column:1/-1;
+    justify-content:flex-start;
+    overflow-x:auto;
+  }
+  .header-links {
+    justify-content:flex-end;
+  }
+  .global-search {
+    order:2;
+    flex-basis:100%;
+  }
+}
+
 /* v3.1 professional library layer */
 .topbar {
   position:sticky;
@@ -906,10 +1006,14 @@ textarea {
   grid-column:1/-1;
 }
 
-.footer-tags span {
+.footer-tags span,
+.footer-tags button {
   border:1px solid rgba(184,211,196,.13);
   border-radius:999px;
+  background:transparent;
+  color:var(--muted);
   padding:6px 10px;
+  cursor:pointer;
 }
 
 .compact-empty {

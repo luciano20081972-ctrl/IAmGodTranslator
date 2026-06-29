@@ -5,37 +5,39 @@ app.innerHTML = `
   <header class="topbar">
     <button class="brand" id="homeButton" type="button">
       <span class="brand-mark" id="brandMark">IG</span>
-      <span><strong id="brandName">IAmGodTranslator</strong><small id="brandSubtitle">Novel library</small></span>
+      <span><strong id="brandName">GodTranslator</strong><small id="brandSubtitle">Novel Library</small></span>
     </button>
     <nav class="main-nav" aria-label="Primary">
-      <button class="nav-button active" data-main-nav="library" type="button">Library</button>
-      <button class="nav-button" data-main-nav="browse" type="button">Browse</button>
-      <button class="nav-button" data-main-nav="rankings" type="button">Rankings</button>
-      <button class="nav-button" data-main-nav="updates" type="button">Updates</button>
-      <button class="nav-button" data-main-nav="reader" type="button">Reader</button>
-      <button class="nav-button admin-only" data-main-nav="translate" type="button">Translate</button>
-      <button class="nav-button admin-only" data-main-nav="backups" type="button">Backups</button>
-      <button class="nav-button admin-only" data-main-nav="settings" type="button">Admin Settings</button>
+      <button class="nav-button active" data-main-nav="home" type="button"><span>&#8962;</span> Home</button>
+      <button class="nav-button" data-main-nav="library" type="button"><span>&#9635;</span> Library</button>
+      <button class="nav-button" data-main-nav="browse" type="button"><span>&#9638;</span> Browse</button>
+      <button class="nav-button" data-main-nav="rankings" type="button"><span>&#9734;</span> Rankings</button>
+      <button class="nav-button" data-main-nav="updates" type="button"><span>&#9687;</span> Updates</button>
+      <button class="nav-button" data-main-nav="reader" type="button"><span>&#9636;</span> Reader</button>
+      <button class="nav-button admin-only" data-main-nav="translate" type="button"><span>&#9889;</span> Translate</button>
+      <button class="nav-button admin-only" data-main-nav="backups" type="button"><span>&#8681;</span> Backups</button>
+      <button class="nav-button admin-only" data-main-nav="settings" type="button"><span>&#9881;</span> Admin</button>
     </nav>
     <nav class="header-links">
       <label class="global-search"><span>Search</span><input id="globalSearch" type="search" placeholder="Search novels or chapters"></label>
-      <span class="current-novel-pill" id="currentNovelPill">Library</span>
-      <button class="secondary-button" id="quickReaderButton" type="button">Open Reader</button>
+      <span class="current-novel-pill" id="currentNovelPill" hidden>Library</span>
+      <button class="secondary-button contextual-action" id="quickReaderButton" type="button">Open Reader</button>
       <button class="secondary-button admin-only" id="quickTranslateButton" type="button">Continue Translating</button>
       <a class="secondary-button admin-only" id="quickBackupButton" href="#">Download Backup</a>
       <button class="link-button" id="supportButton" type="button">Thanks</button>
       <span class="status-chip" id="apiStatus">Checking</span>
-      <button class="secondary-button" id="adminButton" type="button">Admin</button>
-      <button class="icon-button" id="themeToggle" type="button">T</button>
+      <button class="secondary-button" id="adminButton" type="button">Login</button>
+      <button class="icon-button" id="themeToggle" type="button" aria-label="Toggle theme">&#9790;</button>
     </nav>
   </header>
   <nav class="workspace-tabs" id="workspaceTabs" aria-label="Open workspaces"></nav>
+  <nav class="breadcrumb" id="breadcrumb">Home</nav>
   <main>
     <section class="view active" id="libraryView">
       <div class="library-hero">
         <div class="library-title">
           <div class="library-icon" id="libraryIcon">IG</div>
-          <div><p class="eyebrow">Library Home</p><h1>Your Translation Library</h1><p class="hero-copy">Read original chapters, reference translations, and AI translations in one quiet library.</p></div>
+          <div><p class="eyebrow">Home</p><h1>GodTranslator</h1><p class="hero-copy">Read translated novels, AI-assisted translations, and curated web novels in a polished private library.</p><div class="hero-actions"><button class="primary-button" data-home-browse type="button">Browse Novels</button><button class="secondary-button" data-home-continue type="button">Continue Reading</button><button class="secondary-button" data-home-login type="button">Login</button></div></div>
         </div>
         <button class="primary-button admin-only" id="addNovelButton" type="button">Add New Novel</button>
       </div>
@@ -44,9 +46,9 @@ app.innerHTML = `
         <p>Thank you to everyone reading, testing, and helping this library get steadier chapter by chapter.</p>
       </div>
       <div class="library-sections" id="librarySections"></div>
-      <div class="toolbar"><label><span>Search</span><input id="novelSearch" type="search" placeholder="Search novels by title"></label><label><span>Filter</span><select id="browseFilter"><option value="all">All</option><option value="in-progress">In Progress</option><option value="completed">Completed</option><option value="has-reference">Has Reference Translation</option><option value="missing-reference">Missing Reference Translation</option><option value="has-ai">Has AI Translation</option><option value="needs-translation">Needs Translation</option><option value="bookmarked">Bookmarked</option><option value="recently-read">Recently Read</option></select></label><label><span>Sort</span><select id="novelSort"><option value="updated">Last updated</option><option value="name">Name</option><option value="progress">Progress</option><option value="rating">Rating</option><option value="translated">AI Translation count</option><option value="remaining">Remaining count</option></select></label></div>
+      <div class="toolbar"><label><span>Search</span><input id="novelSearch" type="search" placeholder="Search novels by title"></label><label><span>Filter</span><select id="browseFilter"><option value="all">All</option><option value="in-progress">In Progress</option><option value="completed">Completed</option><option value="has-reference">Has Reference Translation</option><option value="missing-reference">Missing Reference Translation</option><option value="has-ai">Has AI Translation</option><option value="needs-translation">Needs Translation</option><option value="bookmarked">My Library / Bookmarked</option><option value="recently-read">Recently Read</option></select></label><label><span>Sort</span><select id="novelSort"><option value="updated">Last updated</option><option value="name">Name</option><option value="progress">Progress</option><option value="rating">Rating</option><option value="translated">AI Translation count</option><option value="remaining">Remaining count</option></select></label></div>
       <div class="novel-grid" id="novelGrid"><div class="empty-state">Loading library...</div></div>
-      <footer class="site-footer"><div><strong>IAmGodTranslator</strong><p>Private translation and web novel library tool.</p></div><nav><button class="link-button" data-footer-nav="library" type="button">Library</button><button class="link-button" data-footer-nav="rankings" type="button">Rankings</button><button class="link-button" data-footer-nav="updates" type="button">Updates</button><button class="link-button" data-footer-nav="reader" type="button">Reader</button><button class="link-button admin-only" data-footer-nav="backups" type="button">Backups</button><button class="link-button admin-only" data-footer-nav="settings" type="button">Admin Settings</button></nav><div class="footer-tags"><span>Fantasy</span><span>Sci-fi</span><span>Mystery</span><span>Romance</span><span>Martial Arts</span><span>Supernatural</span><span>Slice of Life</span><span>Completed</span></div></footer>
+      <footer class="site-footer"><div><strong>GodTranslator</strong><p>Novel reading and private translation platform.</p></div><nav><button class="link-button" data-footer-nav="library" type="button">Library</button><button class="link-button" data-footer-nav="rankings" type="button">Rankings</button><button class="link-button" data-footer-nav="updates" type="button">Updates</button><button class="link-button" data-footer-nav="reader" type="button">Reader</button><button class="link-button admin-only" data-footer-nav="backups" type="button">Backups</button><button class="link-button admin-only" data-footer-nav="settings" type="button">Admin</button></nav><div class="footer-tags"><button type="button" data-category="Fantasy">Fantasy</button><button type="button" data-category="Sci-fi">Sci-fi</button><button type="button" data-category="Mystery">Mystery</button><button type="button" data-category="Romance">Romance</button><button type="button" data-category="Martial Arts">Martial Arts</button><button type="button" data-category="Supernatural">Supernatural</button><button type="button" data-category="Slice of Life">Slice of Life</button><button type="button" data-category="Completed">Completed</button></div></footer>
     </section>
 
     <section class="view" id="detailView">
@@ -67,7 +69,7 @@ app.innerHTML = `
           <div class="progress-track hero-progress"><div id="novelProgress" class="progress-fill"></div></div>
         </div>
       </div>
-      <div class="metrics-grid"><div><span>Original Story</span><strong id="metricOriginal">0</strong></div><div><span>Reference Translation</span><strong id="metricReference">0</strong></div><div><span>AI Translation</span><strong id="metricTranslated">0</strong></div><div><span>Remaining</span><strong id="metricRemaining">0</strong></div><div><span>Progress</span><strong id="metricPercent">0%</strong></div><div><span>Last updated</span><strong id="metricUpdated">Never</strong></div><div><span>Last backup</span><strong id="metricBackup">Never</strong></div><div><span>Model</span><strong id="metricModel">gpt-4o-mini</strong></div><div><span>Status</span><strong id="metricStatus">Ready</strong></div><div><span>Storage</span><strong id="metricStorage">-</strong></div></div>
+      <div class="metrics-grid"><div><span>Chapters</span><strong id="metricOriginal">0</strong></div><div><span>Reference</span><strong id="metricReference">0</strong></div><div><span>Translated</span><strong id="metricTranslated">0</strong></div><div><span>Remaining</span><strong id="metricRemaining">0</strong></div><div><span>Progress</span><strong id="metricPercent">0%</strong></div><div><span>Last updated</span><strong id="metricUpdated">Never</strong></div><div class="admin-only"><span>Last backup</span><strong id="metricBackup">Never</strong></div><div class="admin-only"><span>Model</span><strong id="metricModel">gpt-4o-mini</strong></div><div><span>Status</span><strong id="metricStatus">Ready</strong></div><div class="admin-only"><span>Storage</span><strong id="metricStorage">-</strong></div></div>
       <nav class="tabs"><button class="tab active" data-tab="overview" type="button">Overview</button><button class="tab" data-tab="chapters" type="button">Chapters</button><button class="tab" data-tab="reader" type="button">Reader</button><button class="tab admin-only" data-tab="translate" type="button">Translate</button><button class="tab admin-only" data-tab="backups" type="button">Backups</button><button class="tab admin-only" data-tab="settings" type="button">Admin Settings</button></nav>
 
       <section class="tab-panel active" id="overviewPanel">
@@ -87,7 +89,7 @@ app.innerHTML = `
 
       <section class="tab-panel" id="readerPanel">
         <div class="reader-shell" id="readerShell">
-          <div class="reader-toolbar"><button class="secondary-button" id="readerBack" type="button">Back to Novel</button><button class="secondary-button" id="readerLibrary" type="button">Back to Library</button><div class="reader-controls"><button class="secondary-button" id="chapterPickerButton" type="button">Chapters</button><button class="secondary-button" id="readerBookmarkButton" type="button">Bookmark</button><button class="icon-button" id="fontDown" type="button">A-</button><button class="icon-button" id="fontUp" type="button">A+</button><button class="icon-button" id="widthToggle" type="button">W</button><select id="readerTheme"><option value="paper">Paper</option><option value="dark">Dark</option><option value="sepia">Sepia</option><option value="oled">OLED Black</option><option value="green">Green Night</option><option value="gold">Gold Dark</option></select><button class="icon-button" id="readerSettingsButton" type="button">S</button><button class="icon-button" id="fullscreenReader" type="button">F</button></div></div>
+          <div class="reader-toolbar"><button class="secondary-button" id="readerBack" type="button">Back to Novel</button><button class="secondary-button" id="readerLibrary" type="button">Back to Library</button><div class="reader-controls"><button class="secondary-button" id="chapterPickerButton" type="button">Chapters</button><button class="secondary-button" id="readerBookmarkButton" type="button">Bookmark</button><button class="icon-button" id="fontDown" type="button">A-</button><button class="icon-button" id="fontUp" type="button">A+</button><button class="icon-button" id="widthToggle" type="button">W</button><select id="readerTheme"><option value="paper">Paper</option><option value="dark">Dark</option><option value="sepia">Sepia</option><option value="oled">OLED Black</option><option value="green">Green Night</option><option value="gold">Gold Dark</option></select><button class="icon-button" id="readerSettingsButton" type="button">&#9881;</button><button class="icon-button" id="fullscreenReader" type="button">F</button></div></div>
           <div class="reader-nav"><button class="secondary-button" id="prevChapter" type="button">Previous</button><button class="chapter-select-button" id="centerChapterPicker" type="button"><p class="eyebrow" id="readerChapterNumber">Chapter</p><h2 id="readerChapterTitle">Open a chapter</h2><p class="reader-progress" id="readerProgress">Choose a chapter to begin.</p></button><button class="secondary-button" id="nextChapter" type="button">Next</button></div>
           <div class="reader-tabs"><button class="reader-tab active" data-reader-tab="original" type="button">Original Story</button><button class="reader-tab" data-reader-tab="reference" type="button">Reference Translation</button><button class="reader-tab" data-reader-tab="ai" type="button">AI Translation</button></div>
           <aside class="chapter-picker" id="chapterPickerPanel" hidden></aside>
@@ -129,7 +131,7 @@ const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 const state = { novels: [], appInfo: {}, admin: { enabled: false, authenticated: false }, workspaces: [{ id: "library", type: "library", title: "Library" }], activeWorkspaceId: "library", currentNovel: null, chapters: [], filteredChapters: [], selectedChapters: new Set(), readerChapter: null, readerTab: "original", currentJob: null, pollTimer: null, readerSize: 18, readerWide: false, chapterPage: 1, pageSize: 50, pickerPage: 1, pickerPageSize: 50, pickerSearch: "", pickerNewest: false, searchTimer: null, readerPrefs: {}, ratings: {}, bookmarks: { novels: {}, chapters: {} }, history: {} };
 
 const els = {
-  apiStatus: $("#apiStatus"), homeButton: $("#homeButton"), themeToggle: $("#themeToggle"), globalSearch: $("#globalSearch"), brandMark: $("#brandMark"), brandName: $("#brandName"), brandSubtitle: $("#brandSubtitle"), libraryIcon: $("#libraryIcon"), workspaceTabs: $("#workspaceTabs"), adminButton: $("#adminButton"), adminDialog: $("#adminDialog"), adminForm: $("#adminForm"), adminPassword: $("#adminPassword"), adminHelp: $("#adminHelp"), supportButton: $("#supportButton"), supportPanel: $("#supportPanel"), mainNav: $$(".nav-button"), currentNovelPill: $("#currentNovelPill"), quickReaderButton: $("#quickReaderButton"), quickTranslateButton: $("#quickTranslateButton"), quickBackupButton: $("#quickBackupButton"),
+  apiStatus: $("#apiStatus"), homeButton: $("#homeButton"), themeToggle: $("#themeToggle"), globalSearch: $("#globalSearch"), brandMark: $("#brandMark"), brandName: $("#brandName"), brandSubtitle: $("#brandSubtitle"), libraryIcon: $("#libraryIcon"), workspaceTabs: $("#workspaceTabs"), breadcrumb: $("#breadcrumb"), adminButton: $("#adminButton"), adminDialog: $("#adminDialog"), adminForm: $("#adminForm"), adminPassword: $("#adminPassword"), adminHelp: $("#adminHelp"), supportButton: $("#supportButton"), supportPanel: $("#supportPanel"), mainNav: $$(".nav-button"), currentNovelPill: $("#currentNovelPill"), quickReaderButton: $("#quickReaderButton"), quickTranslateButton: $("#quickTranslateButton"), quickBackupButton: $("#quickBackupButton"),
   libraryView: $("#libraryView"), detailView: $("#detailView"), librarySections: $("#librarySections"), novelGrid: $("#novelGrid"), novelSearch: $("#novelSearch"), browseFilter: $("#browseFilter"), novelSort: $("#novelSort"), addNovelButton: $("#addNovelButton"), addNovelDialog: $("#addNovelDialog"), addNovelForm: $("#addNovelForm"), cancelAddNovel: $("#cancelAddNovel"), newNovelTitle: $("#newNovelTitle"),
   backToLibrary: $("#backToLibrary"), dashboardCover: $("#dashboardCover"), novelTitle: $("#novelTitle"), novelSummary: $("#novelSummary"), novelTags: $("#novelTags"), novelBookmarkButton: $("#novelBookmarkButton"), novelRating: $("#novelRating"), continueReadingButton: $("#continueReadingButton"), openChaptersButton: $("#openChaptersButton"), refreshNovelButton: $("#refreshNovelButton"), overviewReaderButton: $("#overviewReaderButton"), overviewTranslateButton: $("#overviewTranslateButton"), overviewBackupButton: $("#overviewBackupButton"), novelProgress: $("#novelProgress"), backupSummary: $("#backupSummary"), metricStorage: $("#metricStorage"), metricOriginal: $("#metricOriginal"), metricReference: $("#metricReference"), metricTranslated: $("#metricTranslated"), metricRemaining: $("#metricRemaining"), metricPercent: $("#metricPercent"), metricUpdated: $("#metricUpdated"), metricBackup: $("#metricBackup"), metricModel: $("#metricModel"), metricStatus: $("#metricStatus"),
   chapterSearch: $("#chapterSearch"), chapterFilter: $("#chapterFilter"), chapterSort: $("#chapterSort"), chapterPageSize: $("#chapterPageSize"), chapterJump: $("#chapterJump"), chapterList: $("#chapterList"), selectMissingAi: $("#selectMissingAi"), selectCurrentPage: $("#selectCurrentPage"), clearSelectedChapters: $("#clearSelectedChapters"), selectedChapterCount: $("#selectedChapterCount"), prevPage: $("#prevPage"), nextPage: $("#nextPage"), pageInfo: $("#pageInfo"),
@@ -150,12 +152,16 @@ function date(value) { if (!value) return "Never"; try { return new Intl.DateTim
 function status(value) { return ({ completed: "translated", estimated: "queued", running: "translating", test_completed: "translated" }[value] || value || "unknown"); }
 function money(value) { return `$${Number(value || 0).toFixed(4)}`; }
 
-function setTheme(theme) { const dark = theme === "dark"; document.body.classList.toggle("dark", dark); document.body.classList.toggle("light", !dark); localStorage.setItem("igt-theme", dark ? "dark" : "light"); }
+function setTheme(theme) { const dark = theme === "dark"; document.body.classList.toggle("dark", dark); document.body.classList.toggle("light", !dark); localStorage.setItem("igt-theme", dark ? "dark" : "light"); if (els.themeToggle) els.themeToggle.innerHTML = dark ? "&#9790;" : "&#9728;"; }
 function updateMainNav(active = null) {
-  const selected = active || (els.libraryView.classList.contains("active") ? "library" : activePanelName());
+  const selected = active === "library" ? "home" : (active || (els.libraryView.classList.contains("active") ? "home" : activePanelName()));
   els.mainNav.forEach((button) => button.classList.toggle("active", button.dataset.mainNav === selected));
   els.currentNovelPill.textContent = state.currentNovel ? state.currentNovel.title : "Library";
   els.quickBackupButton.href = state.currentNovel ? `/api/novels/${state.currentNovel.novel_id}/backup` : "#";
+  els.quickReaderButton.hidden = !state.currentNovel;
+  els.breadcrumb.innerHTML = state.currentNovel ? `<button type="button" data-crumb-home>Home</button><span>/</span><button type="button" data-crumb-library>Library</button><span>/</span><strong>${esc(state.currentNovel.title)}</strong>` : "<strong>Home</strong>";
+  els.breadcrumb.querySelector("[data-crumb-home]")?.addEventListener("click", () => showLibrary());
+  els.breadcrumb.querySelector("[data-crumb-library]")?.addEventListener("click", () => { showLibrary(); els.browseFilter.value = "bookmarked"; renderNovels(); });
 }
 function showView(name) { els.libraryView.classList.toggle("active", name === "library"); els.detailView.classList.toggle("active", name === "detail"); updateMainNav(name === "library" ? "library" : activePanelName()); }
 function switchTab(tab) { if (!state.admin.authenticated && ["translate", "backups", "settings"].includes(tab)) { toast("Admin login required.", true); return; } tabs.forEach((button) => button.classList.toggle("active", button.dataset.tab === tab)); panels.forEach((panel) => panel.classList.toggle("active", panel.id === `${tab}Panel`)); updateMainNav(tab); }
@@ -175,15 +181,16 @@ function isChapterBookmarked(novelId, chapter) { return Boolean(state.bookmarks.
 function chapterHistory(novelId, chapter) { return state.history[chapterKey(novelId, chapter)] || null; }
 function toggleNovelBookmark(novelId) { state.bookmarks.novels[novelId] = !state.bookmarks.novels[novelId]; if (!state.bookmarks.novels[novelId]) delete state.bookmarks.novels[novelId]; saveLocalUiState(); renderNovels(); if (state.currentNovel?.novel_id === novelId) renderDetail(); }
 function toggleChapterBookmark(novelId, chapter) { const key = chapterKey(novelId, chapter); state.bookmarks.chapters[key] = !state.bookmarks.chapters[key]; if (!state.bookmarks.chapters[key]) delete state.bookmarks.chapters[key]; saveLocalUiState(); renderChapters(); renderChapterPicker(); if (Number(state.readerChapter) === Number(chapter)) updateReaderBookmarkState(); }
-function setRating(novelId, rating) { state.ratings[novelId] = rating; saveLocalUiState(); renderNovels(); if (state.currentNovel?.novel_id === novelId) renderDetail(); toast(`Rated ${rating} star${rating === 1 ? "" : "s"}.`); }
-function starMarkup(novelId, interactive = false) { const rating = ratingFor(novelId); return `<span class="stars ${interactive ? "interactive" : ""}">${[1,2,3,4,5].map((value) => `<button type="button" ${interactive ? `data-rating="${value}"` : "disabled"} class="${value <= rating ? "filled" : ""}" aria-label="${value} star">★</button>`).join("")}</span><span class="rating-value">${rating ? rating.toFixed(1) : "Not rated"}</span>`; }
+function setRating(novelId, rating) { if (!state.admin.authenticated) { toast("Login required to rate.", true); return; } state.ratings[novelId] = rating; saveLocalUiState(); renderNovels(); if (state.currentNovel?.novel_id === novelId) renderDetail(); toast(`Rated ${rating} star${rating === 1 ? "" : "s"}.`); }
+function starMarkup(novelId, interactive = false) { const rating = ratingFor(novelId); return `<span class="stars ${interactive ? "interactive" : ""}">${[1,2,3,4,5].map((value) => `<button type="button" ${interactive ? `data-rating="${value}"` : "disabled"} class="${value <= rating ? "filled" : ""}" aria-label="${value} star">&#9733;</button>`).join("")}</span><span class="rating-value">${rating ? rating.toFixed(1) : "Not rated"}</span>`; }
 function readCountFor(novelId) { return Object.keys(state.history).filter((key) => key.startsWith(`${novelId}:`)).length; }
 function lastReaderKey(novelId) { return `igt-last-reader:${novelId}`; }
 function saveReaderMemory() { if (!state.currentNovel || !state.readerChapter) return; const item = { novel_id: state.currentNovel.novel_id, chapter: state.readerChapter, mode: state.readerTab, updated_at: new Date().toISOString() }; localStorage.setItem("igt-last-reader", JSON.stringify(item)); localStorage.setItem(lastReaderKey(state.currentNovel.novel_id), JSON.stringify(item)); state.history[chapterKey(state.currentNovel.novel_id, state.readerChapter)] = item; saveLocalUiState(); }
 function loadReaderMemory(novelId = state.currentNovel?.novel_id) { try { return JSON.parse(localStorage.getItem(lastReaderKey(novelId)) || localStorage.getItem("igt-last-reader") || "{}"); } catch { return {}; } }
 function firstReadableChapter() { return state.chapters[0]?.chapter || null; }
 function targetReaderChapter() { const memory = loadReaderMemory(); return state.chapters.some((chapter) => Number(chapter.chapter) === Number(memory.chapter)) ? Number(memory.chapter) : firstReadableChapter(); }
-function novelMatchesBrowse(novel, filter) { const p = progressPercent(novel.counts); if (filter === "in-progress") return p > 0 && p < 100; if (filter === "completed") return p >= 100; if (filter === "has-reference") return novel.counts.reference_files > 0; if (filter === "missing-reference") return novel.counts.reference_files === 0; if (filter === "has-ai") return novel.counts.translated_chapters > 0; if (filter === "needs-translation") return novel.counts.remaining_chapters > 0; if (filter === "bookmarked") return isNovelBookmarked(novel.novel_id); if (filter === "recently-read") return readCountFor(novel.novel_id) > 0; return true; }
+function defaultTags(novel) { return (novel.tags || []).length ? novel.tags : (novel.novel_id === "i-am-god" ? ["Fantasy", "Mythic", "Divine", "Civilization", "Mystery"] : []); }
+function novelMatchesBrowse(novel, filter) { const p = progressPercent(novel.counts); if (filter === "in-progress") return p > 0 && p < 100; if (filter === "completed") return p >= 100; if (filter === "has-reference") return novel.counts.reference_files > 0; if (filter === "missing-reference") return novel.counts.reference_files === 0; if (filter === "has-ai") return novel.counts.translated_chapters > 0; if (filter === "needs-translation") return novel.counts.remaining_chapters > 0; if (filter === "bookmarked") return isNovelBookmarked(novel.novel_id); if (filter === "recently-read") return readCountFor(novel.novel_id) > 0; if (filter.startsWith("tag:")) return defaultTags(novel).map((tag) => tag.toLowerCase()).includes(filter.slice(4).toLowerCase()); return true; }
 function sortNovels(novels, sort) { return novels.sort((a, b) => sort === "name" ? a.title.localeCompare(b.title) : sort === "progress" ? progressPercent(b.counts) - progressPercent(a.counts) : sort === "rating" ? ratingFor(b.novel_id) - ratingFor(a.novel_id) : sort === "translated" ? b.counts.translated_chapters - a.counts.translated_chapters : sort === "remaining" ? a.counts.remaining_chapters - b.counts.remaining_chapters : String(b.updated_at).localeCompare(String(a.updated_at))); }
 function applyAppInfo() {
   const info = state.appInfo || {};
@@ -195,13 +202,14 @@ function applyAppInfo() {
   document.documentElement.style.setProperty("--bg", theme.page_background || "#080d0c");
   document.documentElement.style.setProperty("--reader-bg", theme.reader_background || "#0f1513");
   document.documentElement.style.setProperty("--reader-text", theme.reader_text || "#efe8d5");
-  els.brandName.textContent = info.name || "IAmGodTranslator";
-  els.brandSubtitle.textContent = info.subtitle || "Novel library";
+  const displayName = !info.name || info.name === "IAmGodTranslator" ? "GodTranslator" : info.name;
+  els.brandName.textContent = displayName;
+  els.brandSubtitle.textContent = info.subtitle || "Novel Library";
   renderIcon(els.brandMark, info.icon_url);
   renderIcon(els.libraryIcon, info.icon_url);
   if (els.appDisplayName) {
-    els.appDisplayName.value = info.name || "IAmGodTranslator";
-    els.appSubtitleInput.value = info.subtitle || "Novel library";
+    els.appDisplayName.value = displayName;
+    els.appSubtitleInput.value = info.subtitle || "Novel Library";
     els.themeMainAccent.value = theme.main_accent || "#68d1b4";
     els.themeHighlight.value = theme.highlight || "#d6bf7a";
     els.themeLogoAccent.value = theme.logo_accent || "#68d1b4";
@@ -362,7 +370,7 @@ function closeAddNovelDialog() {
 async function loadAdminStatus() { state.admin = await api("/api/admin/status").catch(() => ({ enabled: false, authenticated: false })); renderAdminState(); }
 async function loadAppInfo() { state.appInfo = await api("/api/app").catch(() => ({})); applyAppInfo(); applyReaderPrefs(); }
 async function loadNovels() { els.novelGrid.innerHTML = '<div class="empty-state">Loading library...</div>'; state.novels = (await api("/api/novels")).novels || []; renderNovels(); }
-function renderAdminState() { document.body.classList.toggle("is-admin", state.admin.authenticated); els.adminButton.textContent = state.admin.authenticated ? "Logout" : "Admin"; els.adminHelp.textContent = state.admin.enabled ? "Enter the admin password to unlock private controls." : "Admin login is disabled because ADMIN_PASSWORD is not set. Private tools are hidden."; if (!state.admin.authenticated && ["translatePanel", "backupsPanel", "settingsPanel"].some((id) => document.getElementById(id).classList.contains("active"))) switchTab("chapters"); }
+function renderAdminState() { document.body.classList.toggle("is-admin", state.admin.authenticated); els.adminButton.textContent = state.admin.authenticated ? "Admin / Logout" : "Login"; els.adminHelp.textContent = state.admin.enabled ? "Enter your admin password to open the control panel." : "Login is disabled because ADMIN_PASSWORD is not set. Private tools are hidden."; if (!state.admin.authenticated && ["translatePanel", "backupsPanel", "settingsPanel"].some((id) => document.getElementById(id).classList.contains("active"))) switchTab("chapters"); }
 
 function renderLibrarySections() {
   const novels = state.novels.slice();
@@ -393,15 +401,15 @@ function renderNovels() {
   const q = els.novelSearch.value.toLowerCase();
   const sort = els.novelSort.value;
   const filter = els.browseFilter.value;
-  let novels = state.novels.filter((novel) => novelMatchesBrowse(novel, filter) && `${novel.title} ${novel.summary || ""} ${(novel.tags || []).join(" ")}`.toLowerCase().includes(q));
+  let novels = state.novels.filter((novel) => novelMatchesBrowse(novel, filter) && `${novel.title} ${novel.summary || ""} ${defaultTags(novel).join(" ")}`.toLowerCase().includes(q));
   novels = sortNovels(novels, sort);
   renderLibrarySections();
-  els.novelGrid.innerHTML = novels.length ? "" : '<div class="empty-state">No novels found. Add a novel to begin.</div>';
+  els.novelGrid.innerHTML = novels.length ? "" : filter === "bookmarked" ? '<div class="empty-state">No saved novels yet. Browse novels and bookmark one.</div>' : '<div class="empty-state">No novels found for this view.</div>';
   for (const novel of novels) {
     const card = document.createElement("article");
     card.className = "novel-card";
     const percent = progressPercent(novel.counts);
-    card.innerHTML = `${coverMarkup(novel, "library-cover")}<div class="novel-card-body"><div class="card-title-row"><h2>${esc(novel.title)}</h2><button class="bookmark-button card-bookmark ${isNovelBookmarked(novel.novel_id) ? "active" : ""}" type="button">${isNovelBookmarked(novel.novel_id) ? "Bookmarked" : "Bookmark"}</button></div><p class="card-meta">${esc(novel.summary || "Novel ready for reading.")}</p><div class="card-rating">${starMarkup(novel.novel_id)}</div><div class="tag-row">${(novel.tags || []).slice(0, 3).map((tag) => `<span>${esc(tag)}</span>`).join("")}</div><div class="progress-track"><div class="progress-fill" style="width:${percent}%"></div></div><div class="card-stats"><div><span>Original</span><strong>${novel.counts.original_files}</strong></div><div><span>Reference</span><strong>${novel.counts.reference_files}</strong></div><div><span>AI</span><strong>${novel.counts.translated_chapters}</strong></div><div><span>Remaining</span><strong>${novel.counts.remaining_chapters}</strong></div></div><p class="card-meta">Updated ${date(novel.updated_at)} · ${percent}% translated · ${readCountFor(novel.novel_id)} read</p><div class="card-actions"><button class="primary-button continue-card" type="button">Continue Reading</button><button class="secondary-button reader-card" type="button">Open Reader</button><button class="secondary-button manage-card" type="button">Manage</button></div></div>`;
+    card.innerHTML = `${coverMarkup(novel, "library-cover")}<div class="novel-card-body"><div class="card-title-row"><h2>${esc(novel.title)}</h2><button class="bookmark-button card-bookmark ${isNovelBookmarked(novel.novel_id) ? "active" : ""}" type="button">${isNovelBookmarked(novel.novel_id) ? "Bookmarked" : "Bookmark"}</button></div><p class="card-meta">${esc(novel.summary || "Novel ready for reading.")}</p><div class="card-rating">${starMarkup(novel.novel_id)}</div><div class="tag-row">${defaultTags(novel).slice(0, 4).map((tag) => `<span>${esc(tag)}</span>`).join("")}</div><div class="progress-track"><div class="progress-fill" style="width:${percent}%"></div></div><div class="card-stats"><div><span>Chapters</span><strong>${novel.counts.original_files}</strong></div><div><span>Reference</span><strong>${novel.counts.reference_files}</strong></div><div><span>Translated</span><strong>${novel.counts.translated_chapters}</strong></div><div><span>Remaining</span><strong>${novel.counts.remaining_chapters}</strong></div></div><p class="card-meta">Updated ${date(novel.updated_at)} · ${percent}% translated · ${readCountFor(novel.novel_id)} read</p><div class="card-actions"><button class="primary-button continue-card" type="button">Continue Reading</button><button class="secondary-button reader-card" type="button">Open Reader</button><button class="secondary-button manage-card" type="button">Manage</button></div></div>`;
     card.querySelector(".card-bookmark").addEventListener("click", () => toggleNovelBookmark(novel.novel_id));
     card.querySelector(".manage-card").addEventListener("click", () => openNovel(novel.novel_id));
     card.querySelector(".reader-card").addEventListener("click", async () => { await openNovel(novel.novel_id, { initialTab: "reader" }); openReader(firstReadableChapter(), state.readerTab); });
@@ -437,7 +445,7 @@ function renderDetail() {
   els.novelBookmarkButton.classList.toggle("active", isNovelBookmarked(n.novel_id));
   els.novelRating.innerHTML = starMarkup(n.novel_id, true);
   els.novelRating.querySelectorAll("[data-rating]").forEach((button) => button.onclick = () => setRating(n.novel_id, Number(button.dataset.rating)));
-  els.novelTags.innerHTML = (n.tags || []).length ? n.tags.map((tag) => `<span>${esc(tag)}</span>`).join("") : "<span>Novel</span>";
+  els.novelTags.innerHTML = defaultTags(n).length ? defaultTags(n).map((tag) => `<span>${esc(tag)}</span>`).join("") : "<span>Novel</span>";
   els.metricStorage.textContent = n.storage_mode;
   els.metricOriginal.textContent = c.original_files;
   els.metricReference.textContent = c.reference_files;
@@ -458,7 +466,7 @@ function renderDetail() {
   els.downloadBackup.href = `/api/novels/${n.novel_id}/backup`;
   els.settingsTitle.value = n.title;
   els.settingsSummary.value = n.summary || "";
-  els.settingsTags.value = (n.tags || []).join(", ");
+  els.settingsTags.value = defaultTags(n).join(", ");
   els.sourceLanguage.value = n.source_language || "Chinese";
   els.targetLanguage.value = n.target_language || "English";
   els.defaultModel.value = n.current_model || "gpt-4o-mini";
@@ -627,7 +635,8 @@ function debounceChapters() { clearTimeout(state.searchTimer); state.searchTimer
 async function openCurrentReader() { if (!state.currentNovel) { const last = loadReaderMemory(); if (last.novel_id) return openNovel(last.novel_id, { initialTab: "reader" }).then(() => openReader(last.chapter || firstReadableChapter(), last.mode || state.readerTab)); return toast("Open a novel first.", true); } return openReader(targetReaderChapter(), loadReaderMemory().mode || state.readerTab); }
 async function refreshCurrentNovel(tab = activePanelName()) { if (!state.currentNovel) return; await openNovel(state.currentNovel.novel_id, { initialTab: tab, skipSave: true, skipHistory: true }); toast("Novel data refreshed."); }
 function scrollLibrarySection(id) { showLibrary(); requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" })); }
-function cycleTheme() { const current = localStorage.getItem("igt-theme") || "dark"; const next = current === "dark" ? "light" : current === "light" ? "system" : "dark"; if (next === "system") { document.body.classList.toggle("dark", matchMedia("(prefers-color-scheme: dark)").matches); localStorage.setItem("igt-theme", "system"); toast("Theme set to system."); } else { setTheme(next); toast(`Theme set to ${next}.`); } }
+function applyBrowse(filter = "all", query = "") { showLibrary(); els.browseFilter.value = filter; els.novelSearch.value = query; renderNovels(); requestAnimationFrame(() => els.novelGrid.scrollIntoView({ behavior: "smooth", block: "start" })); }
+function cycleTheme() { const next = document.body.classList.contains("dark") ? "light" : "dark"; setTheme(next); toast(`Theme set to ${next}.`); }
 function bind() {
   els.homeButton.onclick = () => showLibrary();
   els.backToLibrary.onclick = () => showLibrary();
@@ -646,11 +655,15 @@ function bind() {
   els.selectMissingAi.onclick = () => { state.selectedChapters = new Set(state.chapters.filter((c) => !c.has_translation).map((c) => chapterKey(state.currentNovel.novel_id, c.chapter))); renderChapters(); };
   els.selectCurrentPage.onclick = () => { const start = (state.chapterPage - 1) * state.pageSize; state.filteredChapters.slice(start, start + state.pageSize).forEach((c) => state.selectedChapters.add(chapterKey(state.currentNovel.novel_id, c.chapter))); renderChapters(); };
   els.clearSelectedChapters.onclick = () => { state.selectedChapters.clear(); renderChapters(); };
+  document.querySelector("[data-home-browse]").onclick = () => applyBrowse("all");
+  document.querySelector("[data-home-continue]").onclick = () => openCurrentReader().catch((err) => toast(err.message, true));
+  document.querySelector("[data-home-login]").onclick = () => els.adminButton.click();
   els.themeToggle.onclick = cycleTheme;
   els.mainNav.forEach((button) => button.onclick = () => {
     const target = button.dataset.mainNav;
-    if (target === "library") return showLibrary();
-    if (target === "browse") return scrollLibrarySection("libraryView");
+    if (target === "home") return showLibrary();
+    if (target === "library") return applyBrowse("bookmarked");
+    if (target === "browse") return applyBrowse("all");
     if (target === "rankings") return scrollLibrarySection("rankings-section");
     if (target === "updates") return scrollLibrarySection("updates-section");
     if (!state.currentNovel) return toast("Open a novel first.", true);
@@ -717,6 +730,7 @@ function bind() {
     if (target === "backups" || target === "settings") return state.currentNovel ? switchTab(target) : toast("Open a novel first.", true);
     showLibrary();
   });
+  document.querySelectorAll("[data-category]").forEach((button) => button.onclick = () => applyBrowse(button.dataset.category === "Completed" ? "completed" : `tag:${button.dataset.category}`));
   document.addEventListener("keydown", (event) => {
     if (event.target && ["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName)) return;
     if (event.key === "ArrowLeft" && els.readerPanel.classList.contains("active")) adjacent(-1);
@@ -727,6 +741,6 @@ function bind() {
   window.addEventListener("hashchange", handleRouteChange);
 }
 
-function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=10").then((registration) => registration.update()).catch(() => {}); }
-async function init() { registerServiceWorker(); if (!window.location.hash) pushRoute(libraryRoute(), true); const savedTheme = localStorage.getItem("igt-theme") || "dark"; if (savedTheme === "system") document.body.classList.toggle("dark", matchMedia("(prefers-color-scheme: dark)").matches); else setTheme(savedTheme); loadLocalUiState(); bind(); loadReaderPrefs(); renderWorkspaces(); await loadAppInfo(); await loadAdminStatus(); try { await api("/api/health"); els.apiStatus.textContent = "Online"; els.apiStatus.classList.add("ok"); } catch { els.apiStatus.textContent = "Offline"; } await loadNovels(); await applyRouteFromLocation(); }
+function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=11").then((registration) => registration.update()).catch(() => {}); }
+async function init() { registerServiceWorker(); if (!window.location.hash) pushRoute(libraryRoute(), true); setTheme(localStorage.getItem("igt-theme") || "dark"); loadLocalUiState(); bind(); loadReaderPrefs(); renderWorkspaces(); await loadAppInfo(); await loadAdminStatus(); try { await api("/api/health"); els.apiStatus.textContent = "Online"; els.apiStatus.classList.add("ok"); } catch { els.apiStatus.textContent = "Offline"; } await loadNovels(); await applyRouteFromLocation(); }
 init().catch((error) => toast(error.message, true));

@@ -1,12 +1,12 @@
 {
-  "name": "IAmGodTranslator",
-  "short_name": "Translator",
-  "description": "I Am God Chinese-to-English translation queue.",
+  "name": "GodTranslator",
+  "short_name": "GodTranslator",
+  "description": "Novel reading and translation library.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#f5f7f2",
-  "theme_color": "#167c6b",
+  "background_color": "#070b0a",
+  "theme_color": "#1c1710",
   "icons": [
     {
       "src": "/static/icons/icon.svg",
