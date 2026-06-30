@@ -155,6 +155,26 @@ def storage_health_report() -> dict[str, object]:
         except OSError:
             return 0
 
+    local_cache_counts = {
+        "originals": count("original/*.txt") + count("originals/*.txt"),
+        "references": count("reference/*.txt") + count("references/*.txt"),
+        "ai_translations": count("ai/*.txt") + count("english/*.txt") + count("ai_translations/*.txt"),
+        "prompts": count("prompts/*.txt"),
+        "backups": count("*.zip"),
+        "covers_uploads": count("cover.*") + count("covers/*") + count("uploads/*"),
+    }
+    supabase_counts: dict[str, object] = {}
+    active_counts: dict[str, object] = {}
+    try:
+        for item in novels.iter_metadata():
+            novel_id = str(item["novel_id"])
+            supabase_counts[novel_id] = novels.remote_counts(novel_id).get("counts", {}) if novels.remote is not None else {}
+            active_counts[novel_id] = novels.active_counts(novel_id)
+    except Exception as exc:
+        warnings.append(f"Count hydration warning: {exc.__class__.__name__}")
+    if novels.remote is not None and any(sum(int(v or 0) for v in counts.values() if isinstance(v, int)) for counts in supabase_counts.values()) and not any(local_cache_counts.values()):
+        warnings.append("Local cache is empty but Supabase has files. The app is using Supabase/database counts and can rebuild the local cache on demand.")
+
     report = service.storage_status()
     report.update(
         {
@@ -163,14 +183,11 @@ def storage_health_report() -> dict[str, object]:
             "writable": writable,
             "warnings": warnings,
             "folders": folders,
-            "counts": {
-                "originals": count("original/*.txt") + count("originals/*.txt"),
-                "references": count("reference/*.txt") + count("references/*.txt"),
-                "ai_translations": count("ai/*.txt") + count("english/*.txt") + count("ai_translations/*.txt"),
-                "prompts": count("prompts/*.txt"),
-                "backups": count("*.zip"),
-                "covers_uploads": count("cover.*") + count("covers/*") + count("uploads/*"),
-            },
+            "counts": local_cache_counts,
+            "local_cache_counts": local_cache_counts,
+            "supabase_counts": supabase_counts,
+            "database_counts": {},
+            "active_counts_used_by_app": active_counts,
             "database": database.status(),
         }
     )
@@ -434,6 +451,22 @@ async def migrate_to_supabase(request: Request) -> dict[str, object]:
         return novels.migrate_to_supabase()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/admin/index/rebuild")
+async def rebuild_index(request: Request, payload: Annotated[dict[str, object] | None, Body()] = None) -> dict[str, object]:
+    require_admin(request)
+    novel_id = str((payload or {}).get("novel_id") or "").strip() or None
+    return novels.rebuild_index(novel_id)
+
+
+@app.post("/api/admin/novels/{novel_id}/hydrate-from-supabase")
+async def hydrate_novel_from_supabase(request: Request, novel_id: str) -> dict[str, object]:
+    require_admin(request)
+    if novels.remote is None:
+        raise HTTPException(status_code=400, detail="Supabase storage is not enabled.")
+    novels.hydrate_remote_metadata(novel_id)
+    return novels.rebuild_index(novel_id)
 
 
 @app.post("/api/admin/storage/clear-backup-state")
