@@ -4,6 +4,7 @@ import logging
 import mimetypes
 import os
 import json
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -57,6 +58,11 @@ class SupabaseStorage:
         except HTTPError as exc:
             if exc.code == 404:
                 return 404, b""
+            try:
+                body = exc.read().decode("utf-8", errors="replace")[:600]
+            except Exception:
+                body = ""
+            logger.warning("Supabase Storage HTTP %s for %s %s: %s", exc.code, method, url.split("/storage/v1/", 1)[-1], body)
             raise
 
     def read_bytes(self, path: str) -> bytes | None:
@@ -71,11 +77,10 @@ class SupabaseStorage:
 
     def write_bytes(self, path: str, data: bytes, content_type: str | None = None) -> None:
         headers = {
-            **self.headers,
             "x-upsert": "true",
             "Content-Type": content_type or mimetypes.guess_type(path)[0] or "application/octet-stream",
         }
-        self.request("PUT", self.object_url(path), data=data, headers=headers)
+        self.request("POST", self.object_url(path), data=data, headers=headers)
 
     def write_text(self, path: str, text: str) -> None:
         self.write_bytes(path, text.encode("utf-8"), "text/plain; charset=utf-8")
@@ -159,6 +164,8 @@ class SupabaseStorage:
     def health(self) -> dict[str, object]:
         buckets: dict[str, bool] = {}
         reachable = False
+        upload_test = False
+        upload_error: str | None = None
         for bucket in SUPABASE_BUCKETS:
             try:
                 status, _data = self.request("POST", f"{self.base_url}/object/list/{bucket}", data=json.dumps({"prefix": "", "limit": 1}).encode("utf-8"), headers={"Content-Type": "application/json"})
@@ -166,4 +173,12 @@ class SupabaseStorage:
                 reachable = reachable or buckets[bucket]
             except (HTTPError, URLError, TimeoutError, OSError):
                 buckets[bucket] = False
-        return {"reachable": reachable, "bucket": self.bucket, "buckets": buckets}
+        if reachable:
+            test_path = f".health/{uuid.uuid4().hex}.txt"
+            try:
+                self.write_text(test_path, "ok")
+                upload_test = self.read_text(test_path) == "ok"
+                self.delete(test_path)
+            except (HTTPError, URLError, TimeoutError, OSError, RuntimeError) as exc:
+                upload_error = f"{exc.__class__.__name__}: Supabase upload test failed."
+        return {"reachable": reachable, "bucket": self.bucket, "buckets": buckets, "upload_test": upload_test, "upload_error": upload_error}

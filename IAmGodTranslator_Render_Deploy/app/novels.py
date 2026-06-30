@@ -101,6 +101,8 @@ class NovelManager:
             return {"configured": config.configured, "active": False, "reachable": False, "bucket": config.bucket, "buckets": {}, "warnings": warnings}
         try:
             health = self.remote.health()
+            if not health.get("upload_test"):
+                warnings.append(str(health.get("upload_error") or "Supabase upload test failed. Check bucket permissions and service role key."))
             return {"configured": config.configured, "active": True, **health, "warnings": warnings}
         except Exception as exc:
             warnings.append(f"Supabase Storage check failed: {exc.__class__.__name__}")

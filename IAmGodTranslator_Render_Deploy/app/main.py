@@ -36,6 +36,20 @@ try:
 except Exception as exc:  # pragma: no cover - public pages should stay up if the DB is unhealthy.
     database_error = str(exc)
     logging.getLogger(__name__).warning("Database initialization failed: %s", exc)
+    if database.backend == "postgres":
+        fallback_warning = (
+            "Postgres DATABASE_URL failed, so the app is using SQLite fallback. "
+            "If this is Supabase on Render, use the Supabase pooler/Supavisor connection string instead of the direct IPv6 connection string."
+        )
+        try:
+            database = AppDatabase(service.data_dir, force_sqlite=True)
+            database.warning = fallback_warning
+            database.initialize()
+            database_error = None
+            logging.getLogger(__name__).warning(fallback_warning)
+        except Exception as fallback_exc:
+            database_error = f"{exc}; SQLite fallback failed: {fallback_exc}"
+            logging.getLogger(__name__).warning("SQLite database fallback failed: %s", fallback_exc)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -107,6 +121,8 @@ def storage_health_report() -> dict[str, object]:
         warnings.append(f"Database warning: {database_error}")
     if database.warning:
         warnings.append(database.warning)
+    if os.getenv("DATABASE_URL", "").strip().startswith(("postgres://", "postgresql://")):
+        warnings.append("If DATABASE_URL uses a direct IPv6 Supabase connection, Render may fail with Network is unreachable. Use Supabase Connection Pooling / Supavisor instead.")
     if (os.getenv("STORAGE_BACKEND") or "local").lower() != "supabase":
         warnings.append("Storage backend is local fallback. Render Free local files may disappear after restart/redeploy.")
 

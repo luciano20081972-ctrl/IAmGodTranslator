@@ -16,6 +16,8 @@ GodTranslator can stay on Render Free while Supabase stores long-term data. Rend
    - `SUPABASE_SERVICE_ROLE_KEY`
    - `DATABASE_URL`
 
+For `DATABASE_URL` on Render, use Supabase Connect -> Connection Pooling / Supavisor. Choose the Transaction pooler or Session pooler connection string. Do not use the direct connection string on Render if it resolves to IPv6, because Render may show `Network is unreachable`.
+
 ## 2. Add Render Environment Variables
 
 Set these on Render:
@@ -26,7 +28,7 @@ SUPABASE_URL=your Supabase project URL
 SUPABASE_ANON_KEY=your Supabase anon key
 SUPABASE_SERVICE_ROLE_KEY=your Supabase service role key
 SUPABASE_BUCKET=novel-files
-DATABASE_URL=your Supabase Postgres connection string
+DATABASE_URL=your Supabase pooler/Supavisor Postgres connection string
 OPENAI_API_KEY=your OpenAI API key
 OPENAI_MODEL=gpt-4o-mini
 PYTHON_VERSION=3.12.0

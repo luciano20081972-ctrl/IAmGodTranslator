@@ -49,14 +49,17 @@ class PostgresConnection:
 
 
 class AppDatabase:
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, force_sqlite: bool = False):
         self.data_dir = data_dir
         self.database_url = os.getenv("DATABASE_URL", "").strip()
         self.warning: str | None = None
+        self.force_sqlite = force_sqlite
         self.backend = self._backend()
         self.path = self._sqlite_path()
 
     def _backend(self) -> str:
+        if self.force_sqlite:
+            return "sqlite"
         if self.database_url and not self.database_url.startswith("sqlite:///"):
             return "postgres"
         return "sqlite"
