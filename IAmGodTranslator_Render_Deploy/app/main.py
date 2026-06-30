@@ -13,6 +13,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Request, Response,
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.backup_jobs import BackupJobManager
 from app.database import AppDatabase
 from app.novels import NovelManager
 from app.services import PROJECT_ROOT, TranslationService
@@ -51,12 +52,14 @@ except Exception as exc:  # pragma: no cover - public pages should stay up if th
             database_error = f"{exc}; SQLite fallback failed: {fallback_exc}"
             logging.getLogger(__name__).warning("SQLite database fallback failed: %s", fallback_exc)
 
+backup_jobs = BackupJobManager(service.data_dir, novels, database, os.getenv("STORAGE_BACKEND", "local").lower())
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 ADMIN_COOKIE = "igt_admin"
 AUTH_COOKIE = "gt_session"
 REQUIRED_STORAGE_FOLDERS = ("novels", "originals", "references", "ai_translations", "prompts", "backups", "uploads", "covers", "settings", "exports", "logs")
-BACKUP_DISABLED_MESSAGE = "Full backup/restore is disabled on Render Free because it can freeze the web worker. Use ZIP export/import until background jobs are added."
+BACKUP_DISABLED_MESSAGE = "Legacy synchronous full backup/restore is disabled on Render Free. Use Admin Backups for async full backup and restore jobs."
 
 
 def admin_password() -> str | None:
@@ -444,6 +447,70 @@ async def clear_backup_state(request: Request) -> dict[str, object]:
     return {"ok": True, **cleared}
 
 
+@app.post("/api/admin/backups/full/start")
+async def start_full_backup(request: Request) -> JSONResponse:
+    require_admin(request)
+    return JSONResponse(backup_jobs.start_full_backup(), status_code=202)
+
+
+@app.post("/api/admin/backups/full/restore")
+async def start_full_restore(
+    request: Request,
+    backup: Annotated[UploadFile, File(description="Full backup ZIP")],
+    dry_run: Annotated[bool, Form()] = True,
+    conflict_mode: Annotated[str, Form()] = "write_missing_only",
+) -> JSONResponse:
+    require_admin(request)
+    if not backup.filename or not backup.filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Restore upload must be a .zip file.")
+    try:
+        return JSONResponse(backup_jobs.start_full_restore(await backup.read(), backup.filename, dry_run=dry_run, conflict_mode=conflict_mode), status_code=202)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/admin/backups/jobs")
+async def list_backup_jobs(request: Request) -> dict[str, object]:
+    require_admin(request)
+    return {"ok": True, "jobs": backup_jobs.list_jobs()}
+
+
+@app.get("/api/admin/backups/jobs/{job_id}")
+async def get_backup_job(request: Request, job_id: str) -> dict[str, object]:
+    require_admin(request)
+    job = backup_jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Backup job not found.")
+    return job
+
+
+@app.post("/api/admin/backups/jobs/{job_id}/cancel")
+async def cancel_backup_job(request: Request, job_id: str) -> dict[str, object]:
+    require_admin(request)
+    job = backup_jobs.cancel(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Backup job not found.")
+    return job
+
+
+@app.get("/api/admin/backups/latest")
+async def latest_backup(request: Request) -> dict[str, object]:
+    require_admin(request)
+    return {"ok": True, "backup": backup_jobs.latest()}
+
+
+@app.get("/api/admin/backups/jobs/{job_id}/download")
+async def download_backup_job(request: Request, job_id: str) -> FileResponse:
+    require_admin(request)
+    job = backup_jobs.get_job(job_id)
+    if job is None or job.get("status") != "complete" or not job.get("backup_file"):
+        raise HTTPException(status_code=404, detail="Completed backup file not found.")
+    path = Path(str(job["backup_file"]))
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Backup file is no longer available locally.")
+    return FileResponse(path, media_type="application/zip", filename=path.name)
+
+
 @app.get("/api/me/library")
 async def my_library(request: Request) -> dict[str, object]:
     user = require_user(request)
@@ -509,6 +576,18 @@ async def remove_chapter_bookmark(request: Request, novel_id: str, chapter_numbe
     user = require_user(request)
     database.set_chapter_bookmark(str(user["id"]), novel_id, chapter_number, False)
     return {"bookmarked": False}
+
+
+@app.get("/api/admin/novels/{novel_id}/content-audit")
+async def content_audit(request: Request, novel_id: str) -> dict[str, object]:
+    require_admin(request)
+    return novels.content_audit(novel_id)
+
+
+@app.post("/api/admin/novels/{novel_id}/repair-content-map")
+async def repair_content_map(request: Request, novel_id: str, payload: Annotated[dict[str, object], Body()]) -> dict[str, object]:
+    require_admin(request)
+    return novels.repair_content_map(novel_id, payload)
 
 
 @app.get("/api/admin/users")

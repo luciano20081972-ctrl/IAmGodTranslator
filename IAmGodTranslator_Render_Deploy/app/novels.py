@@ -269,27 +269,37 @@ class NovelManager:
             raise ValueError("AI translated chapters import must be a .zip file.")
 
         imported = 0
+        invalid = 0
+        skipped = 0
+        warnings: list[str] = []
         ai_dir = self.folders(novel_id)["ai"]
         ai_dir.mkdir(parents=True, exist_ok=True)
 
         with zipfile.ZipFile(io.BytesIO(await upload.read())) as archive:
+            warnings.extend(self.category_warnings(archive.namelist(), "ai_translations"))
+            seen: set[int] = set()
             for member in archive.infolist():
                 if member.is_dir():
                     continue
 
                 name = Path(member.filename.replace("\\", "/")).name
                 if not re.fullmatch(r"\d{1,6}\.txt", name, re.IGNORECASE):
+                    invalid += 1
                     continue
 
                 chapter_number = int(Path(name).stem)
+                if chapter_number in seen:
+                    skipped += 1
+                    continue
                 target = ai_dir / f"{chapter_number:04d}.txt"
                 with archive.open(member) as source, open(target, "wb") as output:
                     shutil.copyfileobj(source, output)
+                seen.add(chapter_number)
                 imported += 1
 
         self.touch(novel_id)
         self.sync_to_remote(novel_id)
-        return {"imported": imported, **self.library(novel_id)}
+        return {"imported": imported, "skipped": skipped, "invalid": invalid, "duplicates": skipped, "warnings": warnings, "destination_category": "ai_translations", **self.library(novel_id)}
 
     async def import_original_zip(self, novel_id: str, upload: UploadFile) -> dict[str, Any]:
         result = await self.import_chapter_zip(novel_id, upload, "original", "Original Story")
@@ -299,7 +309,7 @@ class NovelManager:
         result = await self.import_chapter_zip(novel_id, upload, "reference", "Reference Translation")
         return {**result, **self.library(novel_id)}
 
-    async def import_chapter_zip(self, novel_id: str, upload: UploadFile, folder_key: str, label: str) -> dict[str, int]:
+    async def import_chapter_zip(self, novel_id: str, upload: UploadFile, folder_key: str, label: str) -> dict[str, Any]:
         filename = safe_filename(upload.filename, f"{folder_key}-chapters.zip")
         if Path(filename).suffix.lower() != ".zip":
             raise ValueError(f"{label} import must be a .zip file.")
@@ -310,16 +320,22 @@ class NovelManager:
         seen: set[int] = set()
         imported = 0
         duplicates = 0
+        invalid = 0
+        warnings: list[str] = []
+        destination = {"original": "originals", "reference": "references", "ai": "ai_translations"}.get(folder_key, folder_key)
 
         with zipfile.ZipFile(io.BytesIO(await upload.read())) as archive:
+            warnings.extend(self.category_warnings(archive.namelist(), destination))
             for member in archive.infolist():
                 if member.is_dir():
                     continue
                 name = Path(member.filename.replace("\\", "/")).name
                 if Path(name).suffix.lower() != ".txt":
+                    invalid += 1
                     continue
                 number = chapter_from_filename(Path(name))
                 if number is None:
+                    invalid += 1
                     continue
                 if number in existing or number in seen:
                     duplicates += 1
@@ -332,7 +348,26 @@ class NovelManager:
 
         self.touch(novel_id)
         self.sync_to_remote(novel_id)
-        return {"imported": imported, "duplicates": duplicates}
+        return {"imported": imported, "duplicates": duplicates, "skipped": duplicates, "invalid": invalid, "warnings": warnings, "destination_category": destination}
+
+    def category_warnings(self, names: list[str], destination: str) -> list[str]:
+        checks = {
+            "originals": ("reference", "novelfire", "ai", "translation", "translated"),
+            "references": ("ai", "machine", "gpt", "translated-ai", "ai_translation", "ai-translations"),
+            "ai_translations": ("reference", "novelfire", "original", "chinese", "source"),
+        }
+        suspicious = []
+        needles = checks.get(destination, ())
+        for name in names:
+            lower = name.replace("\\", "/").lower()
+            if any(needle in lower for needle in needles):
+                suspicious.append(name)
+            if len(suspicious) >= 8:
+                break
+        if not suspicious:
+            return []
+        label = {"originals": "Original Chinese", "references": "Reference Translation", "ai_translations": "AI Translation"}.get(destination, destination)
+        return [f"ZIP path names look suspicious for {label}: {', '.join(suspicious)}. Files were still written only to {destination}."]
 
     async def upload_cover(self, novel_id: str, upload: UploadFile) -> dict[str, Any]:
         filename = safe_filename(upload.filename, "cover.png")
@@ -519,6 +554,61 @@ class NovelManager:
                     self.write_json(self.metadata_path(str(metadata["novel_id"])), metadata)
                     cleared += 1
         return {"cleared": cleared}
+
+    def content_audit(self, novel_id: str) -> dict[str, Any]:
+        folders = self.folders(novel_id)
+        counts = {
+            "originals": len(list(folders["original"].rglob("*.txt"))),
+            "references": len(list(folders["reference"].rglob("*.txt"))),
+            "ai_translations": len(list(folders["ai"].rglob("*.txt"))),
+            "prompts": sum(1 for chapter in self.chapters(novel_id) if chapter.get("prompt_path")),
+        }
+        samples = {
+            "originals": [path.name for path in sorted(folders["original"].rglob("*.txt"))[:5]],
+            "references": [path.name for path in sorted(folders["reference"].rglob("*.txt"))[:5]],
+            "ai_translations": [path.name for path in sorted(folders["ai"].rglob("*.txt"))[:5]],
+        }
+        old_paths = []
+        unknown_paths = []
+        suspicious_files = []
+        for path in self.novel_dir(novel_id).rglob("*.txt"):
+            rel = path.relative_to(self.novel_dir(novel_id)).as_posix()
+            if rel.startswith(("Original/", "Reference/", "AI/", "jobs/")):
+                continue
+            if any(part.lower() in {"translation", "translations", "translated", "novelfire"} for part in Path(rel).parts):
+                old_paths.append(rel)
+            else:
+                unknown_paths.append(rel)
+        duplicate_numbers = []
+        seen: dict[tuple[str, int], str] = {}
+        for category, folder in (("originals", folders["original"]), ("references", folders["reference"]), ("ai_translations", folders["ai"])):
+            for path in folder.rglob("*.txt"):
+                number = parse_chapter(path).get("number")
+                if number is None:
+                    suspicious_files.append(path.relative_to(self.novel_dir(novel_id)).as_posix())
+                    continue
+                key = (category, int(number))
+                if key in seen:
+                    duplicate_numbers.append({"category": category, "chapter": int(number), "files": [seen[key], path.name]})
+                seen[key] = path.name
+        warnings = []
+        if old_paths or unknown_paths or suspicious_files or duplicate_numbers:
+            warnings.append("Content map may need repair. Review paths before applying changes.")
+        return {"ok": True, "novel_id": novel_id, "counts": counts, "samples": samples, "unknown_paths": unknown_paths[:100], "old_paths": old_paths[:100], "suspicious_files": suspicious_files[:100], "duplicates": duplicate_numbers[:100], "warnings": warnings}
+
+    def repair_content_map(self, novel_id: str, options: dict[str, Any]) -> dict[str, Any]:
+        dry_run = bool(options.get("dry_run", True))
+        audit = self.content_audit(novel_id)
+        actions: list[dict[str, Any]] = []
+        warnings = list(audit.get("warnings", []))
+        if options.get("rebuild_index", True):
+            actions.append({"action": "rebuild_index", "dry_run": dry_run})
+            if not dry_run:
+                self.touch(novel_id)
+                self.sync_to_remote(novel_id)
+        if options.get("move_references_out_of_ai"):
+            warnings.append("Automatic reference-vs-AI detection is intentionally conservative. No AI files were moved without explicit certainty.")
+        return {"ok": True, "novel_id": novel_id, "dry_run": dry_run, "actions": actions, "audit": audit, "warnings": warnings}
 
     async def restore_backup(self, novel_id: str, upload: UploadFile) -> dict[str, Any]:
         filename = safe_filename(upload.filename, "novel-backup.zip")

@@ -601,6 +601,233 @@ textarea {
   }
 }
 
+/* v7 final visual polish overrides */
+.app-shell {
+  width:100%;
+  overflow-x:hidden;
+}
+.topbar {
+  grid-template-columns:minmax(210px,auto) minmax(260px,1fr) minmax(260px,auto);
+  row-gap:14px;
+}
+.brand {
+  min-width:0;
+  max-width:100%;
+}
+.brand span:last-child {
+  min-width:0;
+}
+.brand strong,
+.brand small {
+  display:block;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.main-nav {
+  justify-content:flex-start;
+  flex-wrap:wrap;
+  overflow-x:visible;
+}
+.header-links {
+  display:flex;
+  flex-wrap:wrap;
+  justify-content:flex-end;
+  align-items:center;
+  gap:10px;
+}
+.header-links .secondary-button,
+.header-links .primary-button,
+.header-links .link-button,
+.header-links .icon-button {
+  flex:0 0 auto;
+}
+.global-search {
+  flex:1 1 260px;
+}
+.global-search input {
+  width:100%;
+}
+.library-hero {
+  align-items:center;
+  gap:24px;
+}
+.library-title {
+  min-width:0;
+}
+.hero-actions,
+.card-actions,
+.actions {
+  align-items:stretch;
+}
+.hero-actions > *,
+.card-actions > *,
+.actions > * {
+  white-space:normal;
+}
+.public-empty-note {
+  margin:8px 0;
+}
+.admin-dashboard {
+  display:grid;
+  gap:18px;
+  margin-bottom:18px;
+}
+.admin-dashboard-head {
+  display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(260px,.55fr);
+  gap:16px;
+  align-items:stretch;
+}
+.admin-card-grid {
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:16px;
+}
+.admin-card {
+  display:grid;
+  gap:12px;
+  align-content:start;
+  min-width:0;
+}
+.action-stack {
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+  gap:10px;
+}
+.action-stack button,
+.admin-card .actions button,
+.backup-grid button,
+.backup-grid a,
+.settings-grid button {
+  min-height:42px;
+}
+.admin-card .actions {
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+  gap:10px;
+}
+.storage-health,
+.estimate-box,
+.warning,
+.helper,
+.job-history-row small,
+.user-row,
+.backup-summary {
+  overflow-wrap:anywhere;
+  word-break:break-word;
+}
+.backup-grid {
+  grid-template-columns:repeat(auto-fit,minmax(285px,1fr));
+  align-items:start;
+}
+.backup-grid > .panel,
+.backup-job-panel,
+#restoreNovelForm {
+  min-width:0;
+}
+.backup-grid .link-card {
+  min-height:118px;
+  align-content:center;
+  justify-content:center;
+  text-align:center;
+  font-size:1rem;
+}
+.job-history-row {
+  grid-template-columns:auto minmax(96px,140px) minmax(0,1fr);
+}
+.settings-grid {
+  grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+}
+.wide-field {
+  grid-column:1/-1;
+}
+.tabs {
+  overflow-x:auto;
+  scrollbar-width:thin;
+}
+.tab {
+  white-space:nowrap;
+}
+.reader-shell,
+.reader-content,
+.chapter-picker {
+  max-width:100%;
+}
+body.light .panel,
+body.light .admin-card,
+body.light .storage-health,
+body.light .estimate-box {
+  background:rgba(255,250,240,.86);
+  color:var(--text);
+}
+
+@media (max-width:1100px) {
+  .topbar {
+    grid-template-columns:1fr;
+  }
+  .main-nav,
+  .header-links {
+    justify-content:flex-start;
+  }
+  .admin-dashboard-head,
+  .admin-card-grid {
+    grid-template-columns:1fr;
+  }
+}
+
+@media (max-width:560px) {
+  .app-shell {
+    padding-inline:10px;
+  }
+  .brand {
+    width:100%;
+  }
+  .main-nav,
+  .header-links,
+  .admin-bar {
+    width:100%;
+  }
+  .nav-button,
+  .header-links button,
+  .header-links a,
+  .admin-bar button {
+    flex:1 1 auto;
+    justify-content:center;
+  }
+  .global-search,
+  .current-novel-pill,
+  .status-chip {
+    flex:1 1 100%;
+  }
+  .library-icon {
+    width:82px;
+    height:82px;
+  }
+  .library-title {
+    align-items:flex-start;
+  }
+  .library-title h1 {
+    font-size:clamp(2rem,14vw,3.4rem);
+  }
+  .metrics-grid,
+  .card-stats,
+  .storage-grid {
+    grid-template-columns:repeat(2,minmax(0,1fr));
+  }
+  .admin-card .actions,
+  .action-stack,
+  .backup-grid,
+  .settings-grid {
+    grid-template-columns:1fr;
+  }
+  .job-history-row {
+    grid-template-columns:1fr;
+  }
+  .reader-controls {
+    grid-template-columns:repeat(2,minmax(0,1fr));
+  }
+}
+
 @media (max-width:640px) {
   .app-shell {
     padding:12px 10px 92px;
@@ -1512,6 +1739,101 @@ input::placeholder { color:rgba(159,177,169,.62); }
   gap:16px;
   margin-bottom:18px;
 }
+.admin-bar,
+.header-links,
+.main-nav,
+.hero-actions,
+.card-actions {
+  flex-wrap:wrap;
+}
+.topbar {
+  align-items:start;
+}
+.header-links {
+  justify-content:flex-end;
+  min-width:0;
+}
+.header-links > * {
+  max-width:100%;
+}
+.global-search {
+  min-width:min(260px,100%);
+}
+.admin-bar {
+  display:flex;
+  gap:10px;
+  align-items:center;
+  padding:12px;
+  border:1px solid rgba(184,211,196,.12);
+  border-radius:14px;
+  background:rgba(255,255,255,.035);
+  overflow-wrap:anywhere;
+}
+.admin-dashboard,
+.backup-job-panel,
+#restoreNovelForm {
+  align-content:start;
+}
+.backup-grid {
+  grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
+}
+.job-history-list {
+  display:grid;
+  gap:10px;
+}
+.job-history-row {
+  display:grid;
+  grid-template-columns:auto minmax(90px,.35fr) minmax(0,1fr);
+  gap:10px;
+  align-items:center;
+  padding:10px;
+  border:1px solid rgba(184,211,196,.12);
+  border-radius:10px;
+  background:rgba(255,255,255,.035);
+}
+.job-history-row small,
+.estimate-box pre,
+.storage-health,
+.warning,
+.helper {
+  white-space:normal;
+  overflow-wrap:anywhere;
+}
+.estimate-box details {
+  margin-top:10px;
+  border-top:1px solid rgba(184,211,196,.1);
+  padding-top:8px;
+}
+.estimate-box summary {
+  cursor:pointer;
+  color:var(--accent);
+  font-weight:800;
+}
+.estimate-box pre {
+  max-height:220px;
+  overflow:auto;
+  margin:8px 0 0;
+  padding:10px;
+  border-radius:10px;
+  background:rgba(0,0,0,.22);
+}
+.tab-panel .panel,
+.backup-grid .panel,
+.translate-grid .panel {
+  min-width:0;
+}
+.actions {
+  flex-wrap:wrap;
+}
+.estimate-box,
+.storage-health,
+.backup-summary {
+  overflow-wrap:anywhere;
+}
+.warning-inline {
+  color:var(--warning);
+  overflow-wrap:anywhere;
+}
 .admin-metrics,
 .storage-health {
   display:grid;
@@ -1570,7 +1892,25 @@ dialog::backdrop { background:rgba(0,0,0,.68); backdrop-filter:blur(4px); }
 
 @media (max-width:820px) {
   .app-shell { padding:14px 12px 36px; }
-  .topbar { gap:14px; }
+  .topbar {
+    display:flex;
+    flex-direction:column;
+    gap:14px;
+  }
+  .main-nav,
+  .header-links {
+    justify-content:flex-start;
+    width:100%;
+  }
+  .brand {
+    max-width:100%;
+  }
+  .admin-bar {
+    align-items:flex-start;
+  }
+  .job-history-row {
+    grid-template-columns:1fr;
+  }
   .library-hero,
   .novel-hero { padding:18px; border-radius:16px; }
   .library-title h1 { font-size:clamp(2rem,12vw,3.2rem); }
