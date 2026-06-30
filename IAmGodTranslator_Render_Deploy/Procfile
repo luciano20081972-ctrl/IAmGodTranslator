@@ -1,1 +1,25 @@
-web: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+{
+    "book_title": "I Am God",
+    "author": "History Blows the Wind",
+    "source_language": "Chinese",
+    "target_language": "English",
+
+    "folders": {
+        "chinese": "Chinese",
+        "novelfire": "NovelFire",
+        "english": "English",
+        "output": "Output",
+        "logs": "Logs",
+        "covers": "Covers"
+    },
+
+    "translation_batch_size": 5,
+
+    "resume": true,
+
+    "create_epub": true,
+
+    "create_pdf": false,
+
+    "create_docx": false
+}

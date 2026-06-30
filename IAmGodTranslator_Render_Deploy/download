@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="IAmGodTranslator">
+  <rect width="512" height="512" rx="96" fill="#167c6b"/>
+  <path d="M122 128h268v54H122z" fill="#fff8e8"/>
+  <path d="M122 229h172v54H122z" fill="#fff8e8"/>
+  <path d="M122 330h268v54H122z" fill="#fff8e8"/>
+  <path d="M323 213l67 43-67 43v-27H225v-32h98z" fill="#ffcf5a"/>
+</svg>
