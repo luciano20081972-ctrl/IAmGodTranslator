@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_NOVEL_ID = "i-am-god"
 DEFAULT_NOVEL_TITLE = "I Am God"
 REMOTE_PREFIXES = {"original": "originals", "reference": "references", "ai": "ai_translations", "prompt": "prompts"}
+LEGACY_REMOTE_PREFIXES = {
+    "original": ("Original", "original", "Originals", "originals"),
+    "reference": ("Reference", "reference", "References", "references"),
+    "ai": ("AI", "ai", "Translations", "translations", "AI_Translations", "ai_translations"),
+    "prompt": ("Prompts", "prompts"),
+}
 COVER_MAX_BYTES = 5 * 1024 * 1024
 DEFAULT_APP_SETTINGS = {
     "name": "GodTranslator",
@@ -202,19 +208,25 @@ class NovelManager:
     def hydrate_remote_index(self) -> list[dict[str, Any]]:
         if self.remote is None:
             return []
-        raw_index = self.remote_json("novels/index.json")
+        raw_index = self.remote_json("novels/index.json") or self.remote_json("app/novels/index.json")
         items = [item for item in raw_index if isinstance(item, dict) and item.get("novel_id")] if isinstance(raw_index, list) else []
         if not items:
             try:
-                metadata_paths = [path for path in self.remote.list_paths("novels") if path.endswith("/metadata.json")][:200]
-                items = [{"novel_id": path.split("/")[1]} for path in metadata_paths if len(path.split("/")) >= 3]
+                metadata_paths = [path for prefix in ("novels", "app/novels") for path in self.remote.list_paths(prefix) if path.endswith("/metadata.json")][:200]
+                items = []
+                for path in metadata_paths:
+                    parts = path.split("/")
+                    if path.startswith("app/novels/") and len(parts) >= 4:
+                        items.append({"novel_id": parts[2]})
+                    elif path.startswith("novels/") and len(parts) >= 3:
+                        items.append({"novel_id": parts[1]})
             except Exception as exc:
                 logger.warning("Supabase novel index listing failed: %s", exc.__class__.__name__)
                 return []
         hydrated: list[dict[str, Any]] = []
         for item in items[:200]:
             novel_id = str(item["novel_id"])
-            metadata = self.remote_json(f"novels/{novel_id}/metadata.json")
+            metadata = self.remote_json(f"novels/{novel_id}/metadata.json") or self.remote_json(f"app/novels/{novel_id}/metadata.json")
             if not isinstance(metadata, dict):
                 metadata = {
                     "novel_id": novel_id,
@@ -234,20 +246,59 @@ class NovelManager:
     def remote_category_paths(self, novel_id: str, category: str) -> list[str]:
         if self.remote is None:
             return []
-        prefix = REMOTE_PREFIXES[category]
-        try:
-            return [path for path in self.remote.list_paths(f"novels/{novel_id}/{prefix}") if path.lower().endswith(".txt")][:5000]
-        except Exception as exc:
-            logger.warning("Supabase %s listing failed for %s: %s", category, novel_id, exc.__class__.__name__)
-            return []
+        prefixes = [f"novels/{novel_id}/{REMOTE_PREFIXES[category]}"]
+        prefixes.extend(f"app/novels/{novel_id}/{legacy}" for legacy in LEGACY_REMOTE_PREFIXES.get(category, ()))
+        paths: list[str] = []
+        seen: set[str] = set()
+        for prefix in prefixes:
+            try:
+                for path in self.remote.list_paths(prefix):
+                    if path.lower().endswith(".txt") and path not in seen:
+                        paths.append(path)
+                        seen.add(path)
+            except Exception as exc:
+                logger.warning("Supabase %s listing failed for %s at %s: %s", category, novel_id, prefix, exc.__class__.__name__)
+        return paths[:5000]
+
+    def remote_category_counts(self, novel_id: str) -> dict[str, dict[str, int]]:
+        canonical: dict[str, int] = {}
+        legacy: dict[str, int] = {}
+        if self.remote is None:
+            return {"canonical": {}, "legacy": {}}
+        for category in REMOTE_PREFIXES:
+            try:
+                canonical_paths = [path for path in self.remote.list_paths(f"novels/{novel_id}/{REMOTE_PREFIXES[category]}") if path.lower().endswith(".txt")]
+            except Exception:
+                canonical_paths = []
+            legacy_paths: list[str] = []
+            for legacy_prefix in LEGACY_REMOTE_PREFIXES.get(category, ()):
+                try:
+                    legacy_paths.extend(path for path in self.remote.list_paths(f"app/novels/{novel_id}/{legacy_prefix}") if path.lower().endswith(".txt"))
+                except Exception:
+                    continue
+            canonical[category] = len({self.chapter_number_from_remote(path) for path in canonical_paths} - {None})
+            legacy[category] = len({self.chapter_number_from_remote(path) for path in legacy_paths} - {None})
+        return {"canonical": canonical, "legacy": legacy}
 
     def chapter_number_from_remote(self, path: str) -> int | None:
         return chapter_from_filename(Path(path.replace("\\", "/").split("/")[-1]))
 
     def remote_counts(self, novel_id: str) -> dict[str, Any]:
         cached = self.remote_json(f"novels/{novel_id}/counts.json")
-        if isinstance(cached, dict) and "counts" in cached:
+        legacy_cached = self.remote_json(f"app/novels/{novel_id}/counts.json")
+        if isinstance(cached, dict) and "counts" in cached and any(int(value or 0) for value in cached["counts"].values() if isinstance(value, int)):
             return cached
+        if isinstance(legacy_cached, dict) and "counts" in legacy_cached:
+            counts = legacy_cached["counts"]
+            normalized = {
+                "originals": int(counts.get("originals") or counts.get("original") or counts.get("original_files") or 0),
+                "references": int(counts.get("references") or counts.get("reference") or counts.get("reference_files") or 0),
+                "ai_translations": int(counts.get("ai_translations") or counts.get("ai") or counts.get("translated_chapters") or 0),
+                "prompts": int(counts.get("prompts") or 0),
+                "updated_at": legacy_cached.get("updated_at") or utc_now(),
+            }
+            if any(normalized[key] for key in ("originals", "references", "ai_translations", "prompts")):
+                return {"novel_id": novel_id, "counts": normalized, "updated_at": normalized["updated_at"], "source": "legacy_counts"}
         counts = {
             "originals": len({self.chapter_number_from_remote(path) for path in self.remote_category_paths(novel_id, "original")} - {None}),
             "references": len({self.chapter_number_from_remote(path) for path in self.remote_category_paths(novel_id, "reference")} - {None}),
@@ -300,8 +351,149 @@ class NovelManager:
         self.write_novel_index()
         return report
 
+    def deep_discovery(self, novel_id: str = DEFAULT_NOVEL_ID) -> dict[str, Any]:
+        if self.remote is None:
+            return {"ok": False, "warnings": ["Supabase storage is not configured."], "suggested_action": "Configure Supabase storage first."}
+        warnings: list[str] = []
+        canonical_paths: dict[str, int] = {}
+        legacy_paths: dict[str, int] = {}
+        for category in REMOTE_PREFIXES:
+            try:
+                canonical_paths[category] = len([path for path in self.remote.list_paths(f"novels/{novel_id}/{REMOTE_PREFIXES[category]}") if path.lower().endswith(".txt")])
+            except Exception as exc:
+                canonical_paths[category] = 0
+                warnings.append(f"Canonical {category} scan failed: {exc.__class__.__name__}")
+            count = 0
+            for legacy_prefix in LEGACY_REMOTE_PREFIXES.get(category, ()):
+                try:
+                    count += len([path for path in self.remote.list_paths(f"app/novels/{novel_id}/{legacy_prefix}") if path.lower().endswith(".txt")])
+                except Exception:
+                    continue
+            legacy_paths[category] = count
+        backup_zips = self.supabase_backup_zips(novel_id)
+        cover_files = self.remote_files_for_prefixes([f"novels/{novel_id}", f"app/novels/{novel_id}/Cover"], {".jpg", ".jpeg", ".png", ".webp"}, limit=50)
+        metadata_files = [path for path in (f"novels/{novel_id}/metadata.json", f"app/novels/{novel_id}/metadata.json", f"app/novels/{novel_id}/index.json") if self.remote.read_bytes(path) is not None]
+        if any(legacy_paths.values()) and not any(canonical_paths.values()):
+            warnings.append("Files found in legacy Supabase paths. Migration recommended.")
+            suggested = "Run Migrate Legacy Paths dry-run, then confirm migration if the report looks correct."
+        elif backup_zips and not any(canonical_paths.values()):
+            warnings.append("Canonical chapter folders are empty, but Supabase backup ZIPs were found.")
+            suggested = "Restore from the newest Supabase backup ZIP dry-run, then confirm restore."
+        else:
+            suggested = "Rebuild Supabase Index if counts look stale."
+        return {
+            "ok": True,
+            "buckets": self.remote.health().get("buckets", {}),
+            "canonical_paths": canonical_paths,
+            "legacy_paths": legacy_paths,
+            "backup_zips": backup_zips,
+            "cover_files": cover_files,
+            "metadata_files": metadata_files,
+            "suggested_action": suggested,
+            "warnings": warnings,
+        }
+
+    def remote_files_for_prefixes(self, prefixes: list[str], suffixes: set[str], limit: int = 200) -> list[str]:
+        if self.remote is None:
+            return []
+        found: list[str] = []
+        seen: set[str] = set()
+        for prefix in prefixes:
+            try:
+                for path in self.remote.list_paths(prefix):
+                    if path not in seen and Path(path).suffix.lower() in suffixes:
+                        found.append(path)
+                        seen.add(path)
+                        if len(found) >= limit:
+                            return found
+            except Exception:
+                continue
+        return found
+
+    def supabase_backup_zips(self, novel_id: str = DEFAULT_NOVEL_ID) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        if self.remote is not None:
+            for path in self.remote_files_for_prefixes([f"app/novels/{novel_id}/Backups", "app/Backups", "Backups"], {".zip"}, limit=200):
+                candidates.append({"bucket": self.remote.bucket, "path": path, "filename": Path(path).name, "restore_supported": True})
+        for bucket in ("backups", "exports"):
+            try:
+                remote = SupabaseStorage(bucket=bucket)
+                for path in [item for item in remote.list_paths("") if item.lower().endswith(".zip")][:200]:
+                    candidates.append({"bucket": bucket, "path": path, "filename": Path(path).name, "restore_supported": True})
+            except Exception:
+                continue
+        candidates.sort(key=lambda item: item["filename"], reverse=True)
+        if candidates:
+            candidates[0]["likely_newest"] = True
+        return candidates
+
+    def migrate_legacy_paths(self, novel_id: str, dry_run: bool = True, confirm: bool = False, overwrite: bool = False) -> dict[str, Any]:
+        if self.remote is None:
+            raise ValueError("Supabase storage is not configured.")
+        if not dry_run and not confirm:
+            raise ValueError("Real migration requires confirm=true.")
+        before = self.remote_counts(novel_id).get("counts", {})
+        report: dict[str, Any] = {"ok": True, "dry_run": dry_run, "copied": 0, "skipped_existing": 0, "ambiguous": 0, "errors": [], "items": [], "counts_before": before, "counts_after": before}
+        mapping = {
+            "original": (LEGACY_REMOTE_PREFIXES["original"], f"novels/{novel_id}/originals"),
+            "reference": (LEGACY_REMOTE_PREFIXES["reference"], f"novels/{novel_id}/references"),
+            "ai": (LEGACY_REMOTE_PREFIXES["ai"], f"novels/{novel_id}/ai_translations"),
+            "prompt": (LEGACY_REMOTE_PREFIXES["prompt"], f"novels/{novel_id}/prompts"),
+        }
+        for category, (legacy_prefixes, target_prefix) in mapping.items():
+            for legacy_prefix in legacy_prefixes:
+                for source_path in self.remote.list_paths(f"app/novels/{novel_id}/{legacy_prefix}"):
+                    if not source_path.lower().endswith(".txt"):
+                        continue
+                    chapter = self.chapter_number_from_remote(source_path)
+                    if chapter is None:
+                        report["ambiguous"] += 1
+                        report["items"].append({"source": source_path, "status": "ambiguous"})
+                        continue
+                    target_path = f"{target_prefix}/{chapter:04d}.txt"
+                    if not overwrite and self.remote.read_bytes(target_path) is not None:
+                        report["skipped_existing"] += 1
+                        report["items"].append({"source": source_path, "target": target_path, "status": "skipped_existing"})
+                        continue
+                    if not dry_run:
+                        data = self.remote.read_bytes(source_path)
+                        if data is not None:
+                            self.remote.write_bytes(target_path, data)
+                    report["copied"] += 1
+                    report["items"].append({"source": source_path, "target": target_path, "category": category, "status": "would_copy" if dry_run else "copied"})
+        for source_path in self.remote_files_for_prefixes([f"app/novels/{novel_id}/Cover"], {".jpg", ".jpeg", ".png", ".webp"}, limit=20):
+            target_path = f"novels/{novel_id}/cover{Path(source_path).suffix.lower()}"
+            if not overwrite and self.remote.read_bytes(target_path) is not None:
+                report["skipped_existing"] += 1
+                continue
+            if not dry_run:
+                data = self.remote.read_bytes(source_path)
+                if data is not None:
+                    self.remote.write_bytes(target_path, data)
+            report["copied"] += 1
+            report["items"].append({"source": source_path, "target": target_path, "category": "cover", "status": "would_copy" if dry_run else "copied"})
+        for name in ("metadata.json", "counts.json"):
+            source_path = f"app/novels/{novel_id}/{name}"
+            target_path = f"novels/{novel_id}/{name}"
+            data = self.remote.read_bytes(source_path)
+            if data is None:
+                continue
+            if not overwrite and self.remote.read_bytes(target_path) is not None:
+                report["skipped_existing"] += 1
+                continue
+            if not dry_run:
+                self.remote.write_bytes(target_path, data, "application/json")
+            report["copied"] += 1
+            report["items"].append({"source": source_path, "target": target_path, "category": name, "status": "would_copy" if dry_run else "copied"})
+        if not dry_run:
+            self.hydrate_remote_metadata(novel_id)
+            self.write_counts_cache(novel_id)
+            self.write_novel_index()
+            report["counts_after"] = self.remote_counts(novel_id).get("counts", {})
+        return report
+
     def hydrate_remote_metadata(self, novel_id: str) -> dict[str, Any] | None:
-        metadata = self.remote_json(f"novels/{novel_id}/metadata.json")
+        metadata = self.remote_json(f"novels/{novel_id}/metadata.json") or self.remote_json(f"app/novels/{novel_id}/metadata.json")
         if isinstance(metadata, dict):
             self.write_json(self.metadata_path(novel_id), metadata)
             return metadata

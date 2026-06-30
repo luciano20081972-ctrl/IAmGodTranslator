@@ -254,6 +254,7 @@ function esc(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => (
 function date(value) { if (!value) return "Never"; try { return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(value)); } catch { return value; } }
 function status(value) { return ({ completed: "translated", estimated: "queued", running: "translating", test_completed: "translated" }[value] || value || "unknown"); }
 function money(value) { return `$${Number(value || 0).toFixed(4)}`; }
+function renderJsonBox(data) { return `<pre class="json-report">${esc(JSON.stringify(data, null, 2))}</pre>`; }
 
 function setTheme(theme) { const dark = theme === "dark"; document.body.classList.toggle("dark", dark); document.body.classList.toggle("light", !dark); localStorage.setItem("igt-theme", dark ? "dark" : "light"); if (els.themeToggle) els.themeToggle.innerHTML = dark ? "&#9790;" : "&#9728;"; }
 function updateMainNav(active = null) {
@@ -607,11 +608,37 @@ async function refreshStorageHealth() {
   const supabase = storage.supabase || {};
   const warnings = [...(storage.warnings || []), ...(supabase.warnings || [])];
   els.storageHealth.innerHTML = `<div class="warning">Your files are only safe after DATA_DIR points to persistent storage or Supabase is active.</div><div class="storage-grid"><div><span>Storage backend</span><strong>${esc(storage.backend || "local")}</strong></div><div><span>Supabase configured</span><strong>${supabase.configured ? "true" : "false"}</strong></div><div><span>Supabase storage</span><strong>${supabase.reachable ? "reachable" : "not reachable"}</strong></div><div><span>Supabase bucket</span><strong>${esc(supabase.bucket || "novel-files")}</strong></div><div><span>DATA_DIR fallback</span><strong>${esc(storage.configured_data_dir || storage.data_dir)}</strong></div><div><span>Resolved path</span><strong>${esc(storage.resolved_data_dir || storage.data_dir)}</strong></div><div><span>Writable</span><strong>${storage.writable ? "true" : "false"}</strong></div><div><span>Database</span><strong>${esc(storage.database?.backend || "unknown")} ${storage.database_reachable ? "reachable" : "warning"}</strong></div><div><span>Original</span><strong>${counts.originals || storage.saved_chinese_chapters || 0}</strong></div><div><span>Reference</span><strong>${counts.references || storage.saved_novelfire_references || 0}</strong></div><div><span>AI</span><strong>${counts.ai_translations || storage.saved_translations || 0}</strong></div><div><span>Prompts</span><strong>${counts.prompts || 0}</strong></div><div><span>Backups</span><strong>${counts.backups || 0}</strong></div><div><span>Covers/uploads</span><strong>${counts.covers_uploads || 0}</strong></div></div><p class="helper">Local folders: ${Object.entries(folders).map(([name, ok]) => `${esc(name)} ${ok ? "ok" : "missing"}`).join(" · ") || "not reported"}</p><p class="helper">Supabase buckets: ${Object.entries(supabase.buckets || {}).map(([name, ok]) => `${esc(name)} ${ok ? "ok" : "missing"}`).join(" · ") || "not checked"}</p>${warnings.length ? `<div class="warning">${warnings.map(esc).join("<br>")}</div>` : ""}`;
+  const novelId = state.currentNovel?.novel_id || "i-am-god";
+  const active = storage.active_counts_used_by_app?.[novelId] || {};
+  const canonical = storage.canonical_supabase_counts?.[novelId] || {};
+  const legacy = storage.legacy_supabase_counts?.[novelId] || {};
+  els.storageHealth.innerHTML = `<div class="warning">Your files are only safe after DATA_DIR points to persistent storage or Supabase is active.</div><div class="storage-grid"><div><span>Storage backend</span><strong>${esc(storage.backend || "local")}</strong></div><div><span>Supabase configured</span><strong>${supabase.configured ? "true" : "false"}</strong></div><div><span>Supabase storage</span><strong>${supabase.reachable ? "reachable" : "not reachable"}</strong></div><div><span>Supabase bucket</span><strong>${esc(supabase.bucket || "novel-files")}</strong></div><div><span>Active original</span><strong>${active.originals || counts.originals || storage.saved_chinese_chapters || 0}</strong></div><div><span>Active reference</span><strong>${active.references || counts.references || storage.saved_novelfire_references || 0}</strong></div><div><span>Active AI</span><strong>${active.ai_translations || counts.ai_translations || storage.saved_translations || 0}</strong></div><div><span>Canonical original</span><strong>${canonical.original || 0}</strong></div><div><span>Canonical reference</span><strong>${canonical.reference || 0}</strong></div><div><span>Canonical AI</span><strong>${canonical.ai || 0}</strong></div><div><span>Legacy original</span><strong>${legacy.original || 0}</strong></div><div><span>Legacy reference</span><strong>${legacy.reference || 0}</strong></div><div><span>Legacy AI</span><strong>${legacy.ai || 0}</strong></div><div><span>Backup ZIPs</span><strong>${(storage.backup_zips_found || []).length}</strong></div><div><span>Database</span><strong>${esc(storage.database?.backend || "unknown")} ${storage.database_reachable ? "reachable" : "warning"}</strong></div></div><p class="helper">Recommended recovery: ${esc(storage.recommended_recovery_action || "None.")}</p>${warnings.length ? `<div class="warning">${warnings.map(esc).join("<br>")}</div>` : ""}`;
   const totalOriginal = state.novels.reduce((sum, novel) => sum + Number(novel.counts?.original_files || 0), 0);
   const totalReference = state.novels.reduce((sum, novel) => sum + Number(novel.counts?.reference_files || 0), 0);
   const totalAi = state.novels.reduce((sum, novel) => sum + Number(novel.counts?.translated_chapters || 0), 0);
   els.adminMetrics.innerHTML = `<div class="storage-grid"><div><span>Novels</span><strong>${state.novels.length}</strong></div><div><span>Original chapters</span><strong>${totalOriginal}</strong></div><div><span>Reference chapters</span><strong>${totalReference}</strong></div><div><span>AI translations</span><strong>${totalAi}</strong></div></div>`;
 }
+function setupSupabaseRecoveryControls() {
+  if ($("#supabaseRecoveryPanel") || !els.storageHealth) return;
+  const panel = document.createElement("section");
+  panel.className = "panel admin-card";
+  panel.id = "supabaseRecoveryPanel";
+  panel.innerHTML = `<p class="eyebrow">Supabase Recovery</p><h3>Legacy folders and backups</h3><p class="helper">Your Supabase data may exist in older folders such as app/novels/i-am-god/Original, Reference, AI, or Backups. Use Deep Scan first. If active chapters are found in legacy paths, migrate them to the new structure. If only backup ZIPs are found, restore from Supabase backup.</p><div class="actions"><button class="secondary-button" id="deepScanSupabaseButton" type="button">Deep Scan Supabase</button><button class="secondary-button" id="hydrateSupabaseButton" type="button">Hydrate I Am God</button><button class="secondary-button" id="legacyMigrateDryRunButton" type="button">Migrate Legacy Paths Dry Run</button><button class="danger-button" id="legacyMigrateConfirmButton" type="button">Confirm Legacy Migration</button><button class="secondary-button" id="listSupabaseBackupsButton" type="button">List Supabase Backups</button><button class="secondary-button" id="restoreSupabaseDryRunButton" type="button">Restore Newest Backup Dry Run</button></div><div class="estimate-box" id="supabaseRecoveryReport">Run Deep Scan Supabase first.</div>`;
+  els.storageHealth.closest(".admin-card")?.insertAdjacentElement("afterend", panel);
+  $("#deepScanSupabaseButton").onclick = deepScanSupabase;
+  $("#hydrateSupabaseButton").onclick = hydrateSupabaseNovel;
+  $("#legacyMigrateDryRunButton").onclick = () => migrateLegacyPaths(true);
+  $("#legacyMigrateConfirmButton").onclick = () => migrateLegacyPaths(false);
+  $("#listSupabaseBackupsButton").onclick = listSupabaseBackups;
+  $("#restoreSupabaseDryRunButton").onclick = restoreNewestSupabaseBackupDryRun;
+}
+function recoveryNovelId() { return state.currentNovel?.novel_id || "i-am-god"; }
+function recoveryReport(data) { const box = $("#supabaseRecoveryReport"); if (box) box.innerHTML = renderJsonBox(data); }
+async function deepScanSupabase() { const data = await api(`/api/admin/storage/deep-discovery?novel_id=${encodeURIComponent(recoveryNovelId())}`, { timeoutMs: 60000 }); state.supabaseDiscovery = data; recoveryReport(data); toast("Supabase deep scan complete."); }
+async function hydrateSupabaseNovel() { const data = await api(`/api/admin/novels/${encodeURIComponent(recoveryNovelId())}/hydrate-from-supabase`, { method: "POST", timeoutMs: 60000 }); await loadNovels(); recoveryReport(data); toast("Supabase hydration complete."); }
+async function migrateLegacyPaths(dryRun) { if (!dryRun && !window.confirm("Copy legacy Supabase files into canonical folders now? Nothing is deleted.")) return; const data = await api("/api/admin/storage/migrate-legacy-paths", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ novel_id: recoveryNovelId(), dry_run: dryRun, confirm: !dryRun, overwrite: false }), timeoutMs: 120000 }); if (!dryRun) await loadNovels(); recoveryReport(data); toast(dryRun ? "Legacy migration dry-run complete." : "Legacy migration complete."); }
+async function listSupabaseBackups() { const data = await api(`/api/admin/backups/supabase?novel_id=${encodeURIComponent(recoveryNovelId())}`, { timeoutMs: 60000 }); state.supabaseBackups = data.backups || []; recoveryReport(data); toast(`Found ${state.supabaseBackups.length} Supabase backup ZIP(s).`); }
+async function restoreNewestSupabaseBackupDryRun() { if (!state.supabaseBackups?.length) await listSupabaseBackups(); const backup = state.supabaseBackups?.[0]; if (!backup) return toast("No Supabase backup ZIP found.", true); const data = await api("/api/admin/backups/restore-from-supabase", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bucket: backup.bucket, path: backup.path, dry_run: true, confirm: false, conflict_mode: "write_missing_only" }), timeoutMs: 120000 }); recoveryReport(data); toast("Supabase backup restore dry-run started."); }
 async function refreshAdminUsers() {
   const data = await api("/api/admin/users");
   const users = data.users || [];
@@ -1067,6 +1094,7 @@ function bind() {
     els.rebuildIndexButton.textContent = "Rebuild Supabase Index";
     els.migrateSupabaseButton.insertAdjacentElement("afterend", els.rebuildIndexButton);
   }
+  setupSupabaseRecoveryControls();
   els.homeButton.onclick = () => showLibrary();
   els.backToLibrary.onclick = () => showLibrary();
   els.supportButton.onclick = () => { els.supportPanel.hidden = !els.supportPanel.hidden; };
@@ -1202,7 +1230,7 @@ function bind() {
   window.addEventListener("hashchange", handleRouteChange);
 }
 
-function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=75").then((registration) => registration.update()).catch(() => {}); }
+function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=76").then((registration) => registration.update()).catch(() => {}); }
 async function bootAppData() {
   hideRecovery();
   els.novelGrid.innerHTML = '<div class="empty-state">Loading library...</div>';

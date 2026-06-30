@@ -17,6 +17,7 @@ from app.backup_jobs import BackupJobManager
 from app.database import AppDatabase
 from app.novels import NovelManager
 from app.services import PROJECT_ROOT, TranslationService
+from app.storage import SupabaseStorage
 
 
 load_dotenv()
@@ -164,16 +165,31 @@ def storage_health_report() -> dict[str, object]:
         "covers_uploads": count("cover.*") + count("covers/*") + count("uploads/*"),
     }
     supabase_counts: dict[str, object] = {}
+    canonical_supabase_counts: dict[str, object] = {}
+    legacy_supabase_counts: dict[str, object] = {}
     active_counts: dict[str, object] = {}
+    backup_zips_found: list[object] = []
+    recommended_recovery_action = "None."
     try:
         for item in novels.iter_metadata():
             novel_id = str(item["novel_id"])
             supabase_counts[novel_id] = novels.remote_counts(novel_id).get("counts", {}) if novels.remote is not None else {}
+            category_counts = novels.remote_category_counts(novel_id) if novels.remote is not None else {"canonical": {}, "legacy": {}}
+            canonical_supabase_counts[novel_id] = category_counts.get("canonical", {})
+            legacy_supabase_counts[novel_id] = category_counts.get("legacy", {})
             active_counts[novel_id] = novels.active_counts(novel_id)
+        if novels.remote is not None:
+            backup_zips_found = novels.supabase_backup_zips()
     except Exception as exc:
         warnings.append(f"Count hydration warning: {exc.__class__.__name__}")
     if novels.remote is not None and any(sum(int(v or 0) for v in counts.values() if isinstance(v, int)) for counts in supabase_counts.values()) and not any(local_cache_counts.values()):
         warnings.append("Local cache is empty but Supabase has files. The app is using Supabase/database counts and can rebuild the local cache on demand.")
+    if novels.remote is not None and any(sum(int(v or 0) for v in counts.values()) for counts in legacy_supabase_counts.values()) and not any(sum(int(v or 0) for v in counts.values()) for counts in canonical_supabase_counts.values()):
+        warnings.append("Canonical chapter folders are empty, but legacy Supabase data/backups were found.")
+        warnings.append("Files found in legacy Supabase paths. Migration recommended.")
+        recommended_recovery_action = "Run Deep Scan Supabase, then Migrate Legacy Paths dry-run. If the dry-run looks correct, confirm the migration and rebuild the index."
+    elif backup_zips_found and not any(sum(int(v or 0) for v in counts.values()) for counts in canonical_supabase_counts.values()):
+        recommended_recovery_action = "Run Restore From Supabase Backup dry-run, then confirm restore if the report looks correct."
 
     report = service.storage_status()
     report.update(
@@ -186,8 +202,12 @@ def storage_health_report() -> dict[str, object]:
             "counts": local_cache_counts,
             "local_cache_counts": local_cache_counts,
             "supabase_counts": supabase_counts,
+            "canonical_supabase_counts": canonical_supabase_counts,
+            "legacy_supabase_counts": legacy_supabase_counts,
             "database_counts": {},
             "active_counts_used_by_app": active_counts,
+            "backup_zips_found": backup_zips_found,
+            "recommended_recovery_action": recommended_recovery_action,
             "database": database.status(),
         }
     )
@@ -264,6 +284,11 @@ async def resume_jobs() -> None:
 @app.get("/", include_in_schema=False)
 async def home() -> FileResponse:
     return FileResponse(TEMPLATE_DIR / "index.html")
+
+
+@app.head("/", include_in_schema=False)
+async def head_home() -> Response:
+    return Response(status_code=200)
 
 
 @app.get("/manifest.json", include_in_schema=False)
@@ -449,6 +474,53 @@ async def migrate_to_supabase(request: Request) -> dict[str, object]:
     require_admin(request)
     try:
         return novels.migrate_to_supabase()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/admin/storage/deep-discovery")
+async def deep_discovery(request: Request, novel_id: str = "i-am-god") -> dict[str, object]:
+    require_admin(request)
+    return novels.deep_discovery(novel_id)
+
+
+@app.post("/api/admin/storage/migrate-legacy-paths")
+async def migrate_legacy_paths(request: Request, payload: Annotated[dict[str, object], Body()]) -> dict[str, object]:
+    require_admin(request)
+    try:
+        return novels.migrate_legacy_paths(
+            str(payload.get("novel_id") or "i-am-god"),
+            dry_run=bool(payload.get("dry_run", True)),
+            confirm=bool(payload.get("confirm", False)),
+            overwrite=bool(payload.get("overwrite", False)),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/admin/backups/supabase")
+async def list_supabase_backups(request: Request, novel_id: str = "i-am-god") -> dict[str, object]:
+    require_admin(request)
+    return {"ok": True, "backups": novels.supabase_backup_zips(novel_id)}
+
+
+@app.post("/api/admin/backups/restore-from-supabase")
+async def restore_from_supabase_backup(request: Request, payload: Annotated[dict[str, object], Body()]) -> JSONResponse:
+    require_admin(request)
+    bucket = str(payload.get("bucket") or "novel-files")
+    path = str(payload.get("path") or "").strip()
+    if not path.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Choose a Supabase backup ZIP path.")
+    dry_run = bool(payload.get("dry_run", True))
+    if not dry_run and not bool(payload.get("confirm", False)):
+        raise HTTPException(status_code=400, detail="Real restore requires confirm=true.")
+    try:
+        remote = novels.remote if novels.remote is not None and getattr(novels.remote, "bucket", "") == bucket else SupabaseStorage(bucket=bucket)
+        data = remote.read_bytes(path)
+        if data is None:
+            raise HTTPException(status_code=404, detail="Supabase backup ZIP not found.")
+        job = backup_jobs.start_full_restore(data, Path(path).name, dry_run=dry_run, conflict_mode=str(payload.get("conflict_mode") or "write_missing_only"))
+        return JSONResponse(job, status_code=202)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -2,10 +2,22 @@
 
 ## Current Version Target
 
-GodTranslator_Web_v8_0_Supabase_Persistence_Hydration_Fix.zip
+GodTranslator_Web_v8_0_2_Supabase_Legacy_Path_Recovery.zip
 
 ## Completed Tasks
 
+- Finished v8.0.2 Supabase legacy path recovery after live data was found under `app/novels/i-am-god/Original`, `Reference`, `AI`, `Cover`, and `Backups`.
+- Added canonical plus legacy Supabase path discovery for originals, references, AI translations, and prompts.
+- Added legacy metadata/counts fallback from `app/novels/{novel_id}/metadata.json` and `app/novels/{novel_id}/counts.json`.
+- Updated active counts and reader remote markers to use legacy paths when canonical folders are empty.
+- Added admin deep discovery endpoint: `GET /api/admin/storage/deep-discovery`.
+- Added safe copy-only legacy migration endpoint: `POST /api/admin/storage/migrate-legacy-paths`.
+- Added Supabase backup listing endpoint: `GET /api/admin/backups/supabase`.
+- Added server-side restore-from-Supabase-backup endpoint: `POST /api/admin/backups/restore-from-supabase`.
+- Updated `/api/storage` to include `canonical_supabase_counts`, `legacy_supabase_counts`, `backup_zips_found`, and `recommended_recovery_action`.
+- Added Admin `Supabase Recovery` controls for deep scan, hydrate, migrate dry-run/confirm, list backups, and restore newest backup dry-run.
+- Added safe `HEAD /` response for Render probes.
+- Bumped frontend cache/service-worker versions to v76.
 - Finished v8.0 Supabase persistence/hydration fix after Render redeploy reset reports.
 - Added lazy Supabase novel index hydration from `novels/index.json` and `novels/{novel_id}/metadata.json`.
 - Prevented local default novel creation from overwriting the remote source of truth when local Render cache is empty.
@@ -52,6 +64,26 @@ GodTranslator_Web_v8_0_Supabase_Persistence_Hydration_Fix.zip
 
 ## QA Results
 
+- v8.0.2 Python syntax check passed.
+- v8.0.2 JavaScript syntax check passed.
+- `requirements.txt` exists, is included, is not `{}`, and contains valid FastAPI/Uvicorn/OpenAI/psycopg dependencies.
+- Simulated live legacy Supabase layout under `app/novels/i-am-god/Original`, `Reference`, `AI`, `Prompts`, `Cover`, and `Backups`.
+- `/api/health`, `/api/storage`, `/api/novels`, and `/api/novels/i-am-god/library` returned 200 with legacy remote data.
+- Active counts used legacy files when canonical folders were empty.
+- Reader loaded AI Translation text from legacy `app/novels/i-am-god/AI/0001.txt`.
+- Public deep discovery returned 401.
+- Admin login worked.
+- Admin deep discovery returned legacy counts and one backup ZIP.
+- Legacy migration dry-run returned a copy report and did not write canonical files.
+- Real legacy migration copied legacy files to canonical paths without deleting legacy files.
+- Rebuild index returned 200.
+- Hydrate from Supabase returned 200 with fake active remote.
+- Supabase backup listing returned the legacy backup ZIP.
+- Restore from Supabase backup dry-run returned 202 queued through the existing async restore job.
+- `HEAD /` returned 200.
+- No OpenAI call was made.
+- No translation was started.
+- No production data deletion was performed.
 - Python syntax check passed.
 - JavaScript syntax check passed.
 - `/api/health`, `/api/storage`, `/api/novels`, and `/api/novels/i-am-god/library` returned 200 in TestClient.
@@ -103,6 +135,9 @@ GodTranslator_Web_v8_0_Supabase_Persistence_Hydration_Fix.zip
 
 ## Known Risks
 
+- Legacy migration copies files but does not delete legacy paths. This is intentional for safety.
+- Restore-from-Supabase-backup uses the existing async restore path; backups without `manifest.json` remain dry-run only.
+- Deep discovery lists bounded path sets and does not download large chapter or backup files.
 - Supabase hydration is lazy and bounded. If `novels/index.json` is missing, the app lists only `novels/*/metadata.json` paths, then counts one opened novel at a time.
 - The hydrate admin endpoint requires Supabase to be configured; local-only mode returns a clear 400.
 - Async full backup writes ZIP contents incrementally, but Supabase upload still reads the completed ZIP into memory. For very large backups, streaming upload remains a future improvement.
@@ -111,10 +146,12 @@ GodTranslator_Web_v8_0_Supabase_Persistence_Hydration_Fix.zip
 
 ## Final Deploy Notes
 
-Deploy `GodTranslator_Web_v8_0_Supabase_Persistence_Hydration_Fix.zip` to Render with the existing settings. Keep `OPENAI_API_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, and database credentials only in Render environment variables, never in the ZIP. After deploy, open Admin > Storage Health and use `Rebuild Supabase Index` if counts ever look stale.
+Deploy `GodTranslator_Web_v8_0_2_Supabase_Legacy_Path_Recovery.zip` to Render with the existing settings. Keep `OPENAI_API_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, and database credentials only in Render environment variables, never in the ZIP. After deploy, open Admin > Supabase Recovery and run Deep Scan Supabase first.
 
 ## Next Continuation Instructions
 
 - Do not start translation unless explicitly requested.
+- If `/api/storage` shows legacy counts but canonical counts are zero, run Migrate Legacy Paths dry-run, confirm if the report is correct, then Rebuild Supabase Index.
+- If only backup ZIPs are found, run Restore From Supabase Backup dry-run first, then confirm restore if the report is correct.
 - If Render still shows zero counts after redeploy, check `/api/storage` for `supabase_counts` and `active_counts_used_by_app`.
 - If Supabase has files but `supabase_counts` is empty, run Admin > `Rebuild Supabase Index` or POST `/api/admin/index/rebuild`.

@@ -1921,6 +1921,15 @@ input::placeholder { color:rgba(159,177,169,.62); }
   cursor:wait;
 }
 
+.json-report {
+  max-height:320px;
+  overflow:auto;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  font-size:.82rem;
+  color:var(--muted);
+}
+
 dialog {
   border-color:rgba(184,211,196,.18);
   border-radius:16px;
