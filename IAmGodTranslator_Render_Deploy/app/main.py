@@ -56,6 +56,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 ADMIN_COOKIE = "igt_admin"
 AUTH_COOKIE = "gt_session"
 REQUIRED_STORAGE_FOLDERS = ("novels", "originals", "references", "ai_translations", "prompts", "backups", "uploads", "covers", "settings", "exports", "logs")
+BACKUP_DISABLED_MESSAGE = "Full backup/restore is disabled on Render Free because it can freeze the web worker. Use ZIP export/import until background jobs are added."
 
 
 def admin_password() -> str | None:
@@ -401,7 +402,7 @@ async def google_status() -> dict[str, object]:
 @app.get("/api/storage")
 async def storage_status() -> dict[str, object]:
     status = storage_health_report()
-    status["novels"] = len(novels.list_novels())
+    status["novels"] = len(list(novels.iter_metadata()))
     status["backend"] = os.getenv("STORAGE_BACKEND", "local").lower()
     status["supabase_enabled"] = novels.remote is not None
     status["supabase"] = novels.remote_health()
@@ -430,6 +431,17 @@ async def migrate_to_supabase(request: Request) -> dict[str, object]:
         return novels.migrate_to_supabase()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/admin/storage/clear-backup-state")
+async def clear_backup_state(request: Request) -> dict[str, object]:
+    require_admin(request)
+    cleared = novels.clear_backup_state()
+    for path in (service.data_dir / "storage_state.json", service.data_dir / "backup_state.json", service.data_dir / "restore_state.json", service.data_dir / "undo_restore_state.json"):
+        if path.exists() and path.is_file():
+            path.unlink()
+            cleared["cleared"] = int(cleared.get("cleared", 0)) + 1
+    return {"ok": True, **cleared}
 
 
 @app.get("/api/me/library")
@@ -576,11 +588,7 @@ async def start_job(request: Request, job_id: str) -> dict[str, str]:
 @app.post("/api/jobs/restore")
 async def restore_job_backup(request: Request, backup: Annotated[UploadFile, File(description="Full job backup ZIP")]) -> JSONResponse:
     require_admin(request)
-    try:
-        job = await service.restore_backup(backup)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return JSONResponse(job, status_code=201)
+    return JSONResponse({"ok": False, "error": BACKUP_DISABLED_MESSAGE}, status_code=409)
 
 
 @app.get("/api/jobs/{job_id}/download")
@@ -604,10 +612,7 @@ async def download_prompts(request: Request, job_id: str) -> FileResponse:
 @app.get("/api/jobs/{job_id}/backup")
 async def download_job_backup(request: Request, job_id: str) -> FileResponse:
     require_admin(request)
-    zip_path = service.build_backup_zip(job_id)
-    if zip_path is None:
-        raise HTTPException(status_code=404, detail="Job not found.")
-    return FileResponse(zip_path, media_type="application/zip", filename=zip_path.name)
+    return JSONResponse({"ok": False, "error": BACKUP_DISABLED_MESSAGE}, status_code=409)
 
 
 @app.get("/api/jobs/{job_id}/estimate-report")
@@ -823,14 +828,13 @@ async def download_novel_prompts(request: Request, novel_id: str) -> FileRespons
 @app.get("/api/novels/{novel_id}/backup")
 async def download_novel_backup(request: Request, novel_id: str) -> FileResponse:
     require_admin(request)
-    zip_path = novels.build_backup_zip(novel_id)
-    return FileResponse(zip_path, media_type="application/zip", filename=zip_path.name)
+    return JSONResponse({"ok": False, "error": BACKUP_DISABLED_MESSAGE}, status_code=409)
 
 
 @app.post("/api/novels/{novel_id}/restore")
 async def restore_novel_backup(request: Request, novel_id: str, backup: Annotated[UploadFile, File(description="Full novel backup ZIP")]) -> JSONResponse:
     require_admin(request)
-    return JSONResponse(await novels.restore_backup(novel_id, backup), status_code=201)
+    return JSONResponse({"ok": False, "error": BACKUP_DISABLED_MESSAGE}, status_code=409)
 
 
 @app.get("/api/reader/last")

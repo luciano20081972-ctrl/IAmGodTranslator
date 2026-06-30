@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 
 
 SUPABASE_BUCKETS = ("novel-files", "covers", "backups", "exports")
+SUPABASE_TIMEOUT_SECONDS = float(os.getenv("SUPABASE_TIMEOUT_SECONDS", "10"))
+SUPABASE_HEALTH_TIMEOUT_SECONDS = float(os.getenv("SUPABASE_HEALTH_TIMEOUT_SECONDS", "5"))
+TRANSIENT_HTTP_ERRORS = {429, 500, 502, 503, 504}
 
 
 @dataclass
@@ -50,10 +53,10 @@ class SupabaseStorage:
     def object_url(self, path: str) -> str:
         return f"{self.base_url}/object/{self.bucket}/{path.lstrip('/')}"
 
-    def request(self, method: str, url: str, data: bytes | None = None, headers: dict[str, str] | None = None) -> tuple[int, bytes]:
+    def request(self, method: str, url: str, data: bytes | None = None, headers: dict[str, str] | None = None, timeout: float | None = None) -> tuple[int, bytes]:
         request = Request(url, data=data, headers={**self.headers, **(headers or {})}, method=method)
         try:
-            with urlopen(request, timeout=60) as response:
+            with urlopen(request, timeout=timeout or SUPABASE_TIMEOUT_SECONDS) as response:
                 return response.status, response.read()
         except HTTPError as exc:
             if exc.code == 404:
@@ -62,7 +65,8 @@ class SupabaseStorage:
                 body = exc.read().decode("utf-8", errors="replace")[:600]
             except Exception:
                 body = ""
-            logger.warning("Supabase Storage HTTP %s for %s %s: %s", exc.code, method, url.split("/storage/v1/", 1)[-1], body)
+            level = logging.WARNING if exc.code in TRANSIENT_HTTP_ERRORS else logging.ERROR
+            logger.log(level, "Supabase Storage HTTP %s for %s %s: %s", exc.code, method, url.split("/storage/v1/", 1)[-1], body)
             raise
 
     def read_bytes(self, path: str) -> bytes | None:
@@ -168,7 +172,7 @@ class SupabaseStorage:
         upload_error: str | None = None
         for bucket in SUPABASE_BUCKETS:
             try:
-                status, _data = self.request("POST", f"{self.base_url}/object/list/{bucket}", data=json.dumps({"prefix": "", "limit": 1}).encode("utf-8"), headers={"Content-Type": "application/json"})
+                status, _data = self.request("POST", f"{self.base_url}/object/list/{bucket}", data=json.dumps({"prefix": "", "limit": 1}).encode("utf-8"), headers={"Content-Type": "application/json"}, timeout=SUPABASE_HEALTH_TIMEOUT_SECONDS)
                 buckets[bucket] = status != 404
                 reachable = reachable or buckets[bucket]
             except (HTTPError, URLError, TimeoutError, OSError):

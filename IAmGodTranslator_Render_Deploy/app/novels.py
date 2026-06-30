@@ -48,11 +48,14 @@ class NovelManager:
         self.novels_dir = self.data_dir / "novels"
         self.reader_state_path = self.data_dir / "reader_state.json"
         self.remote_error: str | None = None
+        self.disable_startup_remote_sync = (os.getenv("DISABLE_STARTUP_REMOTE_SYNC") or "true").lower() != "false"
+        self._startup_phase = True
         self.remote = self.build_remote_storage()
         self.novels_dir.mkdir(parents=True, exist_ok=True)
         self.restore_remote_snapshot()
         self.ensure_default_novel()
         self.migrate_legacy_jobs()
+        self._startup_phase = False
 
     def build_remote_storage(self) -> SupabaseStorage | None:
         if (os.getenv("STORAGE_BACKEND") or "local").lower() != "supabase":
@@ -66,6 +69,9 @@ class NovelManager:
 
     def restore_remote_snapshot(self) -> None:
         if self.remote is None:
+            return
+        if self.disable_startup_remote_sync:
+            logger.info("Skipping Supabase remote snapshot restore during startup.")
             return
         try:
             self.remote.download_tree("app", self.data_dir / "app")
@@ -153,6 +159,9 @@ class NovelManager:
 
     def sync_to_remote(self, novel_id: str | None = None) -> None:
         if self.remote is None:
+            return
+        if self._startup_phase and self.disable_startup_remote_sync:
+            logger.info("Skipping Supabase remote sync during startup.")
             return
         try:
             if novel_id:
@@ -492,6 +501,25 @@ class NovelManager:
         self.update_novel(novel_id, {"settings": {"last_backup_at": utc_now()}})
         return zip_path
 
+    def clear_backup_state(self) -> dict[str, Any]:
+        cleared = 0
+        for state_path in (self.data_dir / "storage_state.json", self.data_dir / "backup_state.json", self.data_dir / "restore_state.json", self.data_dir / "undo_restore_state.json"):
+            if state_path.exists() and state_path.is_file():
+                state_path.unlink()
+                cleared += 1
+        for metadata in self.iter_metadata():
+            settings = metadata.get("settings")
+            if isinstance(settings, dict):
+                changed = False
+                for key in ("last_backup_at", "pending_backup", "pending_restore", "undo_restore"):
+                    if key in settings:
+                        settings.pop(key, None)
+                        changed = True
+                if changed:
+                    self.write_json(self.metadata_path(str(metadata["novel_id"])), metadata)
+                    cleared += 1
+        return {"cleared": cleared}
+
     async def restore_backup(self, novel_id: str, upload: UploadFile) -> dict[str, Any]:
         filename = safe_filename(upload.filename, "novel-backup.zip")
         if Path(filename).suffix.lower() != ".zip":
@@ -530,7 +558,6 @@ class NovelManager:
         return state
 
     def chapters(self, novel_id: str) -> list[dict[str, Any]]:
-        self.sync_to_remote(novel_id)
         chapters: dict[int, dict[str, Any]] = {}
         for file in sorted(self.folders(novel_id)["original"].rglob("*.txt")):
             parsed = parse_chapter(file)

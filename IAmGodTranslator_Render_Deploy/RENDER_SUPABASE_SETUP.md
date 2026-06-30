@@ -34,6 +34,7 @@ OPENAI_MODEL=gpt-4o-mini
 PYTHON_VERSION=3.12.0
 ADMIN_PASSWORD=choose a private admin password
 SESSION_SECRET=choose a long random secret
+DISABLE_STARTUP_REMOTE_SYNC=true
 ```
 
 Never commit `.env`, API keys, database passwords, or service role keys. The service role key is used only by the FastAPI backend.
@@ -48,11 +49,13 @@ Never commit `.env`, API keys, database passwords, or service role keys. The ser
    - database backend is `postgres`
    - storage warnings are clear or understood
 4. Open Admin -> Storage Health.
-5. Click `Migrate Local Data to Supabase`.
-6. Download a Full Backup ZIP after migration.
+5. Click `Migrate Local Data to Supabase` if local data needs to be copied up.
+6. Use the smaller ZIP exports/imports for Original, Reference, AI Translation, and Prompts. Full backup/restore is disabled on Render Free until background jobs are added.
 
 ## 4. Notes
 
 Render Free may sleep when inactive. That is acceptable for personal/testing use because Supabase stores the durable data. Later, when traffic or users exist, upgrade Render to Starter. If Supabase Free limits or pauses become a problem, upgrade Supabase.
+
+Keep `DISABLE_STARTUP_REMOTE_SYNC=true` on Render Free. The app will bind to `$PORT` first and use Supabase during normal API requests/imports, instead of scanning or restoring remote storage during startup.
 
 Automatic novel ingestion from external websites is intentionally not included. Only import content you own, have permission to use, or are legally allowed to process.
