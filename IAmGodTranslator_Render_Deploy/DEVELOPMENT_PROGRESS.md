@@ -6,6 +6,8 @@ GodTranslator_Web_v7_0_Massive_Stability_Backup_UI_Update.zip
 
 ## Completed Tasks
 
+- Added one-time legacy backup converter for old GodTranslator backup ZIPs without `manifest.json`.
+- Dry-ran and wrote a v7-compatible converted backup for `i-am-god`.
 - Continued from `GodTranslator_Web_v7_0_PARTIAL_Phase_9.zip` without restarting.
 - Completed the final visual UI polish pass for admin/public layouts.
 - Redesigned the Admin Dashboard into clear sections for Quick Actions, Storage Health, Data Repair, Users/Roles, and Settings.
@@ -27,6 +29,7 @@ GodTranslator_Web_v7_0_Massive_Stability_Backup_UI_Update.zip
 ## Files Changed
 
 - `DEVELOPMENT_PROGRESS.md`
+- `tools/convert_legacy_backup_to_v7.py`
 - `static/app.js`
 - `static/service-worker.js`
 - `static/styles.css`
@@ -34,6 +37,10 @@ GodTranslator_Web_v7_0_Massive_Stability_Backup_UI_Update.zip
 
 ## QA Results
 
+- Legacy converter syntax check passed.
+- Legacy converter dry-run detected 906 originals, 412 references, 25 AI translations, 241 prompts, and 1 cover.
+- Converted backup ZIP contains `manifest.json`, `backup_info.json`, `novels/index.json`, `novels/i-am-god/metadata.json`, and canonical chapter folders.
+- Converted backup ZIP secret scan found no OpenAI keys, Supabase service-role keys, or database URLs with embedded passwords.
 - Python syntax check passed.
 - JavaScript syntax check passed.
 - Cache references bumped to v73 with no stale v70/v71/v72 references.

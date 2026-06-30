@@ -125,6 +125,20 @@ app.innerHTML = `
       </section>
     </section>
   </main>
+  <section class="app-recovery" id="appRecovery" hidden>
+    <div class="recovery-card">
+      <p class="eyebrow">Connection Recovery</p>
+      <h2>GodTranslator could not finish loading.</h2>
+      <p id="recoveryMessage">The server did not respond. Render may still be waking up or restarting. Try again in a moment.</p>
+      <div class="actions">
+        <button class="primary-button" id="recoveryRetry" type="button">Retry</button>
+        <button class="secondary-button" id="recoveryCheckHealth" type="button">Check Health</button>
+        <button class="secondary-button" id="recoveryClearCache" type="button">Clear Local Cache</button>
+        <a class="secondary-button" id="recoveryHealthLink" href="/api/health" target="_blank" rel="noreferrer">Open /api/health</a>
+      </div>
+      <details><summary>Technical details</summary><pre id="recoveryDetails"></pre></details>
+    </div>
+  </section>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 </div>
 <dialog id="addNovelDialog"><form id="addNovelForm"><h2>Add New Novel</h2><label><span>Title</span><input id="newNovelTitle" type="text" required></label><div class="actions"><button class="secondary-button" id="cancelAddNovel" type="button">Cancel</button><button class="primary-button" type="submit">Create</button></div></form></dialog>
@@ -142,8 +156,8 @@ const els = {
   chapterSearch: $("#chapterSearch"), chapterFilter: $("#chapterFilter"), chapterSort: $("#chapterSort"), chapterPageSize: $("#chapterPageSize"), chapterJump: $("#chapterJump"), chapterList: $("#chapterList"), selectMissingAi: $("#selectMissingAi"), selectCurrentPage: $("#selectCurrentPage"), clearSelectedChapters: $("#clearSelectedChapters"), selectedChapterCount: $("#selectedChapterCount"), prevPage: $("#prevPage"), nextPage: $("#nextPage"), pageInfo: $("#pageInfo"),
   readerPanel: $("#readerPanel"), readerBack: $("#readerBack"), readerLibrary: $("#readerLibrary"), readerShell: $("#readerShell"), prevChapter: $("#prevChapter"), nextChapter: $("#nextChapter"), prevChapterBottom: $("#prevChapterBottom"), nextChapterBottom: $("#nextChapterBottom"), chapterPickerBottom: $("#chapterPickerBottom"), backToTopButton: $("#backToTopButton"), centerChapterPicker: $("#centerChapterPicker"), chapterPickerButton: $("#chapterPickerButton"), readerBookmarkButton: $("#readerBookmarkButton"), chapterPickerPanel: $("#chapterPickerPanel"), readerSettingsButton: $("#readerSettingsButton"), readerSettingsDrawer: $("#readerSettingsDrawer"), closeReaderSettings: $("#closeReaderSettings"), fullscreenReader: $("#fullscreenReader"), readerChapterNumber: $("#readerChapterNumber"), readerChapterTitle: $("#readerChapterTitle"), readerProgress: $("#readerProgress"), readerContent: $("#readerContent"), readerTheme: $("#readerTheme"), readerFontFamily: $("#readerFontFamily"), readerFontSize: $("#readerFontSize"), readerLineHeight: $("#readerLineHeight"), readerParagraphSpacing: $("#readerParagraphSpacing"), readerPageWidth: $("#readerPageWidth"), readerTextAlign: $("#readerTextAlign"), readerBackground: $("#readerBackground"), readerAccent: $("#readerAccent"), readerAllowCopy: $("#readerAllowCopy"), fontDown: $("#fontDown"), fontUp: $("#fontUp"), widthToggle: $("#widthToggle"),
   originalUploadForm: $("#originalUploadForm"), referenceUploadForm: $("#referenceUploadForm"), originalFiles: $("#originalFiles"), referenceFiles: $("#referenceFiles"), model: $("#model"), maxTotalBudget: $("#maxTotalBudget"), maxCostPerChapter: $("#maxCostPerChapter"), retryFailedChapters: $("#retryFailedChapters"), batchSize: $("#batchSize"), stopWhenBudgetReached: $("#stopWhenBudgetReached"), estimateBatch: $("#estimateBatch"), startBatch: $("#startBatch"), estimateBox: $("#estimateBox"), jobProgress: $("#jobProgress"), queueList: $("#queueList"),
-  importOriginalForm: $("#importOriginalForm"), importOriginalFile: $("#importOriginalFile"), importOriginalButton: $("#importOriginalButton"), importReferenceForm: $("#importReferenceForm"), importReferenceFile: $("#importReferenceFile"), importReferenceButton: $("#importReferenceButton"), importAiForm: $("#importAiForm"), importAiFile: $("#importAiFile"), importAiButton: $("#importAiButton"), coverUploadForm: $("#coverUploadForm"), coverFile: $("#coverFile"), downloadOriginal: $("#downloadOriginal"), downloadReference: $("#downloadReference"), downloadEnglish: $("#downloadEnglish"), downloadPrompts: $("#downloadPrompts"), startFullBackupButton: $("#startFullBackupButton"), cancelFullBackupButton: $("#cancelFullBackupButton"), refreshBackupJobsButton: $("#refreshBackupJobsButton"), backupJobProgress: $("#backupJobProgress"), backupJobStatus: $("#backupJobStatus"), backupJobList: $("#backupJobList"), restoreNovelForm: $("#restoreNovelForm"), restoreFile: $("#restoreFile"), restoreConflictMode: $("#restoreConflictMode"), restoreDryRunButton: $("#restoreDryRunButton"), restoreConfirmButton: $("#restoreConfirmButton"), restoreJobProgress: $("#restoreJobProgress"), restoreJobStatus: $("#restoreJobStatus"),
-  adminMetrics: $("#adminMetrics"), storageHealth: $("#storageHealth"), checkStorageButton: $("#checkStorageButton"), migrateStorageButton: $("#migrateStorageButton"), migrateSupabaseButton: $("#migrateSupabaseButton"), auditContentButton: $("#auditContentButton"), dryRunRepairButton: $("#dryRunRepairButton"), applyRepairButton: $("#applyRepairButton"), repairReport: $("#repairReport"), adminUsersList: $("#adminUsersList"), novelSettingsForm: $("#novelSettingsForm"), settingsTitle: $("#settingsTitle"), settingsSummary: $("#settingsSummary"), settingsTags: $("#settingsTags"), sourceLanguage: $("#sourceLanguage"), targetLanguage: $("#targetLanguage"), defaultModel: $("#defaultModel"), storageModeDisplay: $("#storageModeDisplay"), dataDirDisplay: $("#dataDirDisplay"), appIconForm: $("#appIconForm"), appIconFile: $("#appIconFile"), appAppearanceForm: $("#appAppearanceForm"), appDisplayName: $("#appDisplayName"), appSubtitleInput: $("#appSubtitleInput"), themeMainAccent: $("#themeMainAccent"), themeHighlight: $("#themeHighlight"), themeLogoAccent: $("#themeLogoAccent"), themeCardBackground: $("#themeCardBackground"), themePageBackground: $("#themePageBackground"), themeReaderBackground: $("#themeReaderBackground"), themeReaderText: $("#themeReaderText"), resetThemeButton: $("#resetThemeButton"), toast: $("#toast")
+  importOriginalForm: $("#importOriginalForm"), importOriginalFile: $("#importOriginalFile"), importOriginalButton: $("#importOriginalButton"), importReferenceForm: $("#importReferenceForm"), importReferenceFile: $("#importReferenceFile"), importReferenceButton: $("#importReferenceButton"), importAiForm: $("#importAiForm"), importAiFile: $("#importAiFile"), importAiButton: $("#importAiButton"), coverUploadForm: $("#coverUploadForm"), coverFile: $("#coverFile"), coverUploadButton: $("#coverUploadForm button[type='submit']"), downloadOriginal: $("#downloadOriginal"), downloadReference: $("#downloadReference"), downloadEnglish: $("#downloadEnglish"), downloadPrompts: $("#downloadPrompts"), startFullBackupButton: $("#startFullBackupButton"), cancelFullBackupButton: $("#cancelFullBackupButton"), refreshBackupJobsButton: $("#refreshBackupJobsButton"), backupJobProgress: $("#backupJobProgress"), backupJobStatus: $("#backupJobStatus"), backupJobList: $("#backupJobList"), restoreNovelForm: $("#restoreNovelForm"), restoreFile: $("#restoreFile"), restoreConflictMode: $("#restoreConflictMode"), restoreDryRunButton: $("#restoreDryRunButton"), restoreConfirmButton: $("#restoreConfirmButton"), restoreJobProgress: $("#restoreJobProgress"), restoreJobStatus: $("#restoreJobStatus"),
+  adminMetrics: $("#adminMetrics"), storageHealth: $("#storageHealth"), checkStorageButton: $("#checkStorageButton"), migrateStorageButton: $("#migrateStorageButton"), migrateSupabaseButton: $("#migrateSupabaseButton"), auditContentButton: $("#auditContentButton"), dryRunRepairButton: $("#dryRunRepairButton"), applyRepairButton: $("#applyRepairButton"), repairReport: $("#repairReport"), adminUsersList: $("#adminUsersList"), novelSettingsForm: $("#novelSettingsForm"), settingsTitle: $("#settingsTitle"), settingsSummary: $("#settingsSummary"), settingsTags: $("#settingsTags"), sourceLanguage: $("#sourceLanguage"), targetLanguage: $("#targetLanguage"), defaultModel: $("#defaultModel"), storageModeDisplay: $("#storageModeDisplay"), dataDirDisplay: $("#dataDirDisplay"), appIconForm: $("#appIconForm"), appIconFile: $("#appIconFile"), appAppearanceForm: $("#appAppearanceForm"), appDisplayName: $("#appDisplayName"), appSubtitleInput: $("#appSubtitleInput"), themeMainAccent: $("#themeMainAccent"), themeHighlight: $("#themeHighlight"), themeLogoAccent: $("#themeLogoAccent"), themeCardBackground: $("#themeCardBackground"), themePageBackground: $("#themePageBackground"), themeReaderBackground: $("#themeReaderBackground"), themeReaderText: $("#themeReaderText"), resetThemeButton: $("#resetThemeButton"), appRecovery: $("#appRecovery"), recoveryMessage: $("#recoveryMessage"), recoveryDetails: $("#recoveryDetails"), recoveryRetry: $("#recoveryRetry"), recoveryCheckHealth: $("#recoveryCheckHealth"), recoveryClearCache: $("#recoveryClearCache"), toast: $("#toast")
 };
 
 const tabs = $$(".tab");
@@ -151,7 +165,91 @@ const panels = $$(".tab-panel");
 const readerTabs = $$(".reader-tab");
 
 function toast(message, error = false) { els.toast.textContent = message; els.toast.style.background = error ? "var(--danger)" : "var(--text)"; els.toast.classList.add("show"); clearTimeout(toast.timer); toast.timer = setTimeout(() => els.toast.classList.remove("show"), 3400); }
-async function api(path, options = {}) { const res = await fetch(path, options); const text = await res.text(); let data = {}; try { data = text ? JSON.parse(text) : {}; } catch (_error) { if (!res.ok) throw new Error("Server returned a non-JSON error. Check server logs or uploaded chapters."); throw new Error("Server returned an unexpected response."); } if (!res.ok) throw new Error(data.detail || `Request failed: ${res.status}`); return data; }
+class ApiError extends Error {
+  constructor(message, detail = {}) {
+    super(message);
+    this.name = "ApiError";
+    Object.assign(this, detail);
+    this.timestamp = detail.timestamp || new Date().toISOString();
+  }
+}
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function friendlyApiMessage(status, rawMessage = "") {
+  const text = String(rawMessage || "");
+  if (status === "timeout" || /failed to fetch|networkerror|abort/i.test(text)) return "The server did not respond. Render may still be waking up or restarting. Try again in a moment.";
+  if ([500, 502, 503, 504].includes(Number(status))) return "The server is temporarily unavailable. Render may be restarting or waking up. Try again in a moment.";
+  if (status === "non-json") return "The server returned an unexpected response. Try again or check /api/health.";
+  return text || `Request failed${status ? ` (${status})` : ""}.`;
+}
+async function api(path, options = {}) {
+  const { timeoutMs = 30000, ...fetchOptions } = options;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const headers = fetchOptions.headers || {};
+  try {
+    const res = await fetch(path, { cache: fetchOptions.method ? "no-store" : "no-store", ...fetchOptions, headers, signal: controller.signal });
+    const text = await res.text();
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch (_error) {
+      throw new ApiError(friendlyApiMessage("non-json"), { endpoint: path, status: res.status || "non-json", raw: text.slice(0, 500) });
+    }
+    if (!res.ok) {
+      const detail = data.detail || data.message || `Request failed: ${res.status}`;
+      throw new ApiError(friendlyApiMessage(res.status, detail), { endpoint: path, status: res.status, data });
+    }
+    return data;
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    const status = error.name === "AbortError" ? "timeout" : "network";
+    throw new ApiError(friendlyApiMessage(status, error.message), { endpoint: path, status, technical: error.message || String(error) });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function apiWithRetry(path, options = {}, attempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try { return await api(path, options); }
+    catch (error) {
+      lastError = error;
+      if (attempt >= attempts || (error.status && !["network", "timeout", 500, 502, 503, 504].includes(error.status))) break;
+      await sleep(600 * attempt);
+    }
+  }
+  throw lastError;
+}
+function setBusy(button, busy) {
+  if (!button) return;
+  button.disabled = busy;
+  button.classList.toggle("is-busy", busy);
+}
+async function withBusy(button, work) {
+  setBusy(button, true);
+  try { return await work(); }
+  finally { setBusy(button, false); }
+}
+function showRecovery(error) {
+  if (!els.appRecovery) return;
+  const detail = {
+    endpoint: error?.endpoint || "startup",
+    status: error?.status || "unknown",
+    message: error?.message || String(error || "Unknown error"),
+    timestamp: error?.timestamp || new Date().toISOString(),
+  };
+  els.recoveryMessage.textContent = detail.message || "The server did not respond. Render may still be waking up or restarting. Try again in a moment.";
+  els.recoveryDetails.textContent = JSON.stringify(detail, null, 2);
+  els.appRecovery.hidden = false;
+  els.apiStatus.textContent = "Offline";
+  els.apiStatus.classList.remove("ok");
+}
+function hideRecovery() { if (els.appRecovery) els.appRecovery.hidden = true; }
+async function clearFrontendCache() {
+  if ("caches" in window) await caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key))));
+  if ("serviceWorker" in navigator) await navigator.serviceWorker.getRegistrations().then((regs) => Promise.all(regs.map((reg) => reg.unregister())));
+  toast("Frontend cache cleared. Retry loading the app.");
+}
 function esc(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char])); }
 function date(value) { if (!value) return "Never"; try { return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(value)); } catch { return value; } }
 function status(value) { return ({ completed: "translated", estimated: "queued", running: "translating", test_completed: "translated" }[value] || value || "unknown"); }
@@ -433,7 +531,7 @@ async function loadAuthState() {
   if (state.auth.authenticated) await loadBackendLibrary().catch((err) => toast(err.message, true));
 }
 async function loadAppInfo() { state.appInfo = await api("/api/app").catch(() => ({})); applyAppInfo(); applyReaderPrefs(); }
-async function loadNovels() { els.novelGrid.innerHTML = '<div class="empty-state">Loading library...</div>'; state.novels = (await api("/api/novels")).novels || []; renderNovels(); }
+async function loadNovels() { els.novelGrid.innerHTML = '<div class="empty-state">Loading library...</div>'; state.novels = (await apiWithRetry("/api/novels")).novels || []; renderNovels(); }
 function renderAdminState() { document.body.classList.toggle("is-admin", state.admin.authenticated); els.adminButton.textContent = state.admin.authenticated ? "Admin / Lock" : "Admin"; els.adminHelp.textContent = state.admin.enabled ? "Enter your admin password to open the control panel." : "Login is disabled because ADMIN_PASSWORD is not set. Private tools are hidden."; if (!state.admin.authenticated && ["translatePanel", "backupsPanel", "settingsPanel"].some((id) => document.getElementById(id).classList.contains("active"))) switchTab("chapters"); }
 function renderAuthState() {
   const user = state.auth.user;
@@ -787,11 +885,23 @@ function renderChapterPicker() {
   els.chapterPickerPanel.querySelectorAll("[data-chapter]").forEach((button) => button.addEventListener("click", () => { els.chapterPickerPanel.hidden = true; openReader(Number(button.dataset.chapter), state.readerTab); }));
 }
 
-async function upload(kind) { const input = kind === "original" ? els.originalFiles : els.referenceFiles; if (!input.files.length) return toast("Choose files first.", true); const form = new FormData(); for (const file of input.files) form.append(kind, file); await api(`/api/novels/${state.currentNovel.novel_id}/upload/${kind}`, { method: "POST", body: form }); input.value = ""; await openNovel(state.currentNovel.novel_id); switchTab("translate"); toast(kind === "original" ? "Original Story uploaded." : "Reference Translation uploaded."); }
+async function upload(kind, button = null) { const input = kind === "original" ? els.originalFiles : els.referenceFiles; if (!input.files.length) return toast("Choose files first.", true); await withBusy(button, async () => { const form = new FormData(); for (const file of input.files) form.append(kind, file); await api(`/api/novels/${state.currentNovel.novel_id}/upload/${kind}`, { method: "POST", body: form, timeoutMs: 120000 }); input.value = ""; await openNovel(state.currentNovel.novel_id); switchTab("translate"); toast(kind === "original" ? "Original Story uploaded." : "Reference Translation uploaded."); }); }
 function settings(startNow = false) { return { model: els.model.value, max_total_budget: els.maxTotalBudget.value, max_cost_per_chapter: els.maxCostPerChapter.value, retry_failed_chapters: Number(els.retryFailedChapters.value || 0), batch_size: Number(els.batchSize.value || 25), stop_when_budget_reached: els.stopWhenBudgetReached.checked, show_estimate_before_starting: true, test_chapter_only: false, start_now: startNow }; }
-async function buildEstimate() { try { state.currentJob = await api(`/api/novels/${state.currentNovel.novel_id}/translate/batch`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings(false)) }); els.startBatch.disabled = false; renderQueue(); toast("Cost estimate ready. Translation has not started."); } catch (_error) { els.startBatch.disabled = true; throw new Error("Cost estimate failed. Check server logs or uploaded chapters."); } }
-async function startBatch() { if (!state.currentJob) await buildEstimate(); if (!window.confirm("Start paid translation for this estimated batch?")) return; await api(`/api/novels/${state.currentNovel.novel_id}/jobs/${state.currentJob.job_id}/start`, { method: "POST" }); toast("Batch started."); pollJob(); }
-async function pollJob() { if (!state.currentJob) return; clearTimeout(state.pollTimer); state.currentJob = await api(`/api/novels/${state.currentNovel.novel_id}/jobs/${state.currentJob.job_id}`); renderQueue(); if (["queued", "running"].includes(state.currentJob.status)) state.pollTimer = setTimeout(pollJob, 3000); }
+async function buildEstimate() { await withBusy(els.estimateBatch, async () => { try { state.currentJob = await api(`/api/novels/${state.currentNovel.novel_id}/translate/batch`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings(false)), timeoutMs: 60000 }); els.startBatch.disabled = false; renderQueue(); toast("Cost estimate ready. Translation has not started."); } catch (error) { els.startBatch.disabled = true; throw error; } }); }
+async function startBatch() { await withBusy(els.startBatch, async () => { if (!state.currentJob) await buildEstimate(); if (!window.confirm("Start paid translation for this estimated batch?")) return; await api(`/api/novels/${state.currentNovel.novel_id}/jobs/${state.currentJob.job_id}/start`, { method: "POST", timeoutMs: 60000 }); toast("Batch started."); pollJob().catch((err) => toast(err.message, true)); }); }
+async function pollJob() {
+  if (!state.currentJob) return;
+  clearTimeout(state.pollTimer);
+  try {
+    state.currentJob = await api(`/api/novels/${state.currentNovel.novel_id}/jobs/${state.currentJob.job_id}`, { timeoutMs: 20000 });
+    renderQueue();
+    if (["queued", "running"].includes(state.currentJob.status)) state.pollTimer = setTimeout(() => pollJob().catch((err) => toast(err.message, true)), 3000);
+  } catch (error) {
+    els.estimateBox.innerHTML = `<strong>Polling paused.</strong><br>${esc(error.message)}<br><button class="secondary-button" id="retryJobPoll" type="button">Retry job status</button>`;
+    $("#retryJobPoll")?.addEventListener("click", () => pollJob().catch((err) => toast(err.message, true)));
+    toast(error.message, true);
+  }
+}
 function renderQueue() { const job = state.currentJob; if (!job) { els.estimateBox.textContent = "No batch estimate yet."; els.jobProgress.style.width = "0%"; els.queueList.innerHTML = '<div class="empty-state">Build a cost estimate to preview the next batch queue.</div>'; return; } const total = job.counts?.total || 0, done = job.counts?.completed || 0; els.jobProgress.style.width = `${total ? Math.round((done / total) * 100) : 0}%`; els.estimateBox.innerHTML = `<strong>${status(job.status)}</strong><br>Chapters: ${total}. Cheapest estimate: ${money(job.estimate?.cheapest_total_cost)}. Recommended estimate: ${money(job.estimate?.recommended_total_cost)}.`; els.queueList.innerHTML = ""; for (const c of job.chapters || []) { const row = document.createElement("article"); row.className = "chapter-row"; row.innerHTML = `<div><div class="chapter-title">${String(c.chapter).padStart(4, "0")} - ${esc(c.title || "")}</div><div class="chapter-meta">${esc(c.error || "Ready")}</div></div><span class="badge ${c.status}">${status(c.status)}</span>`; els.queueList.appendChild(row); } }
 
 function renderBackupJob(job) {
@@ -834,15 +944,24 @@ async function refreshBackupJobs() {
 }
 
 async function startFullBackup() {
-  const job = await api("/api/admin/backups/full/start", { method: "POST" });
-  renderBackupJob(job);
-  toast("Full backup job started.");
+  await withBusy(els.startFullBackupButton, async () => {
+    const job = await api("/api/admin/backups/full/start", { method: "POST", timeoutMs: 60000 });
+    renderBackupJob(job);
+    toast("Full backup job started.");
+  });
 }
 
 async function pollBackupJob() {
   if (!state.backupJobId) return refreshBackupJobs();
-  renderBackupJob(await api(`/api/admin/backups/jobs/${encodeURIComponent(state.backupJobId)}`));
-  refreshBackupJobs().catch(() => {});
+  try {
+    renderBackupJob(await api(`/api/admin/backups/jobs/${encodeURIComponent(state.backupJobId)}`, { timeoutMs: 20000 }));
+    refreshBackupJobs().catch(() => {});
+  } catch (error) {
+    clearTimeout(state.backupPollTimer);
+    els.backupJobStatus.innerHTML = `<strong>Polling paused.</strong><br>${esc(error.message)}<br><button class="secondary-button" id="retryBackupPoll" type="button">Retry backup status</button>`;
+    $("#retryBackupPoll")?.addEventListener("click", () => pollBackupJob().catch((err) => toast(err.message, true)));
+    toast(error.message, true);
+  }
 }
 
 async function cancelFullBackup() {
@@ -878,21 +997,30 @@ async function startFullRestore(dryRun) {
   if (!els.restoreFile.files.length) return toast("Choose a full backup ZIP first.", true);
   if (!dryRun && !state.restoreDryRunComplete) return toast("Run and review a restore dry-run first.", true);
   if (!dryRun && !window.confirm("Restore this backup now? Existing files are handled by the selected conflict mode. No files are deleted.")) return;
-  const form = new FormData();
-  form.append("backup", els.restoreFile.files[0]);
-  form.append("dry_run", dryRun ? "true" : "false");
-  form.append("conflict_mode", els.restoreConflictMode.value || "write_missing_only");
-  renderRestoreJob(await api("/api/admin/backups/full/restore", { method: "POST", body: form }));
-  toast(dryRun ? "Restore dry-run started." : "Restore started.");
+  await withBusy(dryRun ? els.restoreDryRunButton : els.restoreConfirmButton, async () => {
+    const form = new FormData();
+    form.append("backup", els.restoreFile.files[0]);
+    form.append("dry_run", dryRun ? "true" : "false");
+    form.append("conflict_mode", els.restoreConflictMode.value || "write_missing_only");
+    renderRestoreJob(await api("/api/admin/backups/full/restore", { method: "POST", body: form, timeoutMs: 120000 }));
+    toast(dryRun ? "Restore dry-run started." : "Restore started.");
+  });
 }
 
 async function pollRestoreJob() {
   if (!state.restoreJobId) return;
-  const job = await api(`/api/admin/backups/jobs/${encodeURIComponent(state.restoreJobId)}`);
-  renderRestoreJob(job);
-  if (job.status === "complete" && !job.dry_run) {
-    await loadNovels();
-    if (state.currentNovel) await openNovel(state.currentNovel.novel_id, { skipHistory: true, skipSave: true, initialTab: "backups" });
+  try {
+    const job = await api(`/api/admin/backups/jobs/${encodeURIComponent(state.restoreJobId)}`, { timeoutMs: 20000 });
+    renderRestoreJob(job);
+    if (job.status === "complete" && !job.dry_run) {
+      await loadNovels();
+      if (state.currentNovel) await openNovel(state.currentNovel.novel_id, { skipHistory: true, skipSave: true, initialTab: "backups" });
+    }
+  } catch (error) {
+    clearTimeout(state.restorePollTimer);
+    els.restoreJobStatus.innerHTML = `<strong>Polling paused.</strong><br>${esc(error.message)}<br><button class="secondary-button" id="retryRestorePoll" type="button">Retry restore status</button>`;
+    $("#retryRestorePoll")?.addEventListener("click", () => pollRestoreJob().catch((err) => toast(err.message, true)));
+    toast(error.message, true);
   }
 }
 
@@ -901,19 +1029,12 @@ function importMessage(result, label) {
   return `Imported ${result.imported || 0} ${label}. Skipped ${result.skipped || result.duplicates || 0}. Invalid ${result.invalid || 0}. Destination: ${result.destination_category || label}.${warnings}`;
 }
 
-async function guardedImport(button, work) {
-  if (button) button.disabled = true;
-  try {
-    return await work();
-  } finally {
-    if (button) button.disabled = false;
-  }
-}
+async function guardedImport(button, work) { return withBusy(button, work); }
 
-async function importOriginalZip(event) { event.preventDefault(); if (!els.importOriginalFile.files.length) return toast("Choose an Original Story ZIP first.", true); await guardedImport(els.importOriginalButton, async () => { const form = new FormData(); form.append("original_zip", els.importOriginalFile.files[0]); const result = await api(`/api/novels/${state.currentNovel.novel_id}/import/original`, { method: "POST", body: form }); els.importOriginalFile.value = ""; await openNovel(state.currentNovel.novel_id); switchTab("backups"); toast(importMessage(result, "original chapters"), (result.warnings || []).length > 0); }); }
-async function importReferenceZip(event) { event.preventDefault(); if (!els.importReferenceFile.files.length) return toast("Choose a Reference Translation ZIP first.", true); await guardedImport(els.importReferenceButton, async () => { const form = new FormData(); form.append("reference_zip", els.importReferenceFile.files[0]); const result = await api(`/api/novels/${state.currentNovel.novel_id}/import/reference`, { method: "POST", body: form }); els.importReferenceFile.value = ""; await openNovel(state.currentNovel.novel_id); switchTab("backups"); toast(importMessage(result, "reference chapters"), (result.warnings || []).length > 0); }); }
-async function importAiTranslations(event) { event.preventDefault(); if (!els.importAiFile.files.length) return toast("Choose an AI translated chapters ZIP first.", true); await guardedImport(els.importAiButton, async () => { const form = new FormData(); form.append("translated_zip", els.importAiFile.files[0]); const result = await api(`/api/novels/${state.currentNovel.novel_id}/import/ai-translations`, { method: "POST", body: form }); els.importAiFile.value = ""; await openNovel(state.currentNovel.novel_id); switchTab("backups"); toast(importMessage(result, "AI translated chapters"), (result.warnings || []).length > 0); }); }
-async function uploadCover(event) { event.preventDefault(); if (!els.coverFile.files.length) return toast("Choose a cover image first.", true); const form = new FormData(); form.append("cover", els.coverFile.files[0]); const result = await api(`/api/novels/${state.currentNovel.novel_id}/cover`, { method: "POST", body: form }); els.coverFile.value = ""; state.currentNovel = result.novel; state.chapters = result.chapters || state.chapters; await loadNovels(); renderDetail(); toast("Cover uploaded."); }
+async function importOriginalZip(event) { event.preventDefault(); if (!els.importOriginalFile.files.length) return toast("Choose an Original Story ZIP first.", true); await guardedImport(els.importOriginalButton, async () => { const form = new FormData(); form.append("original_zip", els.importOriginalFile.files[0]); const result = await api(`/api/novels/${state.currentNovel.novel_id}/import/original`, { method: "POST", body: form, timeoutMs: 120000 }); els.importOriginalFile.value = ""; await openNovel(state.currentNovel.novel_id); switchTab("backups"); toast(importMessage(result, "original chapters"), (result.warnings || []).length > 0); }); }
+async function importReferenceZip(event) { event.preventDefault(); if (!els.importReferenceFile.files.length) return toast("Choose a Reference Translation ZIP first.", true); await guardedImport(els.importReferenceButton, async () => { const form = new FormData(); form.append("reference_zip", els.importReferenceFile.files[0]); const result = await api(`/api/novels/${state.currentNovel.novel_id}/import/reference`, { method: "POST", body: form, timeoutMs: 120000 }); els.importReferenceFile.value = ""; await openNovel(state.currentNovel.novel_id); switchTab("backups"); toast(importMessage(result, "reference chapters"), (result.warnings || []).length > 0); }); }
+async function importAiTranslations(event) { event.preventDefault(); if (!els.importAiFile.files.length) return toast("Choose an AI translated chapters ZIP first.", true); await guardedImport(els.importAiButton, async () => { const form = new FormData(); form.append("translated_zip", els.importAiFile.files[0]); const result = await api(`/api/novels/${state.currentNovel.novel_id}/import/ai-translations`, { method: "POST", body: form, timeoutMs: 120000 }); els.importAiFile.value = ""; await openNovel(state.currentNovel.novel_id); switchTab("backups"); toast(importMessage(result, "AI translated chapters"), (result.warnings || []).length > 0); }); }
+async function uploadCover(event) { event.preventDefault(); if (!els.coverFile.files.length) return toast("Choose a cover image first.", true); await withBusy(els.coverUploadButton, async () => { const form = new FormData(); form.append("cover", els.coverFile.files[0]); const result = await api(`/api/novels/${state.currentNovel.novel_id}/cover`, { method: "POST", body: form, timeoutMs: 60000 }); els.coverFile.value = ""; state.currentNovel = result.novel; state.chapters = result.chapters || state.chapters; await loadNovels(); renderDetail(); toast("Cover uploaded."); }); }
 async function uploadAppIcon(event) { event.preventDefault(); if (!els.appIconFile.files.length) return toast("Choose an app icon first.", true); const form = new FormData(); form.append("icon", els.appIconFile.files[0]); state.appInfo = await api("/api/admin/app-icon", { method: "POST", body: form }); els.appIconFile.value = ""; applyAppInfo(); toast("App icon uploaded."); }
 async function saveAppAppearance(event) {
   event.preventDefault();
@@ -1023,8 +1144,8 @@ function bind() {
   els.startFullBackupButton.onclick = () => startFullBackup().catch((err) => toast(err.message, true));
   els.cancelFullBackupButton.onclick = () => cancelFullBackup().catch((err) => toast(err.message, true));
   els.refreshBackupJobsButton.onclick = () => refreshBackupJobs().catch((err) => toast(err.message, true));
-  els.originalUploadForm.onsubmit = (event) => { event.preventDefault(); upload("original").catch((err) => toast(err.message, true)); };
-  els.referenceUploadForm.onsubmit = (event) => { event.preventDefault(); upload("reference").catch((err) => toast(err.message, true)); };
+  els.originalUploadForm.onsubmit = (event) => { event.preventDefault(); upload("original", event.submitter).catch((err) => toast(err.message, true)); };
+  els.referenceUploadForm.onsubmit = (event) => { event.preventDefault(); upload("reference", event.submitter).catch((err) => toast(err.message, true)); };
   els.estimateBatch.onclick = () => buildEstimate().catch((err) => toast(err.message, true));
   els.startBatch.onclick = () => startBatch().catch((err) => toast(err.message, true));
   els.importOriginalForm.onsubmit = (event) => importOriginalZip(event).catch((err) => toast(err.message, true));
@@ -1037,6 +1158,17 @@ function bind() {
   els.restoreNovelForm.onsubmit = (event) => { event.preventDefault(); startFullRestore(true).catch((err) => toast(err.message, true)); };
   els.restoreConfirmButton.onclick = () => startFullRestore(false).catch((err) => toast(err.message, true));
   els.novelSettingsForm.onsubmit = (event) => saveSettings(event).catch((err) => toast(err.message, true));
+  els.recoveryRetry.onclick = () => bootAppData().catch(showRecovery);
+  els.recoveryCheckHealth.onclick = async () => {
+    try {
+      await api("/api/health", { timeoutMs: 12000 });
+      els.recoveryMessage.textContent = "Health check passed. Retry loading the app.";
+      toast("Health check passed.");
+    } catch (error) {
+      showRecovery(error);
+    }
+  };
+  els.recoveryClearCache.onclick = () => clearFrontendCache().catch((err) => toast(err.message, true));
   els.addNovelButton.onclick = () => els.addNovelDialog.showModal ? els.addNovelDialog.showModal() : els.newNovelTitle.focus();
   els.cancelAddNovel.onclick = () => closeAddNovelDialog();
   els.addNovelDialog.addEventListener("click", (event) => { if (event.target === els.addNovelDialog) closeAddNovelDialog(); });
@@ -1062,7 +1194,35 @@ function bind() {
   window.addEventListener("hashchange", handleRouteChange);
 }
 
-function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=73").then((registration) => registration.update()).catch(() => {}); }
-async function init() { registerServiceWorker(); if (!window.location.hash) pushRoute(libraryRoute(), true); setTheme(localStorage.getItem("igt-theme") || "dark"); loadLocalUiState(); bind(); loadReaderPrefs(); renderWorkspaces(); await loadAppInfo(); await loadAdminStatus(); await loadAuthState(); try { await api("/api/health"); els.apiStatus.textContent = "Online"; els.apiStatus.classList.add("ok"); } catch { els.apiStatus.textContent = "Offline"; } await loadNovels(); if (state.auth.authenticated) await loadBackendLibrary().catch((err) => toast(err.message, true)); await applyRouteFromLocation(); }
-init().catch((error) => toast(error.message, true));
+function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=74").then((registration) => registration.update()).catch(() => {}); }
+async function bootAppData() {
+  hideRecovery();
+  els.novelGrid.innerHTML = '<div class="empty-state">Loading library...</div>';
+  await loadAppInfo();
+  await loadAdminStatus();
+  await loadAuthState();
+  try {
+    await apiWithRetry("/api/health", { timeoutMs: 12000 });
+    els.apiStatus.textContent = "Online";
+    els.apiStatus.classList.add("ok");
+  } catch (error) {
+    els.apiStatus.textContent = "Waking";
+    els.apiStatus.classList.remove("ok");
+    throw error;
+  }
+  await loadNovels();
+  if (state.auth.authenticated) await loadBackendLibrary().catch((err) => toast(err.message, true));
+  await applyRouteFromLocation();
+}
+async function init() {
+  registerServiceWorker();
+  if (!window.location.hash) pushRoute(libraryRoute(), true);
+  setTheme(localStorage.getItem("igt-theme") || "dark");
+  loadLocalUiState();
+  bind();
+  loadReaderPrefs();
+  renderWorkspaces();
+  await bootAppData();
+}
+init().catch(showRecovery);
 
