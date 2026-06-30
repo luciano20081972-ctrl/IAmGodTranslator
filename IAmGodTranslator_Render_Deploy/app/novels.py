@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_NOVEL_ID = "i-am-god"
 DEFAULT_NOVEL_TITLE = "I Am God"
+REMOTE_PREFIXES = {"original": "originals", "reference": "references", "ai": "ai_translations", "prompt": "prompts"}
+COVER_MAX_BYTES = 5 * 1024 * 1024
 DEFAULT_APP_SETTINGS = {
     "name": "GodTranslator",
     "subtitle": "Novel Library",
@@ -166,6 +168,7 @@ class NovelManager:
         try:
             if novel_id:
                 self.remote.upload_tree(self.novel_dir(novel_id), f"novels/{novel_id}")
+                self.write_counts_cache(novel_id)
                 self.write_novel_index()
             else:
                 self.remote.upload_tree(self.data_dir / "app", "app")
@@ -178,10 +181,138 @@ class NovelManager:
         index = [{"novel_id": item["novel_id"], "title": item.get("title", "")} for item in self.iter_metadata()]
         self.remote.write_text("novels/index.json", json.dumps(index, indent=2, ensure_ascii=False))
 
+    def remote_json(self, path: str) -> dict[str, Any] | list[Any] | None:
+        if self.remote is None:
+            return None
+        try:
+            text = self.remote.read_text(path)
+            return json.loads(text) if text else None
+        except Exception as exc:
+            logger.warning("Supabase JSON read failed for %s: %s", path, exc.__class__.__name__)
+            return None
+
+    def write_remote_json(self, path: str, data: dict[str, Any] | list[Any]) -> None:
+        if self.remote is None:
+            return
+        try:
+            self.remote.write_text(path, json.dumps(data, indent=2, ensure_ascii=False))
+        except Exception:
+            logger.exception("Supabase JSON write failed for %s", path)
+
+    def hydrate_remote_index(self) -> list[dict[str, Any]]:
+        if self.remote is None:
+            return []
+        raw_index = self.remote_json("novels/index.json")
+        items = [item for item in raw_index if isinstance(item, dict) and item.get("novel_id")] if isinstance(raw_index, list) else []
+        if not items:
+            try:
+                metadata_paths = [path for path in self.remote.list_paths("novels") if path.endswith("/metadata.json")][:200]
+                items = [{"novel_id": path.split("/")[1]} for path in metadata_paths if len(path.split("/")) >= 3]
+            except Exception as exc:
+                logger.warning("Supabase novel index listing failed: %s", exc.__class__.__name__)
+                return []
+        hydrated: list[dict[str, Any]] = []
+        for item in items[:200]:
+            novel_id = str(item["novel_id"])
+            metadata = self.remote_json(f"novels/{novel_id}/metadata.json")
+            if not isinstance(metadata, dict):
+                metadata = {
+                    "novel_id": novel_id,
+                    "title": str(item.get("title") or novel_id.replace("-", " ").title()),
+                    "summary": "",
+                    "tags": [],
+                    "created_at": utc_now(),
+                    "updated_at": utc_now(),
+                    "source_language": "Chinese",
+                    "target_language": "English",
+                    "settings": {"model": "gpt-4o-mini", "retry_failed_chapters": 1, "stop_when_budget_reached": True, "batch_size": 25},
+                }
+            self.write_json(self.metadata_path(novel_id), metadata)
+            hydrated.append(metadata)
+        return hydrated
+
+    def remote_category_paths(self, novel_id: str, category: str) -> list[str]:
+        if self.remote is None:
+            return []
+        prefix = REMOTE_PREFIXES[category]
+        try:
+            return [path for path in self.remote.list_paths(f"novels/{novel_id}/{prefix}") if path.lower().endswith(".txt")][:5000]
+        except Exception as exc:
+            logger.warning("Supabase %s listing failed for %s: %s", category, novel_id, exc.__class__.__name__)
+            return []
+
+    def chapter_number_from_remote(self, path: str) -> int | None:
+        return chapter_from_filename(Path(path.replace("\\", "/").split("/")[-1]))
+
+    def remote_counts(self, novel_id: str) -> dict[str, Any]:
+        cached = self.remote_json(f"novels/{novel_id}/counts.json")
+        if isinstance(cached, dict) and "counts" in cached:
+            return cached
+        counts = {
+            "originals": len({self.chapter_number_from_remote(path) for path in self.remote_category_paths(novel_id, "original")} - {None}),
+            "references": len({self.chapter_number_from_remote(path) for path in self.remote_category_paths(novel_id, "reference")} - {None}),
+            "ai_translations": len({self.chapter_number_from_remote(path) for path in self.remote_category_paths(novel_id, "ai")} - {None}),
+            "prompts": len({self.chapter_number_from_remote(path) for path in self.remote_category_paths(novel_id, "prompt")} - {None}),
+            "updated_at": utc_now(),
+        }
+        self.write_remote_json(f"novels/{novel_id}/counts.json", {"novel_id": novel_id, "counts": counts, "updated_at": counts["updated_at"]})
+        return {"novel_id": novel_id, "counts": counts, "updated_at": counts["updated_at"]}
+
+    def local_counts(self, novel_id: str) -> dict[str, int]:
+        folders = self.folders(novel_id)
+        chapters = self.chapters(novel_id, include_remote=False)
+        translated = sum(1 for chapter in chapters if chapter.get("status") == "translated")
+        original_valid = len(self.chapter_numbers_for_folder(folders["original"]))
+        return {
+            "originals": original_valid,
+            "references": len(self.chapter_numbers_for_folder(folders["reference"])),
+            "ai_translations": translated,
+            "prompts": sum(1 for chapter in chapters if chapter.get("prompt_path")),
+            "remaining": max(0, original_valid - translated),
+        }
+
+    def active_counts(self, novel_id: str) -> dict[str, int]:
+        local = self.local_counts(novel_id)
+        remote = self.remote_counts(novel_id).get("counts", {}) if self.remote is not None else {}
+        originals = max(local.get("originals", 0), int(remote.get("originals") or 0))
+        references = max(local.get("references", 0), int(remote.get("references") or 0))
+        ai = max(local.get("ai_translations", 0), int(remote.get("ai_translations") or 0))
+        prompts = max(local.get("prompts", 0), int(remote.get("prompts") or 0))
+        return {"originals": originals, "references": references, "ai_translations": ai, "prompts": prompts, "remaining": max(0, originals - ai)}
+
+    def write_counts_cache(self, novel_id: str) -> dict[str, Any]:
+        counts = self.active_counts(novel_id)
+        payload = {"novel_id": novel_id, "counts": counts, "updated_at": utc_now()}
+        self.write_json(self.novel_dir(novel_id) / "counts.json", payload)
+        self.write_remote_json(f"novels/{novel_id}/counts.json", payload)
+        return payload
+
+    def rebuild_index(self, novel_id: str | None = None) -> dict[str, Any]:
+        ids = [novel_id] if novel_id else [str(item["novel_id"]) for item in self.iter_metadata()]
+        report: dict[str, Any] = {"ok": True, "novels": [], "warnings": []}
+        for item_id in ids:
+            try:
+                if self.remote is not None:
+                    self.hydrate_remote_metadata(item_id)
+                report["novels"].append(self.write_counts_cache(item_id))
+            except Exception as exc:
+                report["warnings"].append(f"{item_id}: {exc.__class__.__name__}")
+        self.write_novel_index()
+        return report
+
+    def hydrate_remote_metadata(self, novel_id: str) -> dict[str, Any] | None:
+        metadata = self.remote_json(f"novels/{novel_id}/metadata.json")
+        if isinstance(metadata, dict):
+            self.write_json(self.metadata_path(novel_id), metadata)
+            return metadata
+        return None
+
     def service_for(self, novel_id: str) -> TranslationService:
         return TranslationService(data_dir=self.novel_dir(novel_id), translator=self.root_service.translator)
 
     def ensure_default_novel(self) -> dict[str, Any]:
+        if self.remote is not None and not self.metadata_path(DEFAULT_NOVEL_ID).exists():
+            self.hydrate_remote_index()
         if not self.metadata_path(DEFAULT_NOVEL_ID).exists():
             return self.create_novel(DEFAULT_NOVEL_TITLE, novel_id=DEFAULT_NOVEL_ID)
         return self.get_novel(DEFAULT_NOVEL_ID)
@@ -374,19 +505,28 @@ class NovelManager:
         suffix = Path(filename).suffix.lower()
         if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
             raise ValueError("Cover image must be jpg, jpeg, png, or webp.")
+        data = await upload.read()
+        if len(data) > COVER_MAX_BYTES:
+            raise ValueError("Cover image must be 5 MB or smaller.")
         cover_dir = self.folders(novel_id)["cover"]
         cover_dir.mkdir(parents=True, exist_ok=True)
-        for old_cover in cover_dir.glob("*"):
-            if old_cover.is_file():
-                old_cover.unlink()
         target = cover_dir / f"cover{suffix}"
-        with open(target, "wb") as output:
-            output.write(await upload.read())
         metadata = self.get_metadata(novel_id)
-        metadata.setdefault("settings", {})["cover_file"] = str(target.relative_to(self.novel_dir(novel_id)))
-        metadata["updated_at"] = utc_now()
-        self.write_json(self.metadata_path(novel_id), metadata)
-        self.sync_to_remote(novel_id)
+        try:
+            target.write_bytes(data)
+            if self.remote is not None:
+                self.remote.write_bytes(f"novels/{novel_id}/cover{suffix}", data)
+            for old_cover in cover_dir.glob("*"):
+                if old_cover.is_file() and old_cover != target:
+                    old_cover.unlink()
+            metadata.setdefault("settings", {})["cover_file"] = str(target.relative_to(self.novel_dir(novel_id)))
+            metadata["updated_at"] = utc_now()
+            self.write_json(self.metadata_path(novel_id), metadata)
+            self.sync_to_remote(novel_id)
+        except Exception as exc:
+            target.unlink(missing_ok=True)
+            logger.warning("Cover upload failed for %s: %s", novel_id, exc.__class__.__name__)
+            raise ValueError("Cover upload failed. Storage may be temporarily unavailable; try again.") from exc
         return self.library(novel_id)
 
     async def upload_app_icon(self, upload: UploadFile) -> dict[str, Any]:
@@ -482,7 +622,11 @@ class NovelManager:
             return None
         path_key = {"english": "output_path", "original": "source_path", "reference": "reference_path", "prompt": "prompt_path"}[kind]
         path_value = chapter.get(path_key)
-        text = read_text(path_value) if path_value and Path(str(path_value)).exists() else ""
+        text = ""
+        if isinstance(path_value, str) and path_value.startswith("supabase://"):
+            text = self.remote_read_chapter(path_value) or ""
+        elif path_value and Path(str(path_value)).exists():
+            text = read_text(path_value)
         return {"chapter": chapter, "text": text}
 
     def cover_path(self, novel_id: str) -> Path | None:
@@ -495,6 +639,18 @@ class NovelManager:
         for path in self.folders(novel_id)["cover"].glob("cover.*"):
             if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
                 return path
+        if self.remote is not None:
+            for suffix in (".jpg", ".jpeg", ".png", ".webp"):
+                remote_path = f"novels/{novel_id}/cover{suffix}"
+                try:
+                    data = self.remote.read_bytes(remote_path)
+                except Exception:
+                    data = None
+                if data:
+                    target = self.folders(novel_id)["cover"] / f"cover{suffix}"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(data)
+                    return target
         return None
 
     def build_english_zip(self, novel_id: str) -> Path | None:
@@ -647,7 +803,20 @@ class NovelManager:
         self.write_json(self.reader_state_path, state)
         return state
 
-    def chapters(self, novel_id: str) -> list[dict[str, Any]]:
+    def remote_marker(self, path: str) -> str:
+        return f"supabase://{path}"
+
+    def remote_read_chapter(self, marker: str) -> str | None:
+        if self.remote is None or not marker.startswith("supabase://"):
+            return None
+        path = marker.removeprefix("supabase://")
+        try:
+            return self.remote.read_text(path)
+        except Exception as exc:
+            logger.warning("Supabase chapter read failed for %s: %s", path, exc.__class__.__name__)
+            return None
+
+    def chapters(self, novel_id: str, include_remote: bool = True) -> list[dict[str, Any]]:
         chapters: dict[int, dict[str, Any]] = {}
         for file in sorted(self.folders(novel_id)["original"].rglob("*.txt")):
             parsed = parse_chapter(file)
@@ -679,6 +848,16 @@ class NovelManager:
                 current["output_path"] = str(output_path) if output_path.exists() else current.get("output_path")
                 current["prompt_path"] = str(prompt_path) if prompt_path.exists() else current.get("prompt_path")
                 current["status"] = self.merge_status(current["status"], item.get("status"))
+        if include_remote and self.remote is not None:
+            for category, path_key in (("original", "source_path"), ("reference", "reference_path"), ("ai", "output_path"), ("prompt", "prompt_path")):
+                for remote_path in self.remote_category_paths(novel_id, category):
+                    number = self.chapter_number_from_remote(remote_path)
+                    if number is None:
+                        continue
+                    current = chapters.setdefault(number, self.base_chapter(number, Path(remote_path).stem))
+                    current[path_key] = current.get(path_key) or self.remote_marker(remote_path)
+                    if category == "ai":
+                        current["status"] = "translated"
         return [self.public_chapter(chapter) for chapter in sorted(chapters.values(), key=lambda item: int(item["chapter"]))]
 
     def base_chapter(self, number: int, title: str, source_path: str | None = None) -> dict[str, Any]:
@@ -696,9 +875,10 @@ class NovelManager:
     def decorate_novel(self, metadata: dict[str, Any]) -> dict[str, Any]:
         novel_id = metadata["novel_id"]
         chapters = self.chapters(novel_id)
-        translated = sum(1 for chapter in chapters if chapter.get("status") == "translated")
-        original_valid = len(self.chapter_numbers_for_folder(self.folders(novel_id)["original"]))
-        reference_valid = len(self.chapter_numbers_for_folder(self.folders(novel_id)["reference"]))
+        active_counts = self.active_counts(novel_id)
+        translated = active_counts["ai_translations"]
+        original_valid = active_counts["originals"]
+        reference_valid = active_counts["references"]
         jobs = [state for _, state in self.raw_jobs(novel_id)]
         settings = metadata.get("settings", {})
         status = "translating" if any(job.get("status") == "running" for job in jobs) else "ready"
@@ -716,7 +896,8 @@ class NovelManager:
                 "raw_original_files": len(list(self.folders(novel_id)["original"].rglob("*.txt"))),
                 "raw_reference_files": len(list(self.folders(novel_id)["reference"].rglob("*.txt"))),
                 "translated_chapters": translated,
-                "remaining_chapters": max(0, original_valid - translated),
+                "remaining_chapters": active_counts["remaining"],
+                "prompts": active_counts["prompts"],
                 "jobs": len(jobs),
             },
             "status": status,
@@ -774,6 +955,8 @@ class NovelManager:
         return jobs
 
     def iter_metadata(self) -> list[dict[str, Any]]:
+        if self.remote is not None:
+            self.hydrate_remote_index()
         metadata = []
         for path in sorted(self.novels_dir.glob("*/metadata.json")):
             try:
@@ -783,6 +966,9 @@ class NovelManager:
         return metadata
 
     def get_metadata(self, novel_id: str) -> dict[str, Any]:
+        if not self.metadata_path(novel_id).exists():
+            if self.remote is not None:
+                self.hydrate_remote_metadata(novel_id)
         if not self.metadata_path(novel_id).exists():
             raise ValueError("Novel not found.")
         return self.read_json(self.metadata_path(novel_id))

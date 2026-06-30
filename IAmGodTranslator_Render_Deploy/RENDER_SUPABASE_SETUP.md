@@ -1,104 +1,82 @@
-from pathlib import Path
+# Render Free + Supabase Setup
 
+GodTranslator can stay on Render Free while Supabase stores long-term data. Render may sleep when inactive, but uploaded chapters, covers, backups, prompts, exports, accounts, bookmarks, ratings, and reading history should live in Supabase when Supabase is active.
 
-class FileSystem:
+## 1. Create Supabase
 
-    def __init__(self):
+1. Create a Supabase project.
+2. Create private Storage buckets:
+   - `novel-files`
+   - `covers`
+   - `backups`
+   - `exports`
+3. Copy these values from Supabase:
+   - `SUPABASE_URL`
+   - `SUPABASE_ANON_KEY`
+   - `SUPABASE_SERVICE_ROLE_KEY`
+   - `DATABASE_URL`
 
-        self.root = Path(__file__).resolve().parent.parent
+For `DATABASE_URL` on Render, use Supabase Connect -> Connection Pooling / Supavisor. Choose the Transaction pooler or Session pooler connection string. Do not use the direct connection string on Render if it resolves to IPv6, because Render may show `Network is unreachable`.
 
-        # -----------------------------
-        # Source folders
-        # -----------------------------
+## 2. Add Render Environment Variables
 
-        self.source = self.root / "Source"
+Set these on Render:
 
-        self.chinese = self.source / "Chinese"
-        self.novelfire = self.source / "NovelFire"
+```env
+STORAGE_BACKEND=supabase
+DATA_DIR=data
+SUPABASE_URL=your Supabase project URL
+SUPABASE_ANON_KEY=your Supabase anon key
+SUPABASE_SERVICE_ROLE_KEY=your Supabase service role key
+SUPABASE_BUCKET=novel-files
+DATABASE_URL=your Supabase pooler/Supavisor Postgres connection string
+OPENAI_API_KEY=your OpenAI API key
+OPENAI_MODEL=gpt-4o-mini
+PYTHON_VERSION=3.12.7
+ADMIN_PASSWORD=choose a private admin password
+SESSION_SECRET=choose a long random secret
+SITE_URL=https://iamgodtranslator.onrender.com
+DISABLE_STARTUP_REMOTE_SYNC=true
+```
 
-        # -----------------------------
-        # Translation folders
-        # -----------------------------
+Never commit `.env`, API keys, database passwords, or service role keys. The service role key is used only by the FastAPI backend.
 
-        self.translation = self.root / "Translation"
+## 3. Deploy
 
-        self.drafts = self.translation / "Drafts"
-        self.reviewed = self.translation / "Reviewed"
-        self.english = self.translation / "Final"
+1. Redeploy the Render service.
+2. Open `/api/storage`.
+3. Confirm:
+   - storage backend is `supabase`
+   - Supabase is configured
+   - database backend is `postgres`
+   - storage warnings are clear or understood
+4. Open Admin -> Storage Health.
+5. Click `Migrate Local Data to Supabase` if local data needs to be copied up.
+6. Use the smaller ZIP exports/imports for Original, Reference, AI Translation, and Prompts.
+7. Admin -> Backups can start a background Full Backup job. It creates a manifest ZIP and, when possible, uploads the completed ZIP to the private `backups` bucket after the local file is complete.
+8. Full restore uses an admin-only background job. Upload a backup ZIP, run dry-run first, review the report, then confirm a real restore if needed.
 
-        # -----------------------------
-        # Other folders
-        # -----------------------------
+## 4. Notes
 
-        self.prompts = self.root / "Prompts"
-        self.logs = self.root / "Logs"
-        self.output = self.root / "Output"
+Render Free may sleep when inactive. That is acceptable for personal/testing use because Supabase stores the durable data. Later, when traffic or users exist, upgrade Render to Starter. If Supabase Free limits or pauses become a problem, upgrade Supabase.
 
-        self.create_folders()
+Keep `DISABLE_STARTUP_REMOTE_SYNC=true` on Render Free. The app will bind to `$PORT` first and use Supabase during normal API requests/imports, instead of scanning or restoring remote storage during startup.
 
-    def create_folders(self):
+Automatic novel ingestion from external websites is intentionally not included. Only import content you own, have permission to use, or are legally allowed to process.
 
-        folders = [
-            self.source,
-            self.chinese,
-            self.novelfire,
-            self.translation,
-            self.drafts,
-            self.reviewed,
-            self.english,
-            self.prompts,
-            self.logs,
-            self.output,
-        ]
+## Backup Job Notes
 
-        for folder in folders:
-            folder.mkdir(parents=True, exist_ok=True)
+Full backups are asynchronous so a large backup does not block the web request that starts it. The backup ZIP includes a `manifest.json`, `backup_info.json`, novel metadata, original chapters, reference chapters, AI translations, prompts, and covers. It does not include `.env`, logs, sessions, databases, runtime job files, generated release ZIPs, or secrets.
 
-    def chapter_file(self, folder: Path, chapter: int):
+Full restore is also asynchronous. Restore validates `manifest.json` and maps only canonical paths:
 
-        files = sorted(folder.glob(f"{chapter:04d}*.txt"))
+- `novels/{novel_id}/originals/{chapter}.txt`
+- `novels/{novel_id}/references/{chapter}.txt`
+- `novels/{novel_id}/ai_translations/{chapter}.txt`
+- `novels/{novel_id}/prompts/{chapter}.txt`
 
-        if files:
-            return files[0]
+If a backup has no manifest, the app allows dry-run only and skips uncertain files. Restore never deletes files. Existing files are handled by the selected conflict mode.
 
-        return None
+If a process restarts during a backup, the interrupted job is marked `stale` on the next startup. Start a new backup job after the app is healthy.
 
-    def load_chapter(self, folder: Path, chapter: int):
-
-        file = self.chapter_file(folder, chapter)
-
-        if file is None:
-            return None
-
-        with open(file, "r", encoding="utf-8") as f:
-            text = f.read()
-
-        return {
-            "number": chapter,
-            "title": file.stem,
-            "text": text,
-            "path": file,
-        }
-
-    def save_text(self, folder: Path, chapter: int, text: str):
-
-        folder.mkdir(parents=True, exist_ok=True)
-
-        filename = folder / f"{chapter:04d}.txt"
-
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(text)
-
-        return filename
-
-    def prompt_file(self, chapter):
-        return self.prompts / f"{chapter:04d}.txt"
-
-    def draft_file(self, chapter):
-        return self.drafts / f"{chapter:04d}.txt"
-
-    def reviewed_file(self, chapter):
-        return self.reviewed / f"{chapter:04d}.txt"
-
-    def english_file(self, chapter):
-        return self.english / f"{chapter:04d}.txt"
+Content audit/repair tools are admin-only and conservative. They report old or suspicious paths and can refresh the local novel index, but they do not automatically move uncertain reference/AI files.
