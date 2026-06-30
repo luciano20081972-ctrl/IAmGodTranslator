@@ -107,6 +107,8 @@ def storage_health_report() -> dict[str, object]:
         warnings.append(f"Database warning: {database_error}")
     if database.warning:
         warnings.append(database.warning)
+    if (os.getenv("STORAGE_BACKEND") or "local").lower() != "supabase":
+        warnings.append("Storage backend is local fallback. Render Free local files may disappear after restart/redeploy.")
 
     folders: dict[str, bool] = {}
     for name in REQUIRED_STORAGE_FOLDERS:
@@ -386,6 +388,8 @@ async def storage_status() -> dict[str, object]:
     status["novels"] = len(novels.list_novels())
     status["backend"] = os.getenv("STORAGE_BACKEND", "local").lower()
     status["supabase_enabled"] = novels.remote is not None
+    status["supabase"] = novels.remote_health()
+    status["database_reachable"] = database_error is None
     return status
 
 
@@ -401,6 +405,15 @@ async def sync_storage_to_supabase(request: Request) -> dict[str, object]:
     if novels.remote is None:
         raise HTTPException(status_code=400, detail="Supabase storage is not enabled.")
     return novels.sync_all_to_remote()
+
+
+@app.post("/api/admin/storage/migrate-to-supabase")
+async def migrate_to_supabase(request: Request) -> dict[str, object]:
+    require_admin(request)
+    try:
+        return novels.migrate_to_supabase()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/me/library")

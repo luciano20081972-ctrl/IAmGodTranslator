@@ -23,21 +23,64 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+class PostgresConnection:
+    def __init__(self, conn: Any, sql_converter):
+        self.conn = conn
+        self.sql_converter = sql_converter
+
+    def __enter__(self) -> "PostgresConnection":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        if exc_type:
+            self.conn.rollback()
+        else:
+            self.conn.commit()
+        self.conn.close()
+
+    def execute(self, sql: str, params: tuple[Any, ...] = ()):
+        return self.conn.execute(self.sql_converter(sql), params)
+
+    def executescript(self, script: str) -> None:
+        for statement in script.split(";"):
+            statement = statement.strip()
+            if statement:
+                self.conn.execute(self.sql_converter(statement))
+
+
 class AppDatabase:
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
         self.database_url = os.getenv("DATABASE_URL", "").strip()
         self.warning: str | None = None
+        self.backend = self._backend()
         self.path = self._sqlite_path()
+
+    def _backend(self) -> str:
+        if self.database_url and not self.database_url.startswith("sqlite:///"):
+            return "postgres"
+        return "sqlite"
 
     def _sqlite_path(self) -> Path:
         if self.database_url:
             if self.database_url.startswith("sqlite:///"):
                 return Path(self.database_url.replace("sqlite:///", "", 1)).expanduser()
-            self.warning = "DATABASE_URL is configured, but this lightweight build uses SQLite unless a sqlite:/// URL is provided."
+            return self.data_dir / "godtranslator-sqlite-fallback.db"
         return self.data_dir / "godtranslator.db"
 
-    def connect(self) -> sqlite3.Connection:
+    def _sql(self, sql: str) -> str:
+        return sql.replace("?", "%s") if self.backend == "postgres" else sql
+
+    def connect(self):
+        if self.backend == "postgres":
+            try:
+                import psycopg
+                from psycopg.rows import dict_row
+            except ImportError as exc:
+                self.warning = "DATABASE_URL is configured for Postgres, but psycopg is not installed. Install requirements.txt on Render."
+                raise RuntimeError(self.warning) from exc
+            conn = psycopg.connect(self.database_url, row_factory=dict_row)
+            return PostgresConnection(conn, self._sql)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
@@ -106,15 +149,40 @@ class AppDatabase:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (user_id, novel_id)
                 );
+                CREATE TABLE IF NOT EXISTS novels (
+                    novel_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    summary TEXT,
+                    status TEXT,
+                    visibility TEXT NOT NULL DEFAULT 'public',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS novel_tags (
+                    novel_id TEXT NOT NULL,
+                    tag TEXT NOT NULL,
+                    PRIMARY KEY (novel_id, tag)
+                );
+                CREATE TABLE IF NOT EXISTS novel_metadata (
+                    novel_id TEXT PRIMARY KEY,
+                    metadata_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
 
     def status(self) -> dict[str, object]:
         return {
             "path": str(self.path),
-            "exists": self.path.exists(),
+            "exists": self.backend == "postgres" or self.path.exists(),
             "warning": self.warning,
-            "backend": "sqlite",
+            "backend": self.backend,
+            "configured_database_url": bool(self.database_url),
         }
 
     def _password_hash(self, password: str) -> str:
@@ -248,16 +316,16 @@ class AppDatabase:
     def set_novel_bookmark(self, user_id: str, novel_id: str, enabled: bool) -> None:
         with self.connect() as conn:
             if enabled:
-                conn.execute("INSERT OR IGNORE INTO novel_bookmarks (user_id, novel_id, created_at) VALUES (?, ?, ?)", (user_id, novel_id, utc_now()))
+                conn.execute(self._sql("INSERT INTO novel_bookmarks (user_id, novel_id, created_at) VALUES (?, ?, ?) ON CONFLICT(user_id, novel_id) DO NOTHING"), (user_id, novel_id, utc_now()))
             else:
-                conn.execute("DELETE FROM novel_bookmarks WHERE user_id = ? AND novel_id = ?", (user_id, novel_id))
+                conn.execute(self._sql("DELETE FROM novel_bookmarks WHERE user_id = ? AND novel_id = ?"), (user_id, novel_id))
 
     def set_chapter_bookmark(self, user_id: str, novel_id: str, chapter_number: int, enabled: bool) -> None:
         with self.connect() as conn:
             if enabled:
-                conn.execute("INSERT OR IGNORE INTO chapter_bookmarks (user_id, novel_id, chapter_number, created_at) VALUES (?, ?, ?, ?)", (user_id, novel_id, chapter_number, utc_now()))
+                conn.execute(self._sql("INSERT INTO chapter_bookmarks (user_id, novel_id, chapter_number, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, novel_id, chapter_number) DO NOTHING"), (user_id, novel_id, chapter_number, utc_now()))
             else:
-                conn.execute("DELETE FROM chapter_bookmarks WHERE user_id = ? AND novel_id = ? AND chapter_number = ?", (user_id, novel_id, chapter_number))
+                conn.execute(self._sql("DELETE FROM chapter_bookmarks WHERE user_id = ? AND novel_id = ? AND chapter_number = ?"), (user_id, novel_id, chapter_number))
 
     def set_rating(self, user_id: str, novel_id: str, rating: int) -> None:
         if rating < 1 or rating > 5:

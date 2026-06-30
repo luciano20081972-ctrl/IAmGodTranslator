@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import UploadFile
 
 from app.services import TranslationService, safe_filename, unique_path, utc_now
-from app.storage import SupabaseStorage
+from app.storage import SupabaseStorage, supabase_config
 from modules.chapter import chapter_from_filename, parse_chapter, read_text
 
 
@@ -47,6 +47,7 @@ class NovelManager:
         self.data_dir = root_service.data_dir
         self.novels_dir = self.data_dir / "novels"
         self.reader_state_path = self.data_dir / "reader_state.json"
+        self.remote_error: str | None = None
         self.remote = self.build_remote_storage()
         self.novels_dir.mkdir(parents=True, exist_ok=True)
         self.restore_remote_snapshot()
@@ -56,7 +57,12 @@ class NovelManager:
     def build_remote_storage(self) -> SupabaseStorage | None:
         if (os.getenv("STORAGE_BACKEND") or "local").lower() != "supabase":
             return None
-        return SupabaseStorage()
+        try:
+            return SupabaseStorage()
+        except ValueError as exc:
+            self.remote_error = str(exc)
+            logger.warning("Supabase storage disabled: %s", exc)
+            return None
 
     def restore_remote_snapshot(self) -> None:
         if self.remote is None:
@@ -76,6 +82,72 @@ class NovelManager:
             counts["copied"] += result["copied"]
             counts["failed"] += result["failed"]
         return counts
+
+    def remote_health(self) -> dict[str, Any]:
+        config = supabase_config()
+        warnings = []
+        if (os.getenv("STORAGE_BACKEND") or "local").lower() == "supabase":
+            if not config.url:
+                warnings.append("SUPABASE_URL is missing.")
+            if not config.service_role_key:
+                warnings.append("SUPABASE_SERVICE_ROLE_KEY is missing.")
+            if not config.anon_key:
+                warnings.append("SUPABASE_ANON_KEY is missing. Backend storage can still work, but client auth/OAuth setup may need it later.")
+            warnings.append("Render Free may sleep, but data persists in Supabase when Supabase storage/database are active.")
+            warnings.append("Supabase Free may pause after inactivity; keep backups and check project activity.")
+        if self.remote_error:
+            warnings.append(self.remote_error)
+        if self.remote is None:
+            return {"configured": config.configured, "active": False, "reachable": False, "bucket": config.bucket, "buckets": {}, "warnings": warnings}
+        try:
+            health = self.remote.health()
+            return {"configured": config.configured, "active": True, **health, "warnings": warnings}
+        except Exception as exc:
+            warnings.append(f"Supabase Storage check failed: {exc.__class__.__name__}")
+            return {"configured": config.configured, "active": True, "reachable": False, "bucket": config.bucket, "buckets": {}, "warnings": warnings}
+
+    def migrate_to_supabase(self) -> dict[str, Any]:
+        if self.remote is None:
+            raise ValueError("Supabase storage is not configured.")
+        report: dict[str, Any] = {"originals": 0, "references": 0, "ai_translations": 0, "prompts": 0, "covers": 0, "backups": 0, "other": 0, "skipped": 0, "conflicts": 0, "errors": []}
+        roots = [self.data_dir / "app", self.novels_dir]
+        for root in roots:
+            if not root.exists():
+                continue
+            prefix = "app" if root.name == "app" else "novels"
+            for path in root.rglob("*"):
+                if not path.is_file():
+                    continue
+                remote_path = f"{prefix}/{path.relative_to(root).as_posix()}"
+                try:
+                    existing = self.remote.read_bytes(remote_path)
+                    data = path.read_bytes()
+                    if existing is not None:
+                        if existing == data:
+                            report["skipped"] += 1
+                        else:
+                            report["conflicts"] += 1
+                        continue
+                    self.remote.write_bytes(remote_path, data)
+                    lower = remote_path.lower()
+                    if "/original/" in lower or "/originals/" in lower:
+                        report["originals"] += 1
+                    elif "/reference/" in lower or "/references/" in lower:
+                        report["references"] += 1
+                    elif "/ai/" in lower or "/ai_translations/" in lower or "/english/" in lower:
+                        report["ai_translations"] += 1
+                    elif "/prompts/" in lower:
+                        report["prompts"] += 1
+                    elif "/cover/" in lower or "/covers/" in lower:
+                        report["covers"] += 1
+                    elif "/backups/" in lower or lower.endswith(".zip"):
+                        report["backups"] += 1
+                    else:
+                        report["other"] += 1
+                except Exception as exc:
+                    report["errors"].append(f"{path.name}: {exc.__class__.__name__}")
+        self.write_novel_index()
+        return report
 
     def sync_to_remote(self, novel_id: str | None = None) -> None:
         if self.remote is None:

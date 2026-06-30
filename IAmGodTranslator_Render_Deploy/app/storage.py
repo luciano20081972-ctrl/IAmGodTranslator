@@ -4,6 +4,7 @@ import logging
 import mimetypes
 import os
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -12,16 +13,38 @@ from urllib.request import Request, urlopen
 logger = logging.getLogger(__name__)
 
 
+SUPABASE_BUCKETS = ("novel-files", "covers", "backups", "exports")
+
+
+@dataclass
+class SupabaseConfig:
+    url: str
+    service_role_key: str
+    anon_key: str
+    bucket: str
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.url and self.service_role_key)
+
+
+def supabase_config() -> SupabaseConfig:
+    return SupabaseConfig(
+        url=(os.getenv("SUPABASE_URL") or "").rstrip("/"),
+        service_role_key=os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "",
+        anon_key=os.getenv("SUPABASE_ANON_KEY") or "",
+        bucket=os.getenv("SUPABASE_BUCKET") or "novel-files",
+    )
+
+
 class SupabaseStorage:
-    def __init__(self) -> None:
-        url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
-        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or ""
-        bucket = os.getenv("SUPABASE_BUCKET") or "novel-data"
-        if not url or not key:
+    def __init__(self, bucket: str | None = None) -> None:
+        config = supabase_config()
+        if not config.url or not config.service_role_key:
             raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for Supabase storage.")
-        self.bucket = bucket
-        self.base_url = f"{url}/storage/v1"
-        self.headers = {"Authorization": f"Bearer {key}", "apikey": key}
+        self.bucket = bucket or config.bucket
+        self.base_url = f"{config.url}/storage/v1"
+        self.headers = {"Authorization": f"Bearer {config.service_role_key}", "apikey": config.service_role_key}
 
     def object_url(self, path: str) -> str:
         return f"{self.base_url}/object/{self.bucket}/{path.lstrip('/')}"
@@ -132,3 +155,15 @@ class SupabaseStorage:
                 counts["failed"] += 1
                 logger.exception("Failed to download %s from Supabase", remote_path)
         return counts
+
+    def health(self) -> dict[str, object]:
+        buckets: dict[str, bool] = {}
+        reachable = False
+        for bucket in SUPABASE_BUCKETS:
+            try:
+                status, _data = self.request("POST", f"{self.base_url}/object/list/{bucket}", data=json.dumps({"prefix": "", "limit": 1}).encode("utf-8"), headers={"Content-Type": "application/json"})
+                buckets[bucket] = status != 404
+                reachable = reachable or buckets[bucket]
+            except (HTTPError, URLError, TimeoutError, OSError):
+                buckets[bucket] = False
+        return {"reachable": reachable, "bucket": self.bucket, "buckets": buckets}
