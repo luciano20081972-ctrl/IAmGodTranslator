@@ -799,17 +799,28 @@ class NovelManager:
         end_chapter = int(settings.get("end_chapter") or 999999)
         missing_only = bool(settings.get("missing_only", True))
         overwrite = bool(settings.get("overwrite", False))
-        references = self.reference_files_by_number(novel_id)
-        candidates = [
-            chapter for chapter in self.chapters(novel_id)
-            if chapter.get("source_path")
-            and start_chapter <= int(chapter.get("chapter") or 0) <= end_chapter
-            and (overwrite or not missing_only or not chapter.get("has_translation"))
-            and (overwrite or chapter.get("status") != "translated")
-        ][:batch_size]
         if start_chapter > end_chapter:
             raise ValueError("Start chapter must be less than or equal to end chapter.")
+        references = self.reference_files_by_number(novel_id)
+        candidates: list[dict[str, Any]] = []
+        readable_originals = 0
+        for chapter in self.chapters(novel_id):
+            number = int(chapter.get("chapter") or 0)
+            if number < start_chapter or number > end_chapter:
+                continue
+            original_result = self.read_chapter_content(novel_id, number, "original", chapter)
+            if not original_result["found"] or not str(original_result.get("text") or "").strip():
+                continue
+            readable_originals += 1
+            ai_result = self.read_chapter_content(novel_id, number, "ai", chapter)
+            ai_readable = ai_result["found"] and not ai_result["empty"]
+            if overwrite or not missing_only or not ai_readable:
+                candidates.append({**chapter, "_original_text": original_result["text"]})
+            if len(candidates) >= batch_size:
+                break
         if not candidates:
+            if readable_originals == 0:
+                raise ValueError("No readable original chapter text was found. Run Content Diagnostic/Repair first.")
             raise ValueError("No chapters need translation for the selected range/settings.")
         materialized = self.novel_dir(novel_id) / "batch_cache"
         materialized_originals = materialized / "originals"
@@ -820,26 +831,24 @@ class NovelManager:
         reference_files: list[Path] = []
         for chapter in candidates:
             number = int(chapter["chapter"])
-            source = str(chapter.get("source_path") or "")
-            source_path = Path(source)
-            if source.startswith("supabase://"):
-                text = self.remote_read_chapter(source)
-                if text:
-                    source_path = materialized_originals / f"{number:04d}.txt"
-                    source_path.write_text(text, encoding="utf-8")
-            if source_path.is_file():
-                chinese_files.append(source_path)
-            reference = references.get(number)
-            if reference:
-                reference_files.append(reference)
-            else:
-                reference_value = str(chapter.get("reference_path") or "")
-                if reference_value.startswith("supabase://"):
-                    text = self.remote_read_chapter(reference_value)
-                    if text:
-                        path = materialized_references / f"{number:04d}.txt"
-                        path.write_text(text, encoding="utf-8")
-                        reference_files.append(path)
+            source_text = str(chapter.get("_original_text") or "")
+            if not source_text.strip():
+                source_result = self.read_chapter_content(novel_id, number, "original", chapter)
+                source_text = str(source_result.get("text") or "")
+            if not source_text.strip():
+                continue
+            source_path = materialized_originals / f"{number:04d}.txt"
+            source_path.write_text(source_text, encoding="utf-8")
+            chinese_files.append(source_path)
+            reference_result = self.read_chapter_content(novel_id, number, "reference", chapter)
+            if reference_result["found"] and str(reference_result.get("text") or "").strip():
+                reference_path = materialized_references / f"{number:04d}.txt"
+                reference_path.write_text(str(reference_result["text"]), encoding="utf-8")
+                reference_files.append(reference_path)
+            elif references.get(number):
+                reference_files.append(references[number])
+        if not chinese_files:
+            raise ValueError("No readable original chapter text was found. Run Content Diagnostic/Repair first.")
         try:
             job = self.service_for(novel_id).create_job_from_existing_files(chinese_files, reference_files, settings)
         finally:
@@ -861,18 +870,155 @@ class NovelManager:
     def chapter(self, novel_id: str, chapter_number: int) -> dict[str, Any] | None:
         return next((chapter for chapter in self.chapters(novel_id) if int(chapter["chapter"]) == chapter_number), None)
 
+    def kind_to_category(self, kind: str) -> str:
+        if kind in {"english", "ai", "translation"}:
+            return "ai"
+        if kind in {"original", "reference", "prompt"}:
+            return kind
+        raise KeyError(kind)
+
+    def kind_path_key(self, kind: str) -> str:
+        return {"ai": "output_path", "english": "output_path", "original": "source_path", "reference": "reference_path", "prompt": "prompt_path"}[kind]
+
+    def chapter_filename_candidates(self, chapter_number: int) -> list[str]:
+        return [
+            f"{chapter_number:04d}.txt",
+            f"{chapter_number:03d}.txt",
+            f"{chapter_number}.txt",
+            f"chapter_{chapter_number}.txt",
+            f"chapter-{chapter_number}.txt",
+            f"ch{chapter_number}.txt",
+            f"Chapter {chapter_number:03d}.txt",
+            f"Chapter {chapter_number}.txt",
+            f"第{chapter_number}章.txt",
+        ]
+
+    def remote_path_candidates(self, novel_id: str, chapter_number: int, category: str) -> list[str]:
+        candidates: list[str] = []
+        seen: set[str] = set()
+        prefixes = [f"novels/{novel_id}/{REMOTE_PREFIXES[category]}"]
+        prefixes.extend(f"app/novels/{novel_id}/{legacy}" for legacy in LEGACY_REMOTE_PREFIXES.get(category, ()))
+        for prefix in prefixes:
+            for filename in self.chapter_filename_candidates(chapter_number):
+                path = f"{prefix}/{filename}"
+                if path not in seen:
+                    candidates.append(path)
+                    seen.add(path)
+        for path in self.remote_category_paths(novel_id, category):
+            if self.chapter_number_from_remote(path) == chapter_number and path not in seen:
+                candidates.append(path)
+                seen.add(path)
+        return candidates
+
+    def local_path_candidates(self, novel_id: str, chapter_number: int, category: str) -> list[Path]:
+        folders = self.folders(novel_id)
+        folder_map = {"original": [folders["original"]], "reference": [folders["reference"]], "ai": [folders["ai"]], "prompt": [folders["output"]]}
+        candidates: list[Path] = []
+        seen: set[str] = set()
+        for folder in folder_map.get(category, []):
+            for filename in self.chapter_filename_candidates(chapter_number):
+                path = folder / filename
+                key = str(path)
+                if key not in seen:
+                    candidates.append(path)
+                    seen.add(key)
+            if folder.exists():
+                for path in sorted(folder.rglob("*.txt")):
+                    if parse_chapter(path).get("number") == chapter_number:
+                        key = str(path)
+                        if key not in seen:
+                            candidates.append(path)
+                            seen.add(key)
+        return candidates
+
+    def read_chapter_content(self, novel_id: str, chapter_number: int, kind: str, chapter_data: dict[str, Any] | None = None) -> dict[str, Any]:
+        category = self.kind_to_category(kind)
+        path_key = self.kind_path_key(kind)
+        paths_checked: list[str] = []
+        chapter = chapter_data if chapter_data is not None else self.chapter(novel_id, chapter_number)
+
+        def finish(found: bool, text: str = "", path_used: str | None = None, source: str = "missing") -> dict[str, Any]:
+            return {
+                "found": found,
+                "empty": found and not bool(text.strip()),
+                "text": text,
+                "path_used": path_used,
+                "source": source,
+                "paths_checked": paths_checked[:60],
+                "text_length": len(text),
+                "preview": text[:200],
+            }
+
+        stored = chapter.get(path_key) if chapter else None
+        if stored:
+            stored_text = str(stored)
+            paths_checked.append(stored_text)
+            if stored_text.startswith("supabase://"):
+                text = self.remote_read_chapter(stored_text)
+                if text is not None:
+                    return finish(True, text, stored_text, "stored_remote")
+            else:
+                path = Path(stored_text)
+                if path.is_file():
+                    return finish(True, read_text(path), stored_text, "stored_local")
+
+        if self.remote is not None:
+            for remote_path in self.remote_path_candidates(novel_id, chapter_number, category):
+                marker = self.remote_marker(remote_path)
+                if marker in paths_checked:
+                    continue
+                paths_checked.append(marker)
+                text = self.remote_read_chapter(marker)
+                if text is not None:
+                    return finish(True, text, marker, "remote_candidate")
+
+        for path in self.local_path_candidates(novel_id, chapter_number, category):
+            path_text = str(path)
+            if path_text in paths_checked:
+                continue
+            paths_checked.append(path_text)
+            if path.is_file():
+                return finish(True, read_text(path), path_text, "local_candidate")
+
+        return finish(False)
+
     def chapter_text(self, novel_id: str, chapter_number: int, kind: str) -> dict[str, Any] | None:
         chapter = self.chapter(novel_id, chapter_number)
         if chapter is None:
             return None
-        path_key = {"english": "output_path", "original": "source_path", "reference": "reference_path", "prompt": "prompt_path"}[kind]
-        path_value = chapter.get(path_key)
-        text = ""
-        if isinstance(path_value, str) and path_value.startswith("supabase://"):
-            text = self.remote_read_chapter(path_value) or ""
-        elif path_value and Path(str(path_value)).exists():
-            text = read_text(path_value)
-        return {"chapter": chapter, "text": text}
+        result = self.read_chapter_content(novel_id, chapter_number, kind)
+        diagnostic = {key: value for key, value in result.items() if key != "text"}
+        return {"chapter": chapter, "text": result["text"], "diagnostic": diagnostic}
+
+    def content_diagnostic(self, novel_id: str, chapter_number: int) -> dict[str, Any]:
+        modes = {
+            "original": self.read_chapter_content(novel_id, chapter_number, "original"),
+            "reference": self.read_chapter_content(novel_id, chapter_number, "reference"),
+            "ai": self.read_chapter_content(novel_id, chapter_number, "ai"),
+        }
+        sanitized = {
+            key: {name: value for name, value in result.items() if name != "text"}
+            for key, result in modes.items()
+        }
+        readable = [key for key, result in modes.items() if result["found"] and not result["empty"]]
+        counts = self.active_counts(novel_id)
+        recommendation = "reader_paths_fixed" if readable else "repair_from_backup"
+        if len(readable) == 3:
+            recommendation = "no_action_needed"
+        return {
+            "ok": True,
+            "novel_id": novel_id,
+            "chapter": chapter_number,
+            "counts": {
+                "originals": counts.get("originals", 0),
+                "references": counts.get("references", 0),
+                "ai_translations": counts.get("ai_translations", 0),
+                "remaining": counts.get("remaining", 0),
+            },
+            "modes": sanitized,
+            "recommendation": recommendation,
+            "message": "Counts alone do not prove chapter text is readable.",
+        }
 
     def cover_path(self, novel_id: str) -> Path | None:
         metadata = self.get_metadata(novel_id)
@@ -1055,6 +1201,8 @@ class NovelManager:
         if self.remote is None or not marker.startswith("supabase://"):
             return None
         path = marker.removeprefix("supabase://")
+        if path.startswith(f"{self.remote.bucket}/"):
+            path = path.removeprefix(f"{self.remote.bucket}/")
         try:
             return self.remote.read_text(path)
         except Exception as exc:

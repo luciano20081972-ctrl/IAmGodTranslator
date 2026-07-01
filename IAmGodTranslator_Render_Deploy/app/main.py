@@ -5,6 +5,7 @@ import os
 import hmac
 import hashlib
 import shutil
+import time
 from pathlib import Path
 from typing import Annotated
 
@@ -288,6 +289,45 @@ def migrate_local_data() -> dict[str, object]:
     return {"source_folders_checked": checked, "destination": str(destination), "copied": copied, "skipped_existing": skipped, "conflicts": conflicts, "errors": errors}
 
 
+def storage_cleanup_report(dry_run: bool = True, retention_days: int = 7) -> dict[str, object]:
+    data_dir = service.data_dir.resolve()
+    cutoff = time.time() - max(1, retention_days) * 86400
+    allowed_roots = [data_dir / "exports", data_dir / "backup_jobs", data_dir / "logs"]
+    report: dict[str, object] = {
+        "ok": True,
+        "dry_run": dry_run,
+        "retention_days": retention_days,
+        "would_delete": [],
+        "deleted": [],
+        "kept": [],
+        "total_size": 0,
+        "warnings": ["Cleanup never deletes active novels, chapters, translations, covers, metadata, counts, or the latest successful backup."],
+        "latest_backup_protected": True,
+        "active_data_protected": True,
+    }
+    for root in allowed_roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+                item = {"path": str(path.relative_to(data_dir)), "size": stat.st_size}
+                if stat.st_mtime <= cutoff or path.suffix.lower() in {".tmp", ".log"}:
+                    report["total_size"] = int(report["total_size"]) + stat.st_size
+                    if dry_run:
+                        report["would_delete"].append(item)
+                    else:
+                        path.unlink(missing_ok=True)
+                        report["deleted"].append(item)
+                else:
+                    report["kept"].append(item)
+            except OSError as exc:
+                report["warnings"].append(f"{path.name}: {exc.__class__.__name__}")
+    return report
+
+
 @app.middleware("http")
 async def cache_control_headers(request, call_next):
     response = await call_next(request)
@@ -501,6 +541,11 @@ async def storage_status() -> dict[str, object]:
 @app.get("/api/bootstrap")
 async def bootstrap(request: Request) -> dict[str, object]:
     storage = storage_health_report()
+    canonical_counts = storage.get("canonical_supabase_counts", {})
+    active_counts = storage.get("active_counts_used_by_app", {})
+    canonical_data_exists = any(sum(int(v or 0) for v in counts.values()) for counts in canonical_counts.values() if isinstance(counts, dict))
+    active_data_exists = any(sum(int(v or 0) for v in counts.values() if isinstance(v, int)) for counts in active_counts.values() if isinstance(counts, dict))
+    restore_needed = storage.get("recommended_recovery_action") == "restore_from_supabase_backup"
     return {
         "ok": True,
         "app_version": app.version,
@@ -511,11 +556,15 @@ async def bootstrap(request: Request) -> dict[str, object]:
             "backend": os.getenv("STORAGE_BACKEND", "local").lower(),
             "supabase_enabled": novels.remote is not None,
             "active_counts_used_by_app": storage.get("active_counts_used_by_app", {}),
+            "canonical_data_exists": canonical_data_exists,
+            "active_data_exists": active_data_exists,
+            "restore_needed": restore_needed,
             "recommended_recovery_action": storage.get("recommended_recovery_action"),
             "recommended_recovery_label": storage.get("recommended_recovery_label"),
             "warnings": storage.get("warnings", []),
         },
         "recovery": RECOVERY_STATE,
+        "message": "Bootstrap is lightweight. It does not run backup, restore, or download chapter text.",
     }
 
 
@@ -523,13 +572,41 @@ async def bootstrap(request: Request) -> dict[str, object]:
 async def recovery_status(request: Request) -> dict[str, object]:
     require_admin(request)
     job = backup_jobs.get_job(str(RECOVERY_STATE.get("restore_job_id"))) if RECOVERY_STATE.get("restore_job_id") else None
-    return {"ok": True, "recovery": {**RECOVERY_STATE, "restore_job_status": job}, "storage": storage_health_report()}
+    storage = storage_health_report()
+    active_counts = storage.get("active_counts_used_by_app", {})
+    live_ready = any(sum(int(v or 0) for v in counts.values() if isinstance(v, int)) for counts in active_counts.values() if isinstance(counts, dict))
+    return {"ok": True, "recovery": {**RECOVERY_STATE, "restore_job_status": job, "live_data_ready": live_ready, "active_counts": active_counts, "recommended_next_action": "none" if live_ready else RECOVERY_STATE.get("recommended_next_action")}, "storage": storage}
 
 
 @app.post("/api/admin/storage/migrate-local-data")
 async def migrate_storage(request: Request) -> dict[str, object]:
     require_admin(request)
     return migrate_local_data()
+
+
+@app.post("/api/admin/storage/cleanup/dry-run")
+async def cleanup_storage_dry_run(request: Request, payload: Annotated[dict[str, object] | None, Body()] = None) -> dict[str, object]:
+    require_admin(request)
+    retention_days = int((payload or {}).get("retention_days") or 7)
+    return storage_cleanup_report(dry_run=True, retention_days=retention_days)
+
+
+@app.post("/api/admin/storage/cleanup/run")
+async def cleanup_storage_run(request: Request, payload: Annotated[dict[str, object] | None, Body()] = None) -> dict[str, object]:
+    require_admin(request)
+    payload = payload or {}
+    if not bool(payload.get("confirm")):
+        raise HTTPException(status_code=400, detail="Cleanup requires confirm=true.")
+    retention_days = int(payload.get("retention_days") or 7)
+    return storage_cleanup_report(dry_run=False, retention_days=retention_days)
+
+
+@app.get("/api/admin/content/diagnostic")
+async def admin_content_diagnostic(request: Request, novel_id: str = "i-am-god", chapter: int = 1) -> dict[str, object]:
+    require_admin(request)
+    if chapter < 1:
+        raise HTTPException(status_code=400, detail="Chapter must be 1 or greater.")
+    return novels.content_diagnostic(novel_id, chapter)
 
 
 @app.post("/api/admin/storage/sync-supabase")
@@ -1061,8 +1138,8 @@ async def batch_health(request: Request) -> dict[str, object]:
         "database_backend": database.status().get("backend"),
         "supports_estimate": True,
         "supports_queue": True,
-        "supports_cancel": False,
-        "supports_retry_failed": False,
+        "supports_cancel": True,
+        "supports_retry_failed": True,
         "default_concurrency": 1,
         "max_safe_concurrency": 3,
         "missing_only_default": True,
@@ -1080,17 +1157,51 @@ def batch_selection(novel_id: str, payload: dict[str, object]) -> dict[str, obje
         raise ValueError("Start chapter must be less than or equal to end chapter.")
     missing_only = bool(payload.get("missing_only", True))
     overwrite = bool(payload.get("overwrite", False))
-    chapters = [chapter for chapter in novels.chapters(novel_id) if start <= int(chapter.get("chapter") or 0) <= end and chapter.get("source_path")]
-    already = [chapter for chapter in chapters if chapter.get("has_translation")]
-    selected = [chapter for chapter in chapters if overwrite or not missing_only or not chapter.get("has_translation")]
+    all_chapters = [chapter for chapter in novels.chapters(novel_id) if start <= int(chapter.get("chapter") or 0) <= end]
+    indexed_originals = [chapter for chapter in all_chapters if chapter.get("source_path") or chapter.get("has_original")]
+    indexed_ai = [chapter for chapter in all_chapters if chapter.get("output_path") or chapter.get("has_translation")]
+    chapters: list[dict[str, object]] = []
+    already: list[dict[str, object]] = []
+    selected: list[dict[str, object]] = []
+    empty_originals: list[int] = []
+    missing_originals: list[int] = []
+    sample_missing_ai: list[int] = []
+    paths_checked: list[dict[str, object]] = []
+    for chapter in all_chapters:
+        number = int(chapter.get("chapter") or 0)
+        original = novels.read_chapter_content(novel_id, number, "original", chapter)
+        ai = novels.read_chapter_content(novel_id, number, "ai", chapter)
+        if len(paths_checked) < 12:
+            paths_checked.append({"chapter": number, "original": original.get("paths_checked", [])[:8], "ai": ai.get("paths_checked", [])[:8]})
+        if not original["found"]:
+            missing_originals.append(number)
+            continue
+        if original["empty"]:
+            empty_originals.append(number)
+            continue
+        chapters.append({**chapter, "readable_original_characters": int(original["text_length"])})
+        if ai["found"] and not ai["empty"]:
+            already.append(chapter)
+        else:
+            if len(sample_missing_ai) < 20:
+                sample_missing_ai.append(number)
+        if overwrite or not missing_only or not (ai["found"] and not ai["empty"]):
+            selected.append({**chapter, "readable_original_characters": int(original["text_length"])})
+    if not chapters:
+        raise ValueError("No readable original chapter text was found. Run Content Diagnostic/Repair first.")
     estimated_input = 0
     estimated_output = 0
     for chapter in selected:
-        text_len = int(chapter.get("source_characters") or chapter.get("characters") or 3500)
+        text_len = int(chapter.get("readable_original_characters") or chapter.get("source_characters") or chapter.get("characters") or 3500)
         estimated_input += max(400, text_len // 2)
         estimated_output += max(600, int(text_len * 0.65))
     low = (estimated_input / 1_000_000 * 0.15) + (estimated_output / 1_000_000 * 0.60)
     high = low * 1.75
+    warnings = ["Estimate is approximate.", "Estimate does not call OpenAI.", "Estimate checks readable Original Story text, not counts alone."]
+    if empty_originals:
+        warnings.append(f"{len(empty_originals)} original chapter file(s) are empty.")
+    if missing_originals:
+        warnings.append(f"{len(missing_originals)} chapter(s) in range have no readable Original Story file.")
     return {
         "novel_id": novel_id,
         "start_chapter": start,
@@ -1099,13 +1210,23 @@ def batch_selection(novel_id: str, payload: dict[str, object]) -> dict[str, obje
         "already_translated": len(already),
         "missing_ai_translations": len(chapters) - len(already),
         "estimated_chapters_to_translate": len(selected),
+        "original_chapters_indexed": len(indexed_originals),
+        "original_chapters_with_text": len(chapters),
+        "ai_chapters_indexed": len(indexed_ai),
+        "ai_chapters_with_text": len(already),
+        "already_translated_in_range": len(already),
+        "chapters_ready_to_translate": len(selected),
+        "empty_original_chapters": empty_originals[:50],
+        "missing_original_chapters": missing_originals[:50],
+        "sample_missing_ai_chapters": sample_missing_ai,
+        "paths_checked": paths_checked,
         "estimated_input_tokens": estimated_input,
         "estimated_output_tokens": estimated_output,
         "estimated_cost_low": round(low, 4),
         "estimated_cost_high": round(high, 4),
         "model": str(payload.get("model") or os.getenv("OPENAI_MODEL") or "gpt-4o-mini"),
         "mode": str(payload.get("mode") or "standard"),
-        "warnings": ["Estimate is approximate.", "Estimate does not call OpenAI."],
+        "warnings": warnings,
         "chapter_numbers": [int(chapter.get("chapter") or 0) for chapter in selected[:200]],
     }
 
@@ -1167,13 +1288,23 @@ async def batch_job(request: Request, job_id: str, novel_id: str | None = None) 
 @app.post("/api/batch/jobs/{job_id}/cancel")
 async def batch_cancel(request: Request, job_id: str, payload: Annotated[dict[str, object] | None, Body()] = None) -> dict[str, object]:
     require_admin(request)
-    return {"ok": False, "job_id": job_id, "status": "not_supported", "message": "Cancel is not available for translation jobs in this build. Running jobs save each chapter as they finish."}
+    selected = batch_novel_id(payload)
+    try:
+        job = novels.service_for(selected).cancel_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "novel_id": selected, "job": job, "message": "Translation job cancellation requested."}
 
 
 @app.post("/api/batch/jobs/{job_id}/retry-failed")
 async def batch_retry_failed(request: Request, job_id: str, payload: Annotated[dict[str, object] | None, Body()] = None) -> dict[str, object]:
     require_admin(request)
-    return {"ok": False, "job_id": job_id, "status": "not_supported", "message": "Retry failed chapters is not wired in this build. Re-estimate with missing_only=true to continue safely."}
+    selected = batch_novel_id(payload)
+    try:
+        job = novels.service_for(selected).retry_failed_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "novel_id": selected, "job": job, "message": "Failed chapters were queued for retry."}
 
 
 @app.get("/api/novels/{novel_id}/jobs/{job_id}")

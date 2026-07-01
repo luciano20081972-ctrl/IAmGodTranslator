@@ -59,12 +59,18 @@ class SupabaseStorage:
             with urlopen(request, timeout=timeout or SUPABASE_TIMEOUT_SECONDS) as response:
                 return response.status, response.read()
         except HTTPError as exc:
-            if exc.code == 404:
-                return 404, b""
             try:
                 body = exc.read().decode("utf-8", errors="replace")[:600]
             except Exception:
                 body = ""
+            body_is_missing = False
+            try:
+                payload = json.loads(body) if body else {}
+                body_is_missing = str(payload.get("statusCode") or payload.get("status_code") or "") == "404" or payload.get("error") == "not_found"
+            except Exception:
+                body_is_missing = "Object not found" in body or "not_found" in body
+            if exc.code == 404 or (exc.code == 400 and body_is_missing):
+                return 404, b""
             level = logging.WARNING if exc.code in TRANSIENT_HTTP_ERRORS else logging.ERROR
             logger.log(level, "Supabase Storage HTTP %s for %s %s: %s", exc.code, method, url.split("/storage/v1/", 1)[-1], body)
             raise

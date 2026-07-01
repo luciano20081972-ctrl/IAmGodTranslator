@@ -680,6 +680,49 @@ function setupBatchHealthCard() {
   $("#checkBatchHealthButton").onclick = checkBatchHealth;
   $("#batchDryRunButton").onclick = batchDryRun;
 }
+function setupStorageCleanupCard() {
+  if ($("#storageCleanupCard") || !els.storageHealth) return;
+  const panel = document.createElement("section");
+  panel.className = "panel admin-card";
+  panel.id = "storageCleanupCard";
+  panel.innerHTML = `<p class="eyebrow">Storage Cleanup</p><h3>Safe runtime cleanup</h3><p class="helper">Cleanup never deletes active novels, chapters, translations, covers, metadata, counts, or the latest successful backup.</p><label><span>Backup retention</span><select id="cleanupRetentionDays"><option value="0">disabled</option><option value="7" selected>keep 7 days</option><option value="14">keep 14 days</option><option value="30">keep 30 days</option></select></label><div class="actions"><button class="secondary-button" id="cleanupDryRunButton" type="button">Dry Run Cleanup</button><button class="danger-button" id="cleanupRunButton" type="button">Run Cleanup</button></div><div class="estimate-box" id="cleanupReport">No cleanup dry-run has been run.</div>`;
+  els.storageHealth.closest(".admin-card")?.insertAdjacentElement("afterend", panel);
+  $("#cleanupDryRunButton").onclick = () => runStorageCleanup(true);
+  $("#cleanupRunButton").onclick = () => runStorageCleanup(false);
+}
+function setupContentHealthCard() {
+  if ($("#contentHealthCard") || !els.storageHealth) return;
+  const panel = document.createElement("section");
+  panel.className = "panel admin-card";
+  panel.id = "contentHealthCard";
+  panel.innerHTML = `<p class="eyebrow">Content Health</p><h3>Reader diagnostics</h3><p class="helper">Counts alone do not prove chapter text is readable.</p><label><span>Chapter to test</span><input id="contentDiagnosticChapter" type="number" min="1" value="1"></label><div class="actions"><button class="secondary-button" id="contentDiagnosticButton" type="button">Run Content Diagnostic</button><button class="secondary-button" id="testChapterOneReaderButton" type="button">Test Chapter 1 Reader</button><button class="secondary-button" id="testReadableChapterButton" type="button">Test First Non-Empty Chapter</button><button class="secondary-button" id="contentRebuildIndexButton" type="button">Rebuild Index</button><button class="secondary-button" id="contentRefreshNovelButton" type="button">Refresh Novel Data</button></div><div class="estimate-box" id="contentHealthReport">No content diagnostic has been run.</div>`;
+  $("#storageCleanupCard")?.insertAdjacentElement("afterend", panel);
+  $("#contentDiagnosticButton").onclick = () => runContentDiagnostic(Number($("#contentDiagnosticChapter")?.value || state.readerChapter || 1));
+  $("#testChapterOneReaderButton").onclick = () => { if (state.currentNovel) openReader(1, state.readerTab || "original"); };
+  $("#testReadableChapterButton").onclick = () => {
+    const chapter = state.chapters.find((item) => item.has_original || item.has_translation || item.has_reference) || state.chapters[0];
+    if (chapter) openReader(chapter.chapter, state.readerTab || "original");
+  };
+  $("#contentRebuildIndexButton").onclick = rebuildRecoveryIndex;
+  $("#contentRefreshNovelButton").onclick = async () => { if (state.currentNovel) await openNovel(state.currentNovel.novel_id, { skipHistory: true, skipSave: true }); };
+}
+async function runContentDiagnostic(chapter) {
+  const box = $("#contentHealthReport");
+  if (!box || !state.currentNovel) return;
+  box.textContent = "Checking actual readable chapter text...";
+  const data = await api(`/api/admin/content/diagnostic?novel_id=${encodeURIComponent(state.currentNovel.novel_id)}&chapter=${encodeURIComponent(chapter || 1)}`, { timeoutMs: 60000 });
+  const rows = Object.entries(data.modes || {}).map(([mode, info]) => `<tr><th>${esc(mode)}</th><td>${info.found ? (info.empty ? "empty" : "readable") : "missing"}</td><td>${Number(info.text_length || 0)}</td><td>${esc(info.path_used || "none")}</td></tr>`).join("");
+  box.innerHTML = `<strong>Chapter ${Number(data.chapter || chapter || 1)}</strong><br>Originals ${Number(data.counts?.originals || 0)}; References ${Number(data.counts?.references || 0)}; AI ${Number(data.counts?.ai_translations || 0)}<br>Recommendation: ${esc(data.recommendation || "")}<table class="mini-table"><thead><tr><th>Mode</th><th>Status</th><th>Chars</th><th>Path used</th></tr></thead><tbody>${rows}</tbody></table><details><summary>Paths checked / raw details</summary>${renderJsonBox(data)}</details>`;
+}
+async function runStorageCleanup(dryRun) {
+  const retention = Number($("#cleanupRetentionDays")?.value || 7);
+  const box = $("#cleanupReport");
+  if (retention <= 0) { if (box) box.textContent = "Cleanup retention is disabled."; return; }
+  if (!dryRun && !window.confirm("Run safe cleanup now? Active novel data and latest successful backup are protected.")) return;
+  const endpoint = dryRun ? "/api/admin/storage/cleanup/dry-run" : "/api/admin/storage/cleanup/run";
+  const data = await api(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ retention_days: retention, confirm: !dryRun }), timeoutMs: 60000 });
+  if (box) box.innerHTML = `<strong>${dryRun ? "Cleanup dry-run" : "Cleanup complete"}</strong><br>Would delete ${(data.would_delete || []).length}; deleted ${(data.deleted || []).length}; kept ${(data.kept || []).length}; size ${Number(data.total_size || 0)} bytes.<br>${(data.warnings || []).map(esc).join("<br>")}<details><summary>Raw details</summary>${renderJsonBox(data)}</details>`;
+}
 async function checkBatchHealth() {
   const box = $("#batchHealthStatus");
   if (!box) return;
@@ -1028,18 +1071,28 @@ async function openReader(chapter, tab = state.readerTab, options = {}) {
 
 async function loadReaderText() {
   const endpoint = state.readerTab === "ai" ? "english" : state.readerTab;
-  const missing = { original: "No Original Story content for this chapter.", reference: "No Reference Translation content for this chapter.", ai: "No AI Translation content for this chapter." };
+  const labels = { original: "Original Story", reference: "Reference Translation", ai: "AI Translation" };
   els.readerContent.textContent = "Loading...";
   try {
-    const data = await api(`/api/novels/${state.currentNovel.novel_id}/chapters/${state.readerChapter}/${endpoint}`);
-    setReaderText(data.text && data.text.trim() ? data.text : missing[state.readerTab]);
-  } catch (_error) {
-    setReaderText(missing[state.readerTab] || "Chapter text not available.");
+    const data = await api(`/api/novels/${state.currentNovel.novel_id}/chapters/${state.readerChapter}/${endpoint}`, { timeoutMs: 30000 });
+    const diagnostic = data.diagnostic || {};
+    let message = data.text && data.text.trim() ? data.text : `No readable ${labels[state.readerTab] || "chapter"} content was found for this chapter.`;
+    if (diagnostic.found && diagnostic.empty) message = "This chapter file exists, but it is empty.";
+    setReaderText(message, diagnostic);
+  } catch (error) {
+    setReaderText(`${error.message || "Chapter text could not be loaded."}\n\nNo readable ${labels[state.readerTab] || "chapter"} content was found for this chapter.`, { error: error.message, endpoint: error.endpoint, status: error.status });
   }
 }
-function setReaderText(text) {
+function setReaderText(text, diagnostic = null) {
   const paragraphs = String(text || "").split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean);
   els.readerContent.innerHTML = paragraphs.length ? paragraphs.map((part) => `<p>${esc(part)}</p>`).join("") : "";
+  if (state.admin?.authenticated && diagnostic) {
+    els.readerContent.insertAdjacentHTML("beforeend", renderReaderDiagnostic(diagnostic));
+  }
+}
+function renderReaderDiagnostic(diagnostic) {
+  const checked = (diagnostic.paths_checked || []).slice(0, 12).map((path) => `<li>${esc(path)}</li>`).join("");
+  return `<details class="reader-diagnostic"><summary>Admin diagnostic</summary><div>Found: ${diagnostic.found ? "yes" : "no"}; Empty: ${diagnostic.empty ? "yes" : "no"}; Length: ${Number(diagnostic.text_length || 0)}; Source: ${esc(diagnostic.source || "unknown")}</div><div>Path used: ${esc(diagnostic.path_used || "none")}</div>${checked ? `<ol>${checked}</ol>` : ""}</details>`;
 }
 
 function renderSelectedCount() { if (els.selectedChapterCount) els.selectedChapterCount.textContent = `${state.selectedChapters.size} selected`; }
@@ -1278,6 +1331,8 @@ function bind() {
   setupSupabaseRecoveryControls();
   setupOnlineRestoreCard();
   setupBatchHealthCard();
+  setupStorageCleanupCard();
+  setupContentHealthCard();
   els.homeButton.onclick = () => showLibrary();
   els.backToLibrary.onclick = () => showLibrary();
   els.supportButton.onclick = () => { els.supportPanel.hidden = !els.supportPanel.hidden; };
@@ -1418,7 +1473,7 @@ function bind() {
   window.addEventListener("hashchange", handleRouteChange);
 }
 
-function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=79").then((registration) => registration.update()).catch(() => {}); }
+function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=81").then((registration) => registration.update()).catch(() => {}); }
 async function bootAppData() {
   hideRecovery();
   els.novelGrid.innerHTML = '<div class="empty-state">Loading library...</div>';

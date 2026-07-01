@@ -88,3 +88,11 @@ Translate tools are admin-only. Use Translation Health first, then Cost Estimate
 Batch settings default to missing AI translations only, no overwrite, and concurrency 1. Concurrency 2 or 3 may spend faster and may hit rate limits.
 
 Google login has a safe disabled placeholder in this build. The UI checks `/api/auth/google/status` and shows a disabled button unless OAuth is fully enabled. Keep `GOOGLE_CLIENT_SECRET` only in Render environment variables; never expose it to static JavaScript.
+
+## v9.0 Partial Production Notes
+
+Normal wake/login should not require Full Backup or Online Restore. `/api/bootstrap` is lightweight and reports whether live Supabase data is ready. If canonical/active counts exist, recovery should show no restore needed.
+
+Storage Cleanup is admin-only and conservative. It targets runtime/export/job-temp files only and never deletes active novels, chapters, translations, covers, metadata, counts, or the latest successful backup. Run dry-run before cleanup.
+
+Translation job cancel now marks pending/running chapters as cancelled. Retry Failed only retries failed chapters and returns a structured error if none exist.

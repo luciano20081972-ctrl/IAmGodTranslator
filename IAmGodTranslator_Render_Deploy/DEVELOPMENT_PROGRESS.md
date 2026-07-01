@@ -2,10 +2,30 @@
 
 ## Current Version Target
 
-GodTranslator_Web_v8_1_PARTIAL_Translate_UI_Google.zip
+GodTranslator_Web_v9_0_2_Reader_Content_And_v9_Package_Fix.zip
 
 ## Completed Tasks
 
+- Finished v9.0.2 reader content and packaging fix.
+- Fixed Reader content loading so Original Story, Reference Translation, and AI Translation resolve actual readable text through stored paths, canonical Supabase paths, legacy Supabase paths, filename variants, and local folders.
+- Added admin-only `GET /api/admin/content/diagnostic?novel_id=i-am-god&chapter=1`.
+- Added Admin Content Health card with chapter diagnostic, test-reader buttons, rebuild index, and refresh controls.
+- Updated reader missing/empty/error states so the reader never remains stuck on `Loading...`; admins see path diagnostics.
+- Updated batch estimate and batch creation to require readable Original Story text and readable/non-empty AI Translation status instead of trusting counts or path badges alone.
+- Fixed Supabase Storage 400 responses that represent missing optional objects so missing `counts.json` and missing cover files are treated as normal fallback, not ERROR spam.
+- Bumped frontend cache/service-worker versions to v81.
+- Finished a deployable partial v9.0 production stability pass.
+- Preserved Online Supabase Restore, Local ZIP Restore, `/api/bootstrap`, `/api/admin/recovery/status`, Supabase hydration, backup/restore, and Original/Reference/AI separation.
+- Improved `/api/bootstrap` fast wake response with `canonical_data_exists`, `active_data_exists`, `restore_needed`, and a no-backup/no-restore message.
+- Improved `/api/admin/recovery/status` with `live_data_ready`, active counts, restore job status, and next-action clarity.
+- Added conservative admin storage cleanup endpoints: `POST /api/admin/storage/cleanup/dry-run` and `POST /api/admin/storage/cleanup/run`.
+- Added Admin Storage Cleanup UI with retention selection and explicit active-data protection messaging.
+- Implemented real translation job cancellation at state level; pending/running chapters become `cancelled` and polling can stop cleanly.
+- Implemented retry-failed job support for failed chapters only; safe no-failed-chapter requests return structured JSON.
+- Updated batch health to report `supports_cancel=true` and `supports_retry_failed=true`.
+- Hid the public API “Online/Waking” technical chip from guest/public users while keeping it visible for admins.
+- Confirmed existing hash reader routes preserve novel/chapter/mode reload state using `#/novel/{id}/chapter/{chapter}?mode={mode}`.
+- Bumped frontend cache/service-worker versions to v80.
 - Finished a deployable partial v8.1 Translate/UI/Google safety pass.
 - Preserved v8.0.4 Online Supabase Restore, `/api/bootstrap`, `/api/admin/recovery/status`, Supabase hydration, backup/restore, and Original/Reference/AI separation.
 - Upgraded `/api/batch/health` to return structured JSON with model, OpenAI configured status, storage backend, database backend, queue capabilities, concurrency defaults, and warnings.
@@ -97,12 +117,43 @@ GodTranslator_Web_v8_1_PARTIAL_Translate_UI_Google.zip
 - `static/service-worker.js`
 - `static/styles.css`
 - `templates/index.html`
+- `app/storage.py`
 - `app/main.py`
 - `app/novels.py`
 - `tools/convert_legacy_backup_to_v7.py`
 
 ## QA Results
 
+- v9.0.2 Python syntax check passed.
+- v9.0.2 JavaScript syntax check passed with the bundled Node runtime.
+- `requirements.txt` exists, is not `{}`, and contains valid FastAPI/Uvicorn/OpenAI/psycopg dependencies.
+- `/api/health`, `/api/bootstrap`, `/api/storage`, `/api/novels`, `/api/novels/i-am-god/library`, and `/api/batch/health` returned 200 in TestClient.
+- Public `GET /api/admin/content/diagnostic` returned 401.
+- Public `POST /api/batch/start` returned 401.
+- Admin login worked with a temporary QA password.
+- Admin content diagnostic returned actual mode diagnostics and text length for a fixture chapter.
+- Reader endpoints loaded Original Story, Reference Translation, and AI Translation text from fixture chapter files.
+- Batch estimate reported readable original count, readable AI count, missing AI count, paths checked, and did not call OpenAI or start real translation.
+- Supabase optional missing objects are now handled as 404 fallback when Storage returns HTTP 400 with a not_found body.
+- v9.0 partial Python syntax check passed.
+- v9.0 partial JavaScript syntax check passed.
+- `/api/health`, `/api/bootstrap`, `/api/storage`, `/api/novels`, and `/api/novels/i-am-god/library` returned 200 in TestClient.
+- `/api/bootstrap` reported lightweight no-backup/no-restore behavior and `restore_needed=false` when live data was healthy.
+- `/api/storage` returned `recommended_recovery_action=none` when live canonical/active data existed.
+- Public cleanup endpoint returned 401.
+- Public batch cancel endpoint returned 401.
+- Admin login worked.
+- Storage cleanup dry-run listed only a runtime temp export file.
+- Storage cleanup run deleted only that runtime temp export file and preserved active data.
+- Batch health reported cancel/retry support.
+- Batch dry-run returned JSON and did not call OpenAI.
+- Batch cancel returned a cancelled job state.
+- Retry-failed with no failed chapters returned structured JSON 400.
+- Online Supabase restore dry-run endpoint still returned 202 queued.
+- Security headers remained present.
+- No OpenAI call was made.
+- No real translation was started.
+- No production data deletion was performed.
 - v8.1 Python syntax check passed.
 - v8.1 JavaScript syntax check passed.
 - `requirements.txt` exists, is not `{}`, and contains FastAPI, Uvicorn, dotenv, multipart, OpenAI, and psycopg dependencies.
