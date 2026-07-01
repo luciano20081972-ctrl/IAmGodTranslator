@@ -2,10 +2,34 @@
 
 ## Current Version Target
 
-GodTranslator_Web_v8_0_2_Supabase_Legacy_Path_Recovery.zip
+GodTranslator_Web_v8_0_4_Online_Restore_Translate_Fix.zip
 
 ## Completed Tasks
 
+- Finished v8.0.4 online restore and translate stability pass.
+- Separated Local ZIP Restore from Online Supabase Restore in the Backups UI.
+- Added a dedicated Online Supabase Restore card with backup details, online dry-run, online confirm, progress, status, raw details, and rebuild/hydrate/refresh actions.
+- Confirm Online Restore now calls `POST /api/admin/backups/restore-from-supabase` and never requires a local ZIP file.
+- Local ZIP Restore remains local-only and still requires a selected ZIP file.
+- Added `GET /api/bootstrap` for fast wake/bootstrap without full scans, backup, restore, or chapter downloads.
+- Added `GET /api/admin/recovery/status` for persisted runtime recovery status and last restore job status.
+- Updated `/api/storage` so healthy active/canonical Supabase data reports `recommended_recovery_action=none` and says live data is ready.
+- Updated `/api/storage` so active=0/canonical=0/legacy=0 plus backup ZIPs recommends `restore_from_supabase_backup`.
+- Added JSON batch endpoints: `GET /api/batch/health`, `POST /api/batch/estimate`, `POST /api/batch/start`, `GET /api/batch/jobs`, `GET /api/batch/jobs/{job_id}`, `POST /api/batch/jobs/{job_id}/cancel`, and `POST /api/batch/jobs/{job_id}/retry-failed`.
+- Added a Translation Health card in the Translate tab.
+- Batch dry-run/start with `dry_run=true` creates an estimate only and does not call OpenAI.
+- Batch estimate can materialize `supabase://` source/reference chapter text into temporary local inputs when Render local cache is empty.
+- Batch creation no longer syncs generated job/cache folders to Supabase; it updates only metadata, counts, and index.
+- Bumped frontend cache/service-worker versions to v78.
+- Finished v8.0.3 recovery progress UI pass.
+- Replaced the simple Supabase Recovery button cluster with a recovery command center that shows active/canonical/legacy/backup counts, recommended action, step-by-step guidance, action cards, progress bars, raw result details, and a recovery timeline.
+- Wired the recovery dashboard to `/api/storage` so the live recommendation can distinguish legacy-path migration from backup ZIP restore.
+- Added frontend actions for Deep Scan, Hydrate I Am God, Migrate Dry Run, Confirm Migration, List Backups, Restore Backup Dry Run, Confirm Restore, Rebuild Index, and Refresh Novel Data.
+- Added restore-job polling so dry-run/confirm restore actions show progress instead of leaving the user guessing.
+- Improved legacy migration reports so a no-files run returns `completed_no_changes`, `found_legacy_files`, `files_to_copy`, warnings, and `next_recommended_action`.
+- Updated `/api/storage` to return machine-readable `recommended_recovery_action`, readable `recommended_recovery_label`, and `recommended_recovery_steps`.
+- For the live-style state where canonical=0, legacy=0, active=0, and backup ZIPs exist, the recommended recovery action is now `restore_from_supabase_backup`.
+- Bumped frontend cache/service-worker versions to v77.
 - Finished v8.0.2 Supabase legacy path recovery after live data was found under `app/novels/i-am-god/Original`, `Reference`, `AI`, `Cover`, and `Backups`.
 - Added canonical plus legacy Supabase path discovery for originals, references, AI translations, and prompts.
 - Added legacy metadata/counts fallback from `app/novels/{novel_id}/metadata.json` and `app/novels/{novel_id}/counts.json`.
@@ -54,16 +78,51 @@ GodTranslator_Web_v8_0_2_Supabase_Legacy_Path_Recovery.zip
 ## Files Changed
 
 - `DEVELOPMENT_PROGRESS.md`
-- `tools/convert_legacy_backup_to_v7.py`
 - `static/app.js`
 - `static/service-worker.js`
 - `static/styles.css`
 - `templates/index.html`
 - `app/main.py`
 - `app/novels.py`
+- `tools/convert_legacy_backup_to_v7.py`
 
 ## QA Results
 
+- v8.0.4 Python syntax check passed.
+- v8.0.4 JavaScript syntax check passed.
+- `requirements.txt` exists, is not `{}`, and contains FastAPI, Uvicorn, dotenv, multipart, OpenAI, and psycopg dependencies.
+- `/api/health`, `/api/bootstrap`, `/api/storage`, `/api/novels`, and `/api/novels/i-am-god/library` returned 200 in TestClient.
+- With active canonical Supabase counts present, `/api/storage` returned `recommended_recovery_action=none`.
+- With active/canonical/legacy counts removed but a Supabase backup ZIP present, `/api/storage` returned `recommended_recovery_action=restore_from_supabase_backup`.
+- `GET /api/admin/backups/supabase` listed the online Supabase backup after admin login.
+- `POST /api/admin/backups/restore-from-supabase` with `dry_run=true` queued and completed without a local file.
+- `POST /api/admin/backups/restore-from-supabase` with `confirm=true` queued without a local file.
+- Migration dry-run with no legacy files returned `completed_no_changes`.
+- Public admin backup/recovery endpoints returned 401.
+- Public batch start returned 401.
+- Admin login worked with a temporary QA password.
+- `GET /api/batch/health` returned JSON.
+- `POST /api/batch/estimate` returned JSON and did not call OpenAI.
+- `POST /api/batch/start` with `dry_run=true` returned JSON/job data and did not call OpenAI.
+- `GET /api/batch/jobs` returned JSON.
+- No real translation was started.
+- No production data deletion was performed.
+- Note: a QA-only fake Supabase remote lacked `upload_tree`, causing one background mock log while an async restore thread ran; production `SupabaseStorage` implements `upload_tree`.
+- v8.0.3 Python syntax check passed.
+- v8.0.3 JavaScript syntax check passed.
+- `/api/health`, `/api/storage`, `/api/novels`, and `/api/novels/i-am-god/library` returned 200 in TestClient.
+- Public admin recovery endpoint returned 401.
+- Public translate endpoint returned 401.
+- Admin login worked with a temporary QA admin password.
+- Simulated Supabase state with active/canonical/legacy chapter folders empty and one backup ZIP present.
+- `/api/storage` returned `recommended_recovery_action=restore_from_supabase_backup` for that state.
+- Admin deep discovery returned one backup ZIP and zero canonical/legacy chapter files.
+- Legacy migration dry-run returned `completed_no_changes`, `files_to_copy=0`, and `next_recommended_action=restore_from_supabase_backup`.
+- Supabase backup listing returned the backup ZIP.
+- Restore-from-Supabase-backup dry-run returned 202 queued and completed through the existing async restore job.
+- No OpenAI call was made.
+- No translation was started.
+- No production data deletion was performed.
 - v8.0.2 Python syntax check passed.
 - v8.0.2 JavaScript syntax check passed.
 - `requirements.txt` exists, is included, is not `{}`, and contains valid FastAPI/Uvicorn/OpenAI/psycopg dependencies.

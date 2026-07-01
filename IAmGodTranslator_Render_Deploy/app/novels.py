@@ -433,7 +433,7 @@ class NovelManager:
         if not dry_run and not confirm:
             raise ValueError("Real migration requires confirm=true.")
         before = self.remote_counts(novel_id).get("counts", {})
-        report: dict[str, Any] = {"ok": True, "dry_run": dry_run, "copied": 0, "skipped_existing": 0, "ambiguous": 0, "errors": [], "items": [], "counts_before": before, "counts_after": before}
+        report: dict[str, Any] = {"ok": True, "dry_run": dry_run, "status": "running", "found_legacy_files": 0, "files_to_copy": 0, "copied": 0, "skipped_existing": 0, "ambiguous": 0, "errors": [], "warnings": [], "items": [], "counts_before": before, "counts_after": before, "next_recommended_action": "rebuild_index"}
         mapping = {
             "original": (LEGACY_REMOTE_PREFIXES["original"], f"novels/{novel_id}/originals"),
             "reference": (LEGACY_REMOTE_PREFIXES["reference"], f"novels/{novel_id}/references"),
@@ -445,6 +445,7 @@ class NovelManager:
                 for source_path in self.remote.list_paths(f"app/novels/{novel_id}/{legacy_prefix}"):
                     if not source_path.lower().endswith(".txt"):
                         continue
+                    report["found_legacy_files"] += 1
                     chapter = self.chapter_number_from_remote(source_path)
                     if chapter is None:
                         report["ambiguous"] += 1
@@ -455,6 +456,7 @@ class NovelManager:
                         report["skipped_existing"] += 1
                         report["items"].append({"source": source_path, "target": target_path, "status": "skipped_existing"})
                         continue
+                    report["files_to_copy"] += 1
                     if not dry_run:
                         data = self.remote.read_bytes(source_path)
                         if data is not None:
@@ -466,6 +468,7 @@ class NovelManager:
             if not overwrite and self.remote.read_bytes(target_path) is not None:
                 report["skipped_existing"] += 1
                 continue
+            report["files_to_copy"] += 1
             if not dry_run:
                 data = self.remote.read_bytes(source_path)
                 if data is not None:
@@ -481,6 +484,7 @@ class NovelManager:
             if not overwrite and self.remote.read_bytes(target_path) is not None:
                 report["skipped_existing"] += 1
                 continue
+            report["files_to_copy"] += 1
             if not dry_run:
                 self.remote.write_bytes(target_path, data, "application/json")
             report["copied"] += 1
@@ -490,6 +494,12 @@ class NovelManager:
             self.write_counts_cache(novel_id)
             self.write_novel_index()
             report["counts_after"] = self.remote_counts(novel_id).get("counts", {})
+        if report["files_to_copy"] == 0:
+            report["status"] = "completed_no_changes"
+            report["next_recommended_action"] = "restore_from_supabase_backup" if self.supabase_backup_zips(novel_id) else "deep_scan_supabase"
+            report["warnings"].append("No legacy chapter files were found to migrate. Your active Supabase folders are empty. If a backup ZIP was found, the next step is Restore From Supabase Backup.")
+        else:
+            report["status"] = "completed" if dry_run else "completed_copied"
         return report
 
     def hydrate_remote_metadata(self, novel_id: str) -> dict[str, Any] | None:
@@ -790,11 +800,43 @@ class NovelManager:
             chapter for chapter in self.chapters(novel_id)
             if chapter.get("source_path") and chapter.get("status") != "translated"
         ][:batch_size]
-        chinese_files = [Path(str(chapter["source_path"])) for chapter in candidates]
-        reference_files = [references[int(chapter["chapter"])] for chapter in candidates if int(chapter["chapter"]) in references]
-        job = self.service_for(novel_id).create_job_from_existing_files(chinese_files, reference_files, settings)
+        materialized = self.novel_dir(novel_id) / "batch_cache"
+        materialized_originals = materialized / "originals"
+        materialized_references = materialized / "references"
+        materialized_originals.mkdir(parents=True, exist_ok=True)
+        materialized_references.mkdir(parents=True, exist_ok=True)
+        chinese_files: list[Path] = []
+        reference_files: list[Path] = []
+        for chapter in candidates:
+            number = int(chapter["chapter"])
+            source = str(chapter.get("source_path") or "")
+            source_path = Path(source)
+            if source.startswith("supabase://"):
+                text = self.remote_read_chapter(source)
+                if text:
+                    source_path = materialized_originals / f"{number:04d}.txt"
+                    source_path.write_text(text, encoding="utf-8")
+            if source_path.is_file():
+                chinese_files.append(source_path)
+            reference = references.get(number)
+            if reference:
+                reference_files.append(reference)
+            else:
+                reference_value = str(chapter.get("reference_path") or "")
+                if reference_value.startswith("supabase://"):
+                    text = self.remote_read_chapter(reference_value)
+                    if text:
+                        path = materialized_references / f"{number:04d}.txt"
+                        path.write_text(text, encoding="utf-8")
+                        reference_files.append(path)
+        try:
+            job = self.service_for(novel_id).create_job_from_existing_files(chinese_files, reference_files, settings)
+        finally:
+            shutil.rmtree(materialized, ignore_errors=True)
         self.touch(novel_id)
-        self.sync_to_remote(novel_id)
+        self.write_remote_json(f"novels/{novel_id}/metadata.json", self.get_metadata(novel_id))
+        self.write_counts_cache(novel_id)
+        self.write_novel_index()
         return job
 
     def start_job(self, novel_id: str, job_id: str) -> None:

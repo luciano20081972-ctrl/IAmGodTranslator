@@ -147,7 +147,7 @@ app.innerHTML = `
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
-const state = { novels: [], appInfo: {}, admin: { enabled: false, authenticated: false }, auth: { authenticated: false, user: null }, accountMode: "login", workspaces: [{ id: "library", type: "library", title: "Library" }], activeWorkspaceId: "library", libraryMode: "home", currentNovel: null, chapters: [], filteredChapters: [], selectedChapters: new Set(), readerChapter: null, readerTab: "original", currentJob: null, pollTimer: null, backupJobId: null, backupPollTimer: null, restoreJobId: null, restorePollTimer: null, restoreDryRunComplete: false, readerSize: 18, readerWide: false, chapterPage: 1, pageSize: 50, pickerPage: 1, pickerPageSize: 50, pickerSearch: "", pickerNewest: false, searchTimer: null, readerPrefs: {}, ratings: {}, bookmarks: { novels: {}, chapters: {} }, history: {} };
+const state = { novels: [], appInfo: {}, admin: { enabled: false, authenticated: false }, auth: { authenticated: false, user: null }, accountMode: "login", workspaces: [{ id: "library", type: "library", title: "Library" }], activeWorkspaceId: "library", libraryMode: "home", currentNovel: null, chapters: [], filteredChapters: [], selectedChapters: new Set(), readerChapter: null, readerTab: "original", currentJob: null, pollTimer: null, backupJobId: null, backupPollTimer: null, restoreJobId: null, restorePollTimer: null, restoreDryRunComplete: false, onlineRestoreJobId: null, onlineRestorePollTimer: null, onlineRestoreDryRunComplete: false, selectedSupabaseBackup: null, readerSize: 18, readerWide: false, chapterPage: 1, pageSize: 50, pickerPage: 1, pickerPageSize: 50, pickerSearch: "", pickerNewest: false, searchTimer: null, readerPrefs: {}, ratings: {}, bookmarks: { novels: {}, chapters: {} }, history: {} };
 
 const els = {
   apiStatus: $("#apiStatus"), homeButton: $("#homeButton"), themeToggle: $("#themeToggle"), globalSearch: $("#globalSearch"), brandMark: $("#brandMark"), brandName: $("#brandName"), brandSubtitle: $("#brandSubtitle"), libraryIcon: $("#libraryIcon"), workspaceTabs: $("#workspaceTabs"), breadcrumb: $("#breadcrumb"), accountButton: $("#accountButton"), registerButton: $("#registerButton"), accountDialog: $("#accountDialog"), accountForm: $("#accountForm"), accountTitle: $("#accountTitle"), accountMessage: $("#accountMessage"), accountEmail: $("#accountEmail"), accountUsername: $("#accountUsername"), accountUsernameWrap: $("#accountUsernameWrap"), accountPassword: $("#accountPassword"), accountConfirm: $("#accountConfirm"), accountConfirmWrap: $("#accountConfirmWrap"), accountModeButton: $("#accountModeButton"), accountSubmitButton: $("#accountSubmitButton"), forgotPasswordButton: $("#forgotPasswordButton"), accountUserActions: $("#accountUserActions"), resendVerificationButton: $("#resendVerificationButton"), logoutAccountButton: $("#logoutAccountButton"), adminButton: $("#adminButton"), adminDialog: $("#adminDialog"), adminForm: $("#adminForm"), adminPassword: $("#adminPassword"), adminHelp: $("#adminHelp"), supportButton: $("#supportButton"), supportPanel: $("#supportPanel"), mainNav: $$(".nav-button"), currentNovelPill: $("#currentNovelPill"), quickReaderButton: $("#quickReaderButton"), quickTranslateButton: $("#quickTranslateButton"), quickBackupButton: $("#quickBackupButton"),
@@ -612,6 +612,9 @@ async function refreshStorageHealth() {
   const active = storage.active_counts_used_by_app?.[novelId] || {};
   const canonical = storage.canonical_supabase_counts?.[novelId] || {};
   const legacy = storage.legacy_supabase_counts?.[novelId] || {};
+  state.recovery = state.recovery || { actions: {}, logs: [], restoreDryRunPassed: false };
+  state.recovery.storage = storage;
+  renderRecoveryDashboard();
   els.storageHealth.innerHTML = `<div class="warning">Your files are only safe after DATA_DIR points to persistent storage or Supabase is active.</div><div class="storage-grid"><div><span>Storage backend</span><strong>${esc(storage.backend || "local")}</strong></div><div><span>Supabase configured</span><strong>${supabase.configured ? "true" : "false"}</strong></div><div><span>Supabase storage</span><strong>${supabase.reachable ? "reachable" : "not reachable"}</strong></div><div><span>Supabase bucket</span><strong>${esc(supabase.bucket || "novel-files")}</strong></div><div><span>Active original</span><strong>${active.originals || counts.originals || storage.saved_chinese_chapters || 0}</strong></div><div><span>Active reference</span><strong>${active.references || counts.references || storage.saved_novelfire_references || 0}</strong></div><div><span>Active AI</span><strong>${active.ai_translations || counts.ai_translations || storage.saved_translations || 0}</strong></div><div><span>Canonical original</span><strong>${canonical.original || 0}</strong></div><div><span>Canonical reference</span><strong>${canonical.reference || 0}</strong></div><div><span>Canonical AI</span><strong>${canonical.ai || 0}</strong></div><div><span>Legacy original</span><strong>${legacy.original || 0}</strong></div><div><span>Legacy reference</span><strong>${legacy.reference || 0}</strong></div><div><span>Legacy AI</span><strong>${legacy.ai || 0}</strong></div><div><span>Backup ZIPs</span><strong>${(storage.backup_zips_found || []).length}</strong></div><div><span>Database</span><strong>${esc(storage.database?.backend || "unknown")} ${storage.database_reachable ? "reachable" : "warning"}</strong></div></div><p class="helper">Recommended recovery: ${esc(storage.recommended_recovery_action || "None.")}</p>${warnings.length ? `<div class="warning">${warnings.map(esc).join("<br>")}</div>` : ""}`;
   const totalOriginal = state.novels.reduce((sum, novel) => sum + Number(novel.counts?.original_files || 0), 0);
   const totalReference = state.novels.reduce((sum, novel) => sum + Number(novel.counts?.reference_files || 0), 0);
@@ -620,25 +623,175 @@ async function refreshStorageHealth() {
 }
 function setupSupabaseRecoveryControls() {
   if ($("#supabaseRecoveryPanel") || !els.storageHealth) return;
+  state.recovery = state.recovery || { actions: {}, logs: [], restoreDryRunPassed: false };
   const panel = document.createElement("section");
-  panel.className = "panel admin-card";
+  panel.className = "panel admin-card recovery-dashboard";
   panel.id = "supabaseRecoveryPanel";
-  panel.innerHTML = `<p class="eyebrow">Supabase Recovery</p><h3>Legacy folders and backups</h3><p class="helper">Your Supabase data may exist in older folders such as app/novels/i-am-god/Original, Reference, AI, or Backups. Use Deep Scan first. If active chapters are found in legacy paths, migrate them to the new structure. If only backup ZIPs are found, restore from Supabase backup.</p><div class="actions"><button class="secondary-button" id="deepScanSupabaseButton" type="button">Deep Scan Supabase</button><button class="secondary-button" id="hydrateSupabaseButton" type="button">Hydrate I Am God</button><button class="secondary-button" id="legacyMigrateDryRunButton" type="button">Migrate Legacy Paths Dry Run</button><button class="danger-button" id="legacyMigrateConfirmButton" type="button">Confirm Legacy Migration</button><button class="secondary-button" id="listSupabaseBackupsButton" type="button">List Supabase Backups</button><button class="secondary-button" id="restoreSupabaseDryRunButton" type="button">Restore Newest Backup Dry Run</button></div><div class="estimate-box" id="supabaseRecoveryReport">Run Deep Scan Supabase first.</div>`;
+  panel.innerHTML = `<p class="eyebrow">Supabase Recovery</p><h3>Recovery command center</h3><p class="helper">Your Supabase data may exist in older folders or backup ZIPs. This panel shows exactly what is running, what finished, and what to do next.</p><div id="recoverySummary" class="recovery-summary">Open Storage Health to load recovery status.</div><div class="actions"><button class="primary-button" id="recoveryPrimaryButton" type="button">Run Recommended Recovery</button><button class="secondary-button" id="deepScanSupabaseButton" type="button">Deep Scan Supabase</button><button class="secondary-button" id="hydrateSupabaseButton" type="button">Hydrate I Am God</button><button class="secondary-button" id="legacyMigrateDryRunButton" type="button">Migrate Dry Run</button><button class="danger-button" id="legacyMigrateConfirmButton" type="button">Confirm Migration</button><button class="secondary-button" id="listSupabaseBackupsButton" type="button">List Backups</button><button class="secondary-button" id="restoreSupabaseDryRunButton" type="button">Restore Backup Dry Run</button><button class="danger-button" id="restoreSupabaseConfirmButton" type="button" disabled>Confirm Restore</button><button class="secondary-button" id="rebuildIndexRecoveryButton" type="button">Rebuild Index</button><button class="secondary-button" id="refreshNovelRecoveryButton" type="button">Refresh Novel Data</button></div><div class="recovery-action-grid" id="recoveryActionGrid"></div><div class="estimate-box" id="supabaseRecoveryReport">No recovery action has run yet.</div><div class="recovery-log" id="recoveryLog"></div>`;
   els.storageHealth.closest(".admin-card")?.insertAdjacentElement("afterend", panel);
+  $("#recoveryPrimaryButton").onclick = runRecommendedRecovery;
   $("#deepScanSupabaseButton").onclick = deepScanSupabase;
   $("#hydrateSupabaseButton").onclick = hydrateSupabaseNovel;
   $("#legacyMigrateDryRunButton").onclick = () => migrateLegacyPaths(true);
   $("#legacyMigrateConfirmButton").onclick = () => migrateLegacyPaths(false);
   $("#listSupabaseBackupsButton").onclick = listSupabaseBackups;
-  $("#restoreSupabaseDryRunButton").onclick = restoreNewestSupabaseBackupDryRun;
+  $("#restoreSupabaseDryRunButton").onclick = () => restoreNewestSupabaseBackup(true);
+  $("#restoreSupabaseConfirmButton").onclick = () => restoreNewestSupabaseBackup(false);
+  $("#rebuildIndexRecoveryButton").onclick = rebuildRecoveryIndex;
+  $("#refreshNovelRecoveryButton").onclick = refreshRecoveryNovelData;
+  renderRecoveryDashboard();
+}
+function setupOnlineRestoreCard() {
+  if ($("#onlineRestoreCard") || !els.restoreNovelForm) return;
+  const title = els.restoreNovelForm.querySelector("h2");
+  const note = els.restoreNovelForm.querySelector(".helper");
+  if (title) title.textContent = "Local ZIP Restore";
+  if (note) note.textContent = "Disaster recovery from a ZIP on your computer. This is separate from online Supabase restore.";
+  const panel = document.createElement("section");
+  panel.className = "panel online-restore-card";
+  panel.id = "onlineRestoreCard";
+  panel.innerHTML = `<p class="eyebrow">Online Supabase Restore</p><h2>Restore From Supabase Backup</h2><p class="helper">Use this when Supabase has a backup ZIP online. No local file is needed. Full Restore is for disaster recovery; if live Supabase data is ready, you do not need to restore after wake/login.</p><div class="storage-grid" id="onlineRestoreBackupInfo"><div><span>Selected backup</span><strong>None selected</strong></div></div><div class="actions"><button class="secondary-button" id="onlineListBackupsButton" type="button">List Supabase Backups</button><button class="secondary-button" id="onlineDryRunButton" type="button">Dry Run Online Backup</button><button class="danger-button" id="onlineConfirmRestoreButton" type="button" disabled>Confirm Online Restore</button><button class="secondary-button" id="onlineRebuildIndexButton" type="button">Rebuild Index</button><button class="secondary-button" id="onlineHydrateButton" type="button">Hydrate I Am God</button><button class="secondary-button" id="onlineRefreshNovelButton" type="button">Refresh Novel Data</button></div><div class="progress-track"><div class="progress-fill" id="onlineRestoreProgress"></div></div><div class="estimate-box" id="onlineRestoreStatus">List Supabase backups to begin.</div>`;
+  els.restoreNovelForm.insertAdjacentElement("beforebegin", panel);
+  $("#onlineListBackupsButton").onclick = listOnlineRestoreBackups;
+  $("#onlineDryRunButton").onclick = () => startOnlineSupabaseRestore(true);
+  $("#onlineConfirmRestoreButton").onclick = () => startOnlineSupabaseRestore(false);
+  $("#onlineRebuildIndexButton").onclick = rebuildRecoveryIndex;
+  $("#onlineHydrateButton").onclick = hydrateSupabaseNovel;
+  $("#onlineRefreshNovelButton").onclick = refreshRecoveryNovelData;
+  renderOnlineRestoreCard();
+}
+function setupBatchHealthCard() {
+  if ($("#batchHealthCard")) return;
+  const panel = document.createElement("section");
+  panel.className = "panel";
+  panel.id = "batchHealthCard";
+  panel.innerHTML = `<h2>Translation Health</h2><p class="helper">Checks batch endpoints without calling OpenAI or starting translation.</p><div class="actions"><button class="secondary-button" id="checkBatchHealthButton" type="button">Check Translation Health</button><button class="secondary-button" id="batchDryRunButton" type="button">Batch Dry Run</button></div><div class="estimate-box" id="batchHealthStatus">Not checked yet.</div>`;
+  $("#translatePanel .workflow-card")?.insertAdjacentElement("afterend", panel);
+  $("#checkBatchHealthButton").onclick = checkBatchHealth;
+  $("#batchDryRunButton").onclick = batchDryRun;
+}
+async function checkBatchHealth() {
+  const box = $("#batchHealthStatus");
+  if (!box) return;
+  box.textContent = "Checking translation health...";
+  const data = await api("/api/batch/health", { timeoutMs: 30000 });
+  box.innerHTML = `<strong>${data.ok ? "Healthy" : "Warning"}</strong><br>Novel: ${esc(data.novel_id || "")}; Model: ${esc(data.model || "")}; OpenAI key configured: ${data.openai_key_configured ? "yes" : "no"}<br>${esc(data.message || "")}<details><summary>Raw details</summary>${renderJsonBox(data)}</details>`;
+}
+async function batchDryRun() {
+  const box = $("#batchHealthStatus");
+  if (!box) return;
+  box.textContent = "Running batch dry-run...";
+  const data = await api("/api/batch/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ novel_id: state.currentNovel?.novel_id || "i-am-god", dry_run: true, batch_size: Number(els.batchSize?.value || 25), model: els.model?.value || "gpt-4o-mini", max_total_budget: els.maxTotalBudget?.value || "15.00", max_cost_per_chapter: els.maxCostPerChapter?.value || "0.017", retry_failed_chapters: Number(els.retryFailedChapters?.value || 1), stop_when_budget_reached: Boolean(els.stopWhenBudgetReached?.checked) }), timeoutMs: 60000 });
+  box.innerHTML = `<strong>Dry-run complete.</strong><br>${esc(data.message || "Estimate created. OpenAI was not called.")}<details><summary>Raw details</summary>${renderJsonBox(data)}</details>`;
+}
+function renderOnlineRestoreCard(job = null) {
+  const info = $("#onlineRestoreBackupInfo"), statusBox = $("#onlineRestoreStatus"), progress = $("#onlineRestoreProgress"), confirm = $("#onlineConfirmRestoreButton");
+  if (!info || !statusBox || !progress || !confirm) return;
+  const backup = state.selectedSupabaseBackup || state.supabaseBackups?.[0];
+  if (backup) {
+    info.innerHTML = `<div><span>Selected backup</span><strong>${esc(backup.filename || "backup.zip")}${backup.likely_newest ? " - newest" : ""}</strong></div><div><span>Bucket</span><strong>${esc(backup.bucket || "")}</strong></div><div><span>Path</span><strong>${esc(backup.path || "")}</strong></div><div><span>Size</span><strong>${esc(backup.size || "unknown")}</strong></div><div><span>Updated</span><strong>${esc(backup.updated_at || "unknown")}</strong></div>`;
+  } else {
+    info.innerHTML = `<div><span>Selected backup</span><strong>None selected</strong></div>`;
+  }
+  confirm.disabled = !state.onlineRestoreDryRunComplete;
+  if (!job) return;
+  const active = ["queued", "running"].includes(job.status);
+  progress.style.width = `${Number(job.progress || 0)}%`;
+  const counts = job.counts ? `<br>Originals ${job.counts.originals_written || 0}; References ${job.counts.references_written || 0}; AI ${job.counts.ai_translations_written || 0}; Prompts ${job.counts.prompts_written || 0}; Conflicts ${job.counts.conflicts || 0}; Skipped ${job.counts.skipped || 0}` : "";
+  statusBox.innerHTML = `<strong>${esc(job.status || "unknown")}</strong> - ${esc(job.message || job.stage || "")}<br>Job: ${esc(job.job_id || "")}; ${job.dry_run ? "Online dry-run" : "Online restore"}${counts}<details><summary>Raw details</summary>${renderJsonBox(job)}</details>`;
+  if (job.dry_run && job.status === "complete") {
+    const found = Number(job.counts?.originals_written || 0) + Number(job.counts?.references_written || 0) + Number(job.counts?.ai_translations_written || 0) + Number(job.counts?.prompts_written || 0);
+    state.onlineRestoreDryRunComplete = found > 0 && !job.error;
+    confirm.disabled = !state.onlineRestoreDryRunComplete;
+    statusBox.insertAdjacentHTML("beforeend", state.onlineRestoreDryRunComplete ? `<div class="success-panel">Dry-run succeeded. Online restore is ready. No local ZIP is needed.</div>` : `<div class="warning">Dry-run completed but did not find restorable chapters.</div>`);
+  }
+  if (active) state.onlineRestorePollTimer = setTimeout(() => pollOnlineRestoreJob(job.job_id, job.dry_run).catch((err) => toast(err.message, true)), 2500);
 }
 function recoveryNovelId() { return state.currentNovel?.novel_id || "i-am-god"; }
+function recoveryNow() { return new Date().toLocaleTimeString(); }
+function recoveryElapsed(action) { return action?.startedAt ? `${Math.max(0, Math.round((Date.now() - action.startedAt) / 1000))}s` : "-"; }
+function recoveryLog(message) { state.recovery = state.recovery || { actions: {}, logs: [] }; state.recovery.logs.unshift(`${recoveryNow()} - ${message}`); state.recovery.logs = state.recovery.logs.slice(0, 12); renderRecoveryDashboard(); }
+function setRecoveryAction(id, patch) { state.recovery = state.recovery || { actions: {}, logs: [] }; const previous = state.recovery.actions[id] || { id, status: "idle", title: id }; state.recovery.actions[id] = { ...previous, ...patch, updatedAt: Date.now() }; renderRecoveryDashboard(); }
+function startRecoveryAction(id, title, step) { setRecoveryAction(id, { title, status: "running", progress: 20, step, startedAt: Date.now(), error: "", result: null }); recoveryLog(`${title}: ${step}`); }
+function finishRecoveryAction(id, status, summary, result, next = "") { setRecoveryAction(id, { status, progress: status === "failed" ? 100 : 100, summary, result, next, finishedAt: Date.now() }); recoveryLog(`${state.recovery.actions[id].title}: ${summary}`); recoveryReport(result); }
+function failRecoveryAction(id, error) { setRecoveryAction(id, { status: "failed", progress: 100, error: error.message || String(error), finishedAt: Date.now() }); recoveryLog(`${state.recovery.actions[id]?.title || id}: failed - ${error.message || error}`); recoveryReport({ error: error.message || String(error), endpoint: error.endpoint, status: error.status }); }
 function recoveryReport(data) { const box = $("#supabaseRecoveryReport"); if (box) box.innerHTML = renderJsonBox(data); }
-async function deepScanSupabase() { const data = await api(`/api/admin/storage/deep-discovery?novel_id=${encodeURIComponent(recoveryNovelId())}`, { timeoutMs: 60000 }); state.supabaseDiscovery = data; recoveryReport(data); toast("Supabase deep scan complete."); }
-async function hydrateSupabaseNovel() { const data = await api(`/api/admin/novels/${encodeURIComponent(recoveryNovelId())}/hydrate-from-supabase`, { method: "POST", timeoutMs: 60000 }); await loadNovels(); recoveryReport(data); toast("Supabase hydration complete."); }
-async function migrateLegacyPaths(dryRun) { if (!dryRun && !window.confirm("Copy legacy Supabase files into canonical folders now? Nothing is deleted.")) return; const data = await api("/api/admin/storage/migrate-legacy-paths", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ novel_id: recoveryNovelId(), dry_run: dryRun, confirm: !dryRun, overwrite: false }), timeoutMs: 120000 }); if (!dryRun) await loadNovels(); recoveryReport(data); toast(dryRun ? "Legacy migration dry-run complete." : "Legacy migration complete."); }
-async function listSupabaseBackups() { const data = await api(`/api/admin/backups/supabase?novel_id=${encodeURIComponent(recoveryNovelId())}`, { timeoutMs: 60000 }); state.supabaseBackups = data.backups || []; recoveryReport(data); toast(`Found ${state.supabaseBackups.length} Supabase backup ZIP(s).`); }
-async function restoreNewestSupabaseBackupDryRun() { if (!state.supabaseBackups?.length) await listSupabaseBackups(); const backup = state.supabaseBackups?.[0]; if (!backup) return toast("No Supabase backup ZIP found.", true); const data = await api("/api/admin/backups/restore-from-supabase", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bucket: backup.bucket, path: backup.path, dry_run: true, confirm: false, conflict_mode: "write_missing_only" }), timeoutMs: 120000 }); recoveryReport(data); toast("Supabase backup restore dry-run started."); }
+function statusBadge(status) { return `<span class="recovery-badge ${esc(status || "idle")}">${esc((status || "idle").replaceAll("_", " "))}</span>`; }
+function renderRecoveryDashboard() {
+  const summary = $("#recoverySummary"), grid = $("#recoveryActionGrid"), log = $("#recoveryLog");
+  if (!summary || !grid || !log) return;
+  const storage = state.recovery?.storage || {};
+  const novelId = recoveryNovelId();
+  const active = storage.active_counts_used_by_app?.[novelId] || {};
+  const canonical = storage.canonical_supabase_counts?.[novelId] || {};
+  const legacy = storage.legacy_supabase_counts?.[novelId] || {};
+  const backups = storage.backup_zips_found || state.supabaseBackups || [];
+  const action = storage.recommended_recovery_action || "unknown";
+  const primary = action === "restore_from_supabase_backup" ? "Needs backup restore" : action === "migrate_legacy_paths" ? "Legacy migration available" : "Ready";
+  summary.innerHTML = `<div class="storage-grid"><div><span>Status</span><strong>${statusBadge(primary.toLowerCase().replaceAll(" ", "-"))}${esc(primary)}</strong></div><div><span>Active</span><strong>O ${active.originals || 0} / R ${active.references || 0} / AI ${active.ai_translations || 0}</strong></div><div><span>Canonical</span><strong>O ${canonical.original || 0} / R ${canonical.reference || 0} / AI ${canonical.ai || 0}</strong></div><div><span>Legacy</span><strong>O ${legacy.original || 0} / R ${legacy.reference || 0} / AI ${legacy.ai || 0}</strong></div><div><span>Backup ZIPs</span><strong>${backups.length}</strong></div></div><p class="helper">${esc(storage.recommended_recovery_label || storage.recommended_recovery_action || "Run Deep Scan Supabase to inspect recovery options.")}</p>${(storage.recommended_recovery_steps || []).length ? `<ol class="workflow-list">${storage.recommended_recovery_steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol>` : ""}`;
+  grid.innerHTML = Object.values(state.recovery?.actions || {}).map((item) => `<article class="recovery-action-card"><div class="recovery-action-head"><strong>${esc(item.title)}</strong>${statusBadge(item.status)}</div><div class="progress-track"><div class="progress-fill ${item.status === "running" ? "indeterminate" : ""}" style="width:${Number(item.progress || 0)}%"></div></div><p>${esc(item.step || item.summary || "Waiting.")}</p><small>Elapsed: ${esc(recoveryElapsed(item))}${item.next ? ` - Next: ${esc(item.next)}` : ""}</small>${item.error ? `<div class="warning">${esc(item.error)}</div>` : ""}<details><summary>Raw details</summary>${renderJsonBox(item.result || {})}</details></article>`).join("") || '<div class="empty-state compact-empty">No recovery action has run yet.</div>';
+  log.innerHTML = `<h4>Recovery timeline</h4>${(state.recovery?.logs || []).map((line) => `<p>${esc(line)}</p>`).join("") || "<p>No log entries yet.</p>"}`;
+}
+async function runRecoveryAction(id, title, step, work, next = "") { startRecoveryAction(id, title, step); try { const result = await work(); const status = result?.status === "completed_no_changes" ? "completed_no_changes" : "completed"; finishRecoveryAction(id, status, result?.summary || result?.message || (status === "completed_no_changes" ? "No files found to migrate." : "Completed."), result, next); return result; } catch (error) { failRecoveryAction(id, error); throw error; } }
+async function runRecommendedRecovery() { const action = state.recovery?.storage?.recommended_recovery_action; if (action === "restore_from_supabase_backup") return restoreNewestSupabaseBackup(true); if (action === "migrate_legacy_paths") return migrateLegacyPaths(true); return deepScanSupabase(); }
+async function deepScanSupabase() { return runRecoveryAction("deep-scan", "Deep Scan Supabase", "Scanning Supabase folders and backup ZIPs...", async () => { const data = await api(`/api/admin/storage/deep-discovery?novel_id=${encodeURIComponent(recoveryNovelId())}`, { timeoutMs: 60000 }); state.supabaseDiscovery = data; state.supabaseBackups = data.backup_zips || state.supabaseBackups || []; return { ...data, summary: `Found legacy files O ${data.legacy_paths?.original || 0}, R ${data.legacy_paths?.reference || 0}, AI ${data.legacy_paths?.ai || 0}; backups ${data.backup_zips?.length || 0}.` }; }, "Run the recommended dry-run."); }
+async function hydrateSupabaseNovel() { return runRecoveryAction("hydrate", "Hydrate I Am God", "Hydrating metadata and counts from Supabase...", async () => { const data = await api(`/api/admin/novels/${encodeURIComponent(recoveryNovelId())}/hydrate-from-supabase`, { method: "POST", timeoutMs: 60000 }); await loadNovels(); return data; }, "Refresh Novel Data."); }
+async function migrateLegacyPaths(dryRun) { if (!dryRun && !window.confirm("Copy legacy Supabase files into canonical folders now? Nothing is deleted.")) return; return runRecoveryAction(dryRun ? "migrate-dry-run" : "migrate-confirm", dryRun ? "Migrate Legacy Paths Dry Run" : "Confirm Legacy Migration", dryRun ? "Checking legacy folders without writing..." : "Copying legacy files into canonical folders...", async () => { const data = await api("/api/admin/storage/migrate-legacy-paths", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ novel_id: recoveryNovelId(), dry_run: dryRun, confirm: !dryRun, overwrite: false }), timeoutMs: 120000 }); if (!dryRun) await loadNovels(); if (data.status === "completed_no_changes") data.summary = "No legacy chapter files were found to migrate. A backup ZIP may be the correct recovery path."; return data; }, dryRun ? "If files_to_copy is 0, restore from backup. Otherwise confirm migration." : "Rebuild Supabase Index."); }
+async function listSupabaseBackups() { return runRecoveryAction("list-backups", "List Supabase Backups", "Searching Supabase backup locations...", async () => { const data = await api(`/api/admin/backups/supabase?novel_id=${encodeURIComponent(recoveryNovelId())}`, { timeoutMs: 60000 }); state.supabaseBackups = data.backups || []; return { ...data, summary: `Found ${state.supabaseBackups.length} Supabase backup ZIP(s).` }; }, "Run Restore Backup Dry Run."); }
+async function restoreNewestSupabaseBackup(dryRun) { if (!state.supabaseBackups?.length) await listSupabaseBackups(); const backup = state.supabaseBackups?.[0]; if (!backup) { const error = new Error("No Supabase backup ZIP found."); failRecoveryAction("restore-backup", error); return; } if (!dryRun && !state.recovery?.restoreDryRunPassed && !window.confirm("No successful dry-run is recorded in this browser. Restore anyway?")) return; return runRecoveryAction(dryRun ? "restore-dry-run" : "restore-confirm", dryRun ? "Restore From Supabase Backup Dry Run" : "Confirm Restore From Supabase Backup", dryRun ? `Dry-run restore queued for ${backup.filename}. This may take a few minutes...` : `Restore queued for ${backup.filename}. This may take a few minutes...`, async () => { const job = await api("/api/admin/backups/restore-from-supabase", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bucket: backup.bucket, path: backup.path, dry_run: dryRun, confirm: !dryRun, conflict_mode: "write_missing_only" }), timeoutMs: 120000 }); const finalJob = await pollRecoveryRestoreJob(job.job_id, dryRun); if (dryRun && finalJob?.status === "complete") { state.recovery.restoreDryRunPassed = true; $("#restoreSupabaseConfirmButton").disabled = false; } return { ...finalJob, job_id: job.job_id, backup, summary: `${dryRun ? "Dry-run" : "Restore"} ${finalJob?.status || job.status}.` }; }, dryRun ? "If dry-run looks safe, Confirm Restore." : "Rebuild Supabase Index, then Refresh Novel Data."); }
+async function pollRecoveryRestoreJob(jobId, dryRun) { if (!jobId) return {}; for (let attempt = 0; attempt < 90; attempt += 1) { const job = await api(`/api/admin/backups/jobs/${encodeURIComponent(jobId)}`, { timeoutMs: 20000 }); setRecoveryAction(dryRun ? "restore-dry-run" : "restore-confirm", { progress: Number(job.progress || 0), step: `${job.stage || job.status}: ${job.message || ""}`, result: job }); if (!["queued", "running"].includes(job.status)) return job; await sleep(2500); } throw new Error("Restore job polling timed out. Use Refresh Jobs or retry status."); }
+async function rebuildRecoveryIndex() { return runRecoveryAction("rebuild-index", "Rebuild Supabase Index", "Rebuilding persistent counts and index...", async () => { const data = await api("/api/admin/index/rebuild", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ novel_id: recoveryNovelId() }), timeoutMs: 60000 }); await loadNovels(); await refreshStorageHealth(); return data; }, "Refresh Novel Data."); }
+async function refreshRecoveryNovelData() { return runRecoveryAction("refresh-novel", "Refresh Novel Data", "Reloading novel cards and library...", async () => { await loadNovels(); if (state.currentNovel) await openNovel(state.currentNovel.novel_id, { skipHistory: true, skipSave: true, initialTab: "settings" }); await refreshStorageHealth(); return { ok: true, summary: "Novel data refreshed." }; }, "Open the novel library."); }
+async function listOnlineRestoreBackups() {
+  return runRecoveryAction("online-list-backups", "List Online Supabase Backups", "Searching Supabase backup ZIPs...", async () => {
+    const data = await api(`/api/admin/backups/supabase?novel_id=${encodeURIComponent(recoveryNovelId())}`, { timeoutMs: 60000 });
+    state.supabaseBackups = data.backups || [];
+    state.selectedSupabaseBackup = state.supabaseBackups[0] || null;
+    state.onlineRestoreDryRunComplete = false;
+    renderOnlineRestoreCard();
+    return { ...data, summary: `Found ${state.supabaseBackups.length} online backup ZIP(s).` };
+  }, "Run Dry Run Online Backup.");
+}
+async function startOnlineSupabaseRestore(dryRun) {
+  if (!state.selectedSupabaseBackup && !state.supabaseBackups?.length) await listOnlineRestoreBackups();
+  const backup = state.selectedSupabaseBackup || state.supabaseBackups?.[0];
+  if (!backup) { toast("Select a Supabase backup first.", true); return; }
+  if (!dryRun && !state.onlineRestoreDryRunComplete) { toast("Run online dry-run first.", true); return; }
+  if (!dryRun && !window.confirm("Confirm online restore from Supabase backup? This writes missing files only and does not delete active data.")) return;
+  const button = dryRun ? $("#onlineDryRunButton") : $("#onlineConfirmRestoreButton");
+  await withBusy(button, async () => {
+    recoveryLog(`${dryRun ? "Online restore dry-run" : "Online restore"} started for ${backup.filename}.`);
+    renderOnlineRestoreCard({ status: "queued", progress: 5, dry_run: dryRun, message: "Submitting online restore job..." });
+    const job = await api("/api/admin/backups/restore-from-supabase", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bucket: backup.bucket, path: backup.path, dry_run: dryRun, confirm: !dryRun, conflict_mode: "write_missing_only" }), timeoutMs: 120000 });
+    state.onlineRestoreJobId = job.job_id;
+    renderOnlineRestoreCard(job);
+    toast(dryRun ? "Online restore dry-run started." : "Online restore started.");
+    await pollOnlineRestoreJob(job.job_id, dryRun);
+  });
+}
+async function pollOnlineRestoreJob(jobId, dryRun) {
+  if (!jobId) return;
+  clearTimeout(state.onlineRestorePollTimer);
+  try {
+    const job = await api(`/api/admin/backups/jobs/${encodeURIComponent(jobId)}`, { timeoutMs: 20000 });
+    renderOnlineRestoreCard(job);
+    setRecoveryAction(dryRun ? "online-restore-dry-run" : "online-restore-confirm", { title: dryRun ? "Dry Run Online Backup" : "Confirm Online Restore", status: job.status === "complete" ? "completed" : job.status, progress: Number(job.progress || 0), step: `${job.stage || job.status}: ${job.message || ""}`, result: job });
+    if (["queued", "running"].includes(job.status)) return;
+    if (job.status === "complete") {
+      recoveryLog(`${dryRun ? "Dry-run" : "Online restore"} completed.`);
+      if (!dryRun) {
+        await rebuildRecoveryIndex();
+        await hydrateSupabaseNovel().catch(() => {});
+        await refreshRecoveryNovelData();
+      }
+    }
+  } catch (error) {
+    const statusBox = $("#onlineRestoreStatus");
+    if (statusBox) statusBox.innerHTML = `<strong>Polling paused.</strong><br>${esc(error.message)}<br><button class="secondary-button" id="retryOnlineRestorePoll" type="button">Retry online restore status</button>`;
+    $("#retryOnlineRestorePoll")?.addEventListener("click", () => pollOnlineRestoreJob(jobId, dryRun).catch((err) => toast(err.message, true)));
+    throw error;
+  }
+}
 async function refreshAdminUsers() {
   const data = await api("/api/admin/users");
   const users = data.users || [];
@@ -1095,6 +1248,8 @@ function bind() {
     els.migrateSupabaseButton.insertAdjacentElement("afterend", els.rebuildIndexButton);
   }
   setupSupabaseRecoveryControls();
+  setupOnlineRestoreCard();
+  setupBatchHealthCard();
   els.homeButton.onclick = () => showLibrary();
   els.backToLibrary.onclick = () => showLibrary();
   els.supportButton.onclick = () => { els.supportPanel.hidden = !els.supportPanel.hidden; };
@@ -1230,7 +1385,7 @@ function bind() {
   window.addEventListener("hashchange", handleRouteChange);
 }
 
-function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=76").then((registration) => registration.update()).catch(() => {}); }
+function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=78").then((registration) => registration.update()).catch(() => {}); }
 async function bootAppData() {
   hideRecovery();
   els.novelGrid.innerHTML = '<div class="empty-state">Loading library...</div>';

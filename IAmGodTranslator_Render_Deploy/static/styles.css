@@ -1930,6 +1930,110 @@ input::placeholder { color:rgba(159,177,169,.62); }
   color:var(--muted);
 }
 
+.recovery-dashboard {
+  display:grid;
+  gap:16px;
+}
+.recovery-summary {
+  display:grid;
+  gap:12px;
+}
+.recovery-action-grid {
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+  gap:12px;
+}
+.recovery-action-card {
+  display:grid;
+  gap:10px;
+  border:1px solid rgba(184,211,196,.14);
+  border-radius:14px;
+  padding:14px;
+  background:rgba(255,255,255,.045);
+  box-shadow:0 18px 48px rgba(0,0,0,.18);
+}
+.recovery-action-head {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+}
+.recovery-action-card p {
+  margin:0;
+  color:var(--muted);
+}
+.recovery-action-card small {
+  color:var(--muted);
+  overflow-wrap:anywhere;
+}
+.recovery-action-card details {
+  border-top:1px solid rgba(184,211,196,.1);
+  padding-top:8px;
+}
+.recovery-badge {
+  display:inline-flex;
+  align-items:center;
+  min-height:24px;
+  border-radius:999px;
+  padding:3px 9px;
+  border:1px solid rgba(184,211,196,.16);
+  color:var(--muted);
+  background:rgba(255,255,255,.05);
+  font-size:.76rem;
+  text-transform:capitalize;
+}
+.recovery-badge.running,
+.recovery-badge.needs-backup-restore,
+.recovery-badge.legacy-migration-available {
+  color:#dfffee;
+  border-color:rgba(106,230,169,.36);
+  background:rgba(106,230,169,.1);
+}
+.recovery-badge.completed,
+.recovery-badge.completed-copied {
+  color:#c7f8d8;
+  border-color:rgba(106,230,169,.28);
+}
+.recovery-badge.failed {
+  color:#ffd0d0;
+  border-color:rgba(255,116,116,.38);
+  background:rgba(255,116,116,.1);
+}
+.progress-fill.indeterminate {
+  width:55% !important;
+  animation:recovery-progress 1.2s ease-in-out infinite alternate;
+}
+.recovery-log {
+  border:1px solid rgba(184,211,196,.12);
+  border-radius:14px;
+  padding:14px;
+  background:rgba(0,0,0,.16);
+}
+.recovery-log h4 {
+  margin:0 0 8px;
+}
+.recovery-log p {
+  margin:6px 0;
+  color:var(--muted);
+  overflow-wrap:anywhere;
+}
+.online-restore-card {
+  border-color:rgba(106,230,169,.22);
+  background:linear-gradient(145deg,rgba(17,31,26,.9),rgba(11,15,17,.92));
+}
+.success-panel {
+  margin-top:10px;
+  border:1px solid rgba(106,230,169,.28);
+  border-radius:12px;
+  padding:10px 12px;
+  color:#dfffee;
+  background:rgba(106,230,169,.1);
+}
+@keyframes recovery-progress {
+  from { transform:translateX(-20%); opacity:.65; }
+  to { transform:translateX(45%); opacity:1; }
+}
+
 dialog {
   border-color:rgba(184,211,196,.18);
   border-radius:16px;

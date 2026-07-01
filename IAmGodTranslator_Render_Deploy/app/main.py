@@ -54,6 +54,7 @@ except Exception as exc:  # pragma: no cover - public pages should stay up if th
             logging.getLogger(__name__).warning("SQLite database fallback failed: %s", fallback_exc)
 
 backup_jobs = BackupJobManager(service.data_dir, novels, database, os.getenv("STORAGE_BACKEND", "local").lower())
+RECOVERY_STATE: dict[str, object] = {"last_action": None, "last_dry_run_result": None, "selected_backup": None, "restore_job_id": None, "recommended_next_action": None}
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -169,7 +170,9 @@ def storage_health_report() -> dict[str, object]:
     legacy_supabase_counts: dict[str, object] = {}
     active_counts: dict[str, object] = {}
     backup_zips_found: list[object] = []
-    recommended_recovery_action = "None."
+    recommended_recovery_action = "none"
+    recommended_recovery_label = "No recovery needed."
+    recommended_recovery_steps: list[str] = []
     try:
         for item in novels.iter_metadata():
             novel_id = str(item["novel_id"])
@@ -182,14 +185,25 @@ def storage_health_report() -> dict[str, object]:
             backup_zips_found = novels.supabase_backup_zips()
     except Exception as exc:
         warnings.append(f"Count hydration warning: {exc.__class__.__name__}")
+    has_active_counts = any(sum(int(v or 0) for v in counts.values() if isinstance(v, int)) for counts in active_counts.values())
+    has_canonical_counts = any(sum(int(v or 0) for v in counts.values()) for counts in canonical_supabase_counts.values())
+    has_legacy_counts = any(sum(int(v or 0) for v in counts.values()) for counts in legacy_supabase_counts.values())
     if novels.remote is not None and any(sum(int(v or 0) for v in counts.values() if isinstance(v, int)) for counts in supabase_counts.values()) and not any(local_cache_counts.values()):
         warnings.append("Local cache is empty but Supabase has files. The app is using Supabase/database counts and can rebuild the local cache on demand.")
-    if novels.remote is not None and any(sum(int(v or 0) for v in counts.values()) for counts in legacy_supabase_counts.values()) and not any(sum(int(v or 0) for v in counts.values()) for counts in canonical_supabase_counts.values()):
+    if has_active_counts or has_canonical_counts:
+        recommended_recovery_action = "none"
+        recommended_recovery_label = "Supabase live data ready. No restore needed."
+        recommended_recovery_steps = ["Open the library", "Read chapters normally", "Use Full Backup only for explicit admin backup jobs"]
+    elif novels.remote is not None and has_legacy_counts and not has_canonical_counts:
         warnings.append("Canonical chapter folders are empty, but legacy Supabase data/backups were found.")
         warnings.append("Files found in legacy Supabase paths. Migration recommended.")
-        recommended_recovery_action = "Run Deep Scan Supabase, then Migrate Legacy Paths dry-run. If the dry-run looks correct, confirm the migration and rebuild the index."
-    elif backup_zips_found and not any(sum(int(v or 0) for v in counts.values()) for counts in canonical_supabase_counts.values()):
-        recommended_recovery_action = "Run Restore From Supabase Backup dry-run, then confirm restore if the report looks correct."
+        recommended_recovery_action = "migrate_legacy_paths"
+        recommended_recovery_label = "Legacy Supabase files were found. Run migration dry-run."
+        recommended_recovery_steps = ["Run Deep Scan Supabase", "Run Migrate Legacy Paths dry-run", "If files are listed, confirm migration", "Rebuild Supabase Index", "Refresh Novel Data"]
+    elif backup_zips_found and not has_canonical_counts:
+        recommended_recovery_action = "restore_from_supabase_backup"
+        recommended_recovery_label = "Restore From Supabase Backup"
+        recommended_recovery_steps = ["List Supabase backups", "Dry-run the newest backup", "Confirm online restore", "Rebuild Supabase index", "Refresh novel data"]
 
     report = service.storage_status()
     report.update(
@@ -208,6 +222,9 @@ def storage_health_report() -> dict[str, object]:
             "active_counts_used_by_app": active_counts,
             "backup_zips_found": backup_zips_found,
             "recommended_recovery_action": recommended_recovery_action,
+            "recommended_recovery_label": recommended_recovery_label,
+            "recommended_recovery_steps": recommended_recovery_steps,
+            "latest_recovery_state": RECOVERY_STATE,
             "database": database.status(),
         }
     )
@@ -455,6 +472,34 @@ async def storage_status() -> dict[str, object]:
     return status
 
 
+@app.get("/api/bootstrap")
+async def bootstrap(request: Request) -> dict[str, object]:
+    storage = storage_health_report()
+    return {
+        "ok": True,
+        "app_version": app.version,
+        "admin": {"enabled": bool(admin_password()), "authenticated": is_admin(request)},
+        "user": current_user(request),
+        "novels": novels.list_novels(),
+        "storage": {
+            "backend": os.getenv("STORAGE_BACKEND", "local").lower(),
+            "supabase_enabled": novels.remote is not None,
+            "active_counts_used_by_app": storage.get("active_counts_used_by_app", {}),
+            "recommended_recovery_action": storage.get("recommended_recovery_action"),
+            "recommended_recovery_label": storage.get("recommended_recovery_label"),
+            "warnings": storage.get("warnings", []),
+        },
+        "recovery": RECOVERY_STATE,
+    }
+
+
+@app.get("/api/admin/recovery/status")
+async def recovery_status(request: Request) -> dict[str, object]:
+    require_admin(request)
+    job = backup_jobs.get_job(str(RECOVERY_STATE.get("restore_job_id"))) if RECOVERY_STATE.get("restore_job_id") else None
+    return {"ok": True, "recovery": {**RECOVERY_STATE, "restore_job_status": job}, "storage": storage_health_report()}
+
+
 @app.post("/api/admin/storage/migrate-local-data")
 async def migrate_storage(request: Request) -> dict[str, object]:
     require_admin(request)
@@ -520,6 +565,15 @@ async def restore_from_supabase_backup(request: Request, payload: Annotated[dict
         if data is None:
             raise HTTPException(status_code=404, detail="Supabase backup ZIP not found.")
         job = backup_jobs.start_full_restore(data, Path(path).name, dry_run=dry_run, conflict_mode=str(payload.get("conflict_mode") or "write_missing_only"))
+        selected = {"bucket": bucket, "path": path, "filename": Path(path).name}
+        RECOVERY_STATE.update({
+            "last_action": "online_restore_dry_run" if dry_run else "online_restore_confirm",
+            "selected_backup": selected,
+            "restore_job_id": job.get("job_id"),
+            "recommended_next_action": "confirm_online_restore" if dry_run else "rebuild_index",
+        })
+        if dry_run:
+            RECOVERY_STATE["last_dry_run_result"] = job
         return JSONResponse(job, status_code=202)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -953,6 +1007,93 @@ async def start_novel_job(request: Request, novel_id: str, job_id: str) -> dict[
     require_admin(request)
     novels.start_job(novel_id, job_id)
     return {"status": "queued"}
+
+
+def batch_novel_id(payload: dict[str, object] | None = None) -> str:
+    value = str((payload or {}).get("novel_id") or "").strip()
+    if value:
+        return value
+    items = novels.list_novels()
+    return str(items[0]["novel_id"]) if items else "i-am-god"
+
+
+@app.get("/api/batch/health")
+async def batch_health(request: Request) -> dict[str, object]:
+    novel_id = batch_novel_id()
+    novel = novels.get_novel(novel_id)
+    counts = novel.get("counts", {})
+    return {
+        "ok": True,
+        "admin_authenticated": is_admin(request),
+        "novel_id": novel_id,
+        "model": os.getenv("OPENAI_MODEL") or novel.get("current_model") or "gpt-4o-mini",
+        "openai_key_configured": bool(os.getenv("OPENAI_API_KEY")),
+        "missing_only_default": True,
+        "overwrite_default": False,
+        "counts": counts,
+        "message": "Batch health is available. Estimate and dry-run do not call OpenAI.",
+    }
+
+
+@app.post("/api/batch/estimate")
+async def batch_estimate(request: Request, payload: Annotated[dict[str, object], Body()]) -> JSONResponse:
+    require_admin(request)
+    novel_id = batch_novel_id(payload)
+    settings = dict(payload)
+    settings.update({"start_now": False, "show_estimate_before_starting": True})
+    try:
+        job = novels.create_batch(novel_id, settings)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse({"ok": True, "dry_run": True, "novel_id": novel_id, "job": job}, status_code=201)
+
+
+@app.post("/api/batch/start")
+async def batch_start(request: Request, payload: Annotated[dict[str, object], Body()]) -> JSONResponse:
+    require_admin(request)
+    novel_id = batch_novel_id(payload)
+    settings = dict(payload)
+    dry_run = bool(settings.pop("dry_run", False))
+    settings.update({"start_now": False, "show_estimate_before_starting": True})
+    try:
+        job = novels.create_batch(novel_id, settings)
+        if dry_run:
+            return JSONResponse({"ok": True, "dry_run": True, "novel_id": novel_id, "job": job, "message": "Dry-run created an estimate only. OpenAI was not called."}, status_code=201)
+        if not os.getenv("OPENAI_API_KEY"):
+            return JSONResponse({"ok": False, "novel_id": novel_id, "job": job, "error": "OPENAI_API_KEY is not configured. Estimate was created, but translation was not started."}, status_code=400)
+        novels.start_job(novel_id, job["job_id"])
+        return JSONResponse({"ok": True, "dry_run": False, "novel_id": novel_id, "job_id": job["job_id"], "status": "queued"}, status_code=202)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/batch/jobs")
+async def batch_jobs(request: Request, novel_id: str | None = None) -> dict[str, object]:
+    require_admin(request)
+    selected = novel_id or batch_novel_id()
+    return {"ok": True, "novel_id": selected, "jobs": novels.service_for(selected).list_jobs()}
+
+
+@app.get("/api/batch/jobs/{job_id}")
+async def batch_job(request: Request, job_id: str, novel_id: str | None = None) -> dict[str, object]:
+    require_admin(request)
+    selected = novel_id or batch_novel_id()
+    job = novels.service_for(selected).get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Batch job not found.")
+    return job
+
+
+@app.post("/api/batch/jobs/{job_id}/cancel")
+async def batch_cancel(request: Request, job_id: str, payload: Annotated[dict[str, object] | None, Body()] = None) -> dict[str, object]:
+    require_admin(request)
+    return {"ok": False, "job_id": job_id, "status": "not_supported", "message": "Cancel is not available for translation jobs in this build. Running jobs save each chapter as they finish."}
+
+
+@app.post("/api/batch/jobs/{job_id}/retry-failed")
+async def batch_retry_failed(request: Request, job_id: str, payload: Annotated[dict[str, object] | None, Body()] = None) -> dict[str, object]:
+    require_admin(request)
+    return {"ok": False, "job_id": job_id, "status": "not_supported", "message": "Retry failed chapters is not wired in this build. Re-estimate with missing_only=true to continue safely."}
 
 
 @app.get("/api/novels/{novel_id}/jobs/{job_id}")
