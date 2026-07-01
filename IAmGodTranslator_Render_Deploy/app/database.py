@@ -241,6 +241,28 @@ class AppDatabase:
             user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         return self._public_user(user) or {}, verification_token
 
+    def get_or_create_oauth_user(self, email: str, username: str) -> dict[str, object]:
+        email = email.strip().lower()
+        username = username.strip() or email.split("@", 1)[0]
+        if not EMAIL_RE.match(email):
+            raise ValueError("OAuth provider did not return a valid email address.")
+        now = utc_now()
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+            if row is not None:
+                if row["disabled"]:
+                    raise ValueError("Account disabled.")
+                conn.execute("UPDATE users SET email_verified = 1, updated_at = ? WHERE id = ?", (now, row["id"]))
+                row = conn.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone()
+                return self._public_user(row) or {}
+            user_id = secrets.token_urlsafe(18)
+            conn.execute(
+                "INSERT INTO users (id, email, username, password_hash, role, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (user_id, email, username, self._password_hash(secrets.token_urlsafe(32)), "user", 1, now, now),
+            )
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return self._public_user(row) or {}
+
     def authenticate(self, email: str, password: str) -> dict[str, object] | None:
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM users WHERE email = ?", (email.strip().lower(),)).fetchone()
