@@ -11,6 +11,7 @@ from typing import Annotated
 from dotenv import load_dotenv
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.backup_jobs import BackupJobManager
@@ -62,6 +63,15 @@ ADMIN_COOKIE = "igt_admin"
 AUTH_COOKIE = "gt_session"
 REQUIRED_STORAGE_FOLDERS = ("novels", "originals", "references", "ai_translations", "prompts", "backups", "uploads", "covers", "settings", "exports", "logs")
 BACKUP_DISABLED_MESSAGE = "Legacy synchronous full backup/restore is disabled on Render Free. Use Admin Backups for async full backup and restore jobs."
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    return response
 
 
 def admin_password() -> str | None:
@@ -458,7 +468,23 @@ async def auth_reset_password(payload: Annotated[dict[str, object], Body()]) -> 
 @app.get("/api/auth/google/status")
 async def google_status() -> dict[str, object]:
     configured = all(os.getenv(name) for name in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI"))
-    return {"configured": configured, "enabled": False, "message": "Google login foundation is present; OAuth callback wiring is left for production setup."}
+    return {"configured": configured, "enabled": False, "message": "Google login is not enabled in this build. Configure OAuth and enable the server-side callback before using it."}
+
+
+@app.get("/auth/google/login")
+async def google_login() -> JSONResponse:
+    configured = all(os.getenv(name) for name in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI"))
+    if not configured:
+        return JSONResponse({"ok": False, "enabled": False, "detail": "Google login is not configured yet."}, status_code=503)
+    return JSONResponse({"ok": False, "enabled": False, "detail": "Google login is configured but not enabled in this safe build. Existing email/password login still works."}, status_code=501)
+
+
+@app.get("/auth/google/callback")
+async def google_callback(error: str | None = None) -> RedirectResponse:
+    target = "/#/library"
+    if error:
+        target += "?auth_error=google"
+    return RedirectResponse(target, status_code=302)
 
 
 @app.get("/api/storage")
@@ -1021,17 +1047,66 @@ def batch_novel_id(payload: dict[str, object] | None = None) -> str:
 async def batch_health(request: Request) -> dict[str, object]:
     novel_id = batch_novel_id()
     novel = novels.get_novel(novel_id)
-    counts = novel.get("counts", {})
+    warnings = []
+    if not os.getenv("OPENAI_API_KEY"):
+        warnings.append("OpenAI is not configured. Translation cannot start yet.")
     return {
         "ok": True,
+        "enabled": True,
         "admin_authenticated": is_admin(request),
         "novel_id": novel_id,
         "model": os.getenv("OPENAI_MODEL") or novel.get("current_model") or "gpt-4o-mini",
-        "openai_key_configured": bool(os.getenv("OPENAI_API_KEY")),
+        "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
+        "storage_backend": os.getenv("STORAGE_BACKEND", "local").lower(),
+        "database_backend": database.status().get("backend"),
+        "supports_estimate": True,
+        "supports_queue": True,
+        "supports_cancel": False,
+        "supports_retry_failed": False,
+        "default_concurrency": 1,
+        "max_safe_concurrency": 3,
         "missing_only_default": True,
         "overwrite_default": False,
-        "counts": counts,
+        "counts": novel.get("counts", {}),
+        "warnings": warnings,
         "message": "Batch health is available. Estimate and dry-run do not call OpenAI.",
+    }
+
+
+def batch_selection(novel_id: str, payload: dict[str, object]) -> dict[str, object]:
+    start = int(payload.get("start_chapter") or 1)
+    end = int(payload.get("end_chapter") or 999999)
+    if start > end:
+        raise ValueError("Start chapter must be less than or equal to end chapter.")
+    missing_only = bool(payload.get("missing_only", True))
+    overwrite = bool(payload.get("overwrite", False))
+    chapters = [chapter for chapter in novels.chapters(novel_id) if start <= int(chapter.get("chapter") or 0) <= end and chapter.get("source_path")]
+    already = [chapter for chapter in chapters if chapter.get("has_translation")]
+    selected = [chapter for chapter in chapters if overwrite or not missing_only or not chapter.get("has_translation")]
+    estimated_input = 0
+    estimated_output = 0
+    for chapter in selected:
+        text_len = int(chapter.get("source_characters") or chapter.get("characters") or 3500)
+        estimated_input += max(400, text_len // 2)
+        estimated_output += max(600, int(text_len * 0.65))
+    low = (estimated_input / 1_000_000 * 0.15) + (estimated_output / 1_000_000 * 0.60)
+    high = low * 1.75
+    return {
+        "novel_id": novel_id,
+        "start_chapter": start,
+        "end_chapter": end if end != 999999 else None,
+        "total_selected": len(chapters),
+        "already_translated": len(already),
+        "missing_ai_translations": len(chapters) - len(already),
+        "estimated_chapters_to_translate": len(selected),
+        "estimated_input_tokens": estimated_input,
+        "estimated_output_tokens": estimated_output,
+        "estimated_cost_low": round(low, 4),
+        "estimated_cost_high": round(high, 4),
+        "model": str(payload.get("model") or os.getenv("OPENAI_MODEL") or "gpt-4o-mini"),
+        "mode": str(payload.get("mode") or "standard"),
+        "warnings": ["Estimate is approximate.", "Estimate does not call OpenAI."],
+        "chapter_numbers": [int(chapter.get("chapter") or 0) for chapter in selected[:200]],
     }
 
 
@@ -1042,10 +1117,11 @@ async def batch_estimate(request: Request, payload: Annotated[dict[str, object],
     settings = dict(payload)
     settings.update({"start_now": False, "show_estimate_before_starting": True})
     try:
+        estimate = batch_selection(novel_id, settings)
         job = novels.create_batch(novel_id, settings)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return JSONResponse({"ok": True, "dry_run": True, "novel_id": novel_id, "job": job}, status_code=201)
+    return JSONResponse({"ok": True, "dry_run": True, **estimate, "job": job}, status_code=201)
 
 
 @app.post("/api/batch/start")
@@ -1054,13 +1130,17 @@ async def batch_start(request: Request, payload: Annotated[dict[str, object], Bo
     novel_id = batch_novel_id(payload)
     settings = dict(payload)
     dry_run = bool(settings.pop("dry_run", False))
+    concurrency = int(settings.get("concurrency") or 1)
+    if concurrency not in {1, 2, 3}:
+        raise HTTPException(status_code=400, detail="Concurrency must be 1, 2, or 3.")
     settings.update({"start_now": False, "show_estimate_before_starting": True})
     try:
+        estimate = batch_selection(novel_id, settings)
         job = novels.create_batch(novel_id, settings)
         if dry_run:
-            return JSONResponse({"ok": True, "dry_run": True, "novel_id": novel_id, "job": job, "message": "Dry-run created an estimate only. OpenAI was not called."}, status_code=201)
+            return JSONResponse({"ok": True, "dry_run": True, **estimate, "job": job, "message": "Dry-run created an estimate only. OpenAI was not called."}, status_code=201)
         if not os.getenv("OPENAI_API_KEY"):
-            return JSONResponse({"ok": False, "novel_id": novel_id, "job": job, "error": "OPENAI_API_KEY is not configured. Estimate was created, but translation was not started."}, status_code=400)
+            return JSONResponse({"ok": False, **estimate, "job": job, "error": "OPENAI_API_KEY is not configured. Estimate was created, but translation was not started."}, status_code=400)
         novels.start_job(novel_id, job["job_id"])
         return JSONResponse({"ok": True, "dry_run": False, "novel_id": novel_id, "job_id": job["job_id"], "status": "queued"}, status_code=202)
     except ValueError as exc:

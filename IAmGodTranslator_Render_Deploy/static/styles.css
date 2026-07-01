@@ -2021,6 +2021,28 @@ input::placeholder { color:rgba(159,177,169,.62); }
   border-color:rgba(106,230,169,.22);
   background:linear-gradient(145deg,rgba(17,31,26,.9),rgba(11,15,17,.92));
 }
+.google-login-button {
+  width:100%;
+  justify-content:center;
+  margin:8px 0 4px;
+  border-color:rgba(255,255,255,.18);
+  background:rgba(255,255,255,.08);
+}
+.google-login-button:disabled {
+  opacity:.55;
+  cursor:not-allowed;
+}
+#batchHealthCard {
+  border-color:rgba(104,209,180,.2);
+  background:linear-gradient(145deg,rgba(20,31,33,.92),rgba(10,14,16,.94));
+}
+#batchHealthStatus,
+#onlineRestoreStatus {
+  line-height:1.65;
+}
+.settings-grid .wide-field {
+  grid-column:1/-1;
+}
 .success-panel {
   margin-top:10px;
   border:1px solid rgba(106,230,169,.28);

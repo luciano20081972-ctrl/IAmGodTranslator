@@ -80,3 +80,11 @@ If a backup has no manifest, the app allows dry-run only and skips uncertain fil
 If a process restarts during a backup, the interrupted job is marked `stale` on the next startup. Start a new backup job after the app is healthy.
 
 Content audit/repair tools are admin-only and conservative. They report old or suspicious paths and can refresh the local novel index, but they do not automatically move uncertain reference/AI files.
+
+## v8.1 Translate and Google Login Notes
+
+Translate tools are admin-only. Use Translation Health first, then Cost Estimate, then Start Batch. Estimates and dry-runs do not call OpenAI. Real translation requires `OPENAI_API_KEY` and should use `OPENAI_MODEL=gpt-4o-mini` unless you intentionally choose another model.
+
+Batch settings default to missing AI translations only, no overwrite, and concurrency 1. Concurrency 2 or 3 may spend faster and may hit rate limits.
+
+Google login has a safe disabled placeholder in this build. The UI checks `/api/auth/google/status` and shows a disabled button unless OAuth is fully enabled. Keep `GOOGLE_CLIENT_SECRET` only in Render environment variables; never expose it to static JavaScript.

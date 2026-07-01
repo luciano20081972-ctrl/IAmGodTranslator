@@ -142,7 +142,7 @@ app.innerHTML = `
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 </div>
 <dialog id="addNovelDialog"><form id="addNovelForm"><h2>Add New Novel</h2><label><span>Title</span><input id="newNovelTitle" type="text" required></label><div class="actions"><button class="secondary-button" id="cancelAddNovel" type="button">Cancel</button><button class="primary-button" type="submit">Create</button></div></form></dialog>
-<dialog id="accountDialog"><form id="accountForm"><h2 id="accountTitle">Login</h2><p class="helper" id="accountMessage">Use an account to sync bookmarks, ratings, and reading history.</p><label><span>Email</span><input id="accountEmail" type="email" autocomplete="email" required></label><label id="accountUsernameWrap" hidden><span>Username</span><input id="accountUsername" type="text" autocomplete="username"></label><label><span>Password</span><input id="accountPassword" type="password" autocomplete="current-password" required></label><label id="accountConfirmWrap" hidden><span>Confirm password</span><input id="accountConfirm" type="password" autocomplete="new-password"></label><div class="actions"><button class="secondary-button" id="forgotPasswordButton" type="button">Forgot Password</button><button class="secondary-button" id="accountModeButton" type="button">Create account</button><button class="primary-button" id="accountSubmitButton" type="submit">Login</button></div><div class="actions account-user-actions" id="accountUserActions" hidden><button class="secondary-button" id="resendVerificationButton" type="button">Resend Verification</button><button class="secondary-button" id="logoutAccountButton" type="button">Logout</button></div><p class="helper">Google login not configured yet. Production OAuth can be enabled later with Google environment variables.</p></form></dialog>
+<dialog id="accountDialog"><form id="accountForm"><h2 id="accountTitle">Login</h2><p class="helper" id="accountMessage">Use an account to sync bookmarks, ratings, and reading history.</p><button class="secondary-button google-login-button" id="googleLoginButton" type="button">Continue with Google</button><p class="helper" id="googleLoginStatus">Checking Google login...</p><label><span>Email</span><input id="accountEmail" type="email" autocomplete="email" required></label><label id="accountUsernameWrap" hidden><span>Username</span><input id="accountUsername" type="text" autocomplete="username"></label><label><span>Password</span><input id="accountPassword" type="password" autocomplete="current-password" required></label><label id="accountConfirmWrap" hidden><span>Confirm password</span><input id="accountConfirm" type="password" autocomplete="new-password"></label><div class="actions"><button class="secondary-button" id="forgotPasswordButton" type="button">Forgot Password</button><button class="secondary-button" id="accountModeButton" type="button">Create account</button><button class="primary-button" id="accountSubmitButton" type="submit">Login</button></div><div class="actions account-user-actions" id="accountUserActions" hidden><button class="secondary-button" id="resendVerificationButton" type="button">Resend Verification</button><button class="secondary-button" id="logoutAccountButton" type="button">Logout</button></div></form></dialog>
 <dialog id="adminDialog"><form method="dialog" id="adminForm"><h2>Admin Login</h2><p class="helper" id="adminHelp">Admin tools are private.</p><label><span>Password</span><input id="adminPassword" type="password" autocomplete="current-password"></label><div class="actions"><button class="secondary-button" value="cancel">Cancel</button><button class="primary-button" value="default">Login</button></div></form></dialog>`;
 
 const $ = (selector) => document.querySelector(selector);
@@ -150,7 +150,7 @@ const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 const state = { novels: [], appInfo: {}, admin: { enabled: false, authenticated: false }, auth: { authenticated: false, user: null }, accountMode: "login", workspaces: [{ id: "library", type: "library", title: "Library" }], activeWorkspaceId: "library", libraryMode: "home", currentNovel: null, chapters: [], filteredChapters: [], selectedChapters: new Set(), readerChapter: null, readerTab: "original", currentJob: null, pollTimer: null, backupJobId: null, backupPollTimer: null, restoreJobId: null, restorePollTimer: null, restoreDryRunComplete: false, onlineRestoreJobId: null, onlineRestorePollTimer: null, onlineRestoreDryRunComplete: false, selectedSupabaseBackup: null, readerSize: 18, readerWide: false, chapterPage: 1, pageSize: 50, pickerPage: 1, pickerPageSize: 50, pickerSearch: "", pickerNewest: false, searchTimer: null, readerPrefs: {}, ratings: {}, bookmarks: { novels: {}, chapters: {} }, history: {} };
 
 const els = {
-  apiStatus: $("#apiStatus"), homeButton: $("#homeButton"), themeToggle: $("#themeToggle"), globalSearch: $("#globalSearch"), brandMark: $("#brandMark"), brandName: $("#brandName"), brandSubtitle: $("#brandSubtitle"), libraryIcon: $("#libraryIcon"), workspaceTabs: $("#workspaceTabs"), breadcrumb: $("#breadcrumb"), accountButton: $("#accountButton"), registerButton: $("#registerButton"), accountDialog: $("#accountDialog"), accountForm: $("#accountForm"), accountTitle: $("#accountTitle"), accountMessage: $("#accountMessage"), accountEmail: $("#accountEmail"), accountUsername: $("#accountUsername"), accountUsernameWrap: $("#accountUsernameWrap"), accountPassword: $("#accountPassword"), accountConfirm: $("#accountConfirm"), accountConfirmWrap: $("#accountConfirmWrap"), accountModeButton: $("#accountModeButton"), accountSubmitButton: $("#accountSubmitButton"), forgotPasswordButton: $("#forgotPasswordButton"), accountUserActions: $("#accountUserActions"), resendVerificationButton: $("#resendVerificationButton"), logoutAccountButton: $("#logoutAccountButton"), adminButton: $("#adminButton"), adminDialog: $("#adminDialog"), adminForm: $("#adminForm"), adminPassword: $("#adminPassword"), adminHelp: $("#adminHelp"), supportButton: $("#supportButton"), supportPanel: $("#supportPanel"), mainNav: $$(".nav-button"), currentNovelPill: $("#currentNovelPill"), quickReaderButton: $("#quickReaderButton"), quickTranslateButton: $("#quickTranslateButton"), quickBackupButton: $("#quickBackupButton"),
+  apiStatus: $("#apiStatus"), homeButton: $("#homeButton"), themeToggle: $("#themeToggle"), globalSearch: $("#globalSearch"), brandMark: $("#brandMark"), brandName: $("#brandName"), brandSubtitle: $("#brandSubtitle"), libraryIcon: $("#libraryIcon"), workspaceTabs: $("#workspaceTabs"), breadcrumb: $("#breadcrumb"), accountButton: $("#accountButton"), registerButton: $("#registerButton"), accountDialog: $("#accountDialog"), accountForm: $("#accountForm"), accountTitle: $("#accountTitle"), accountMessage: $("#accountMessage"), googleLoginButton: $("#googleLoginButton"), googleLoginStatus: $("#googleLoginStatus"), accountEmail: $("#accountEmail"), accountUsername: $("#accountUsername"), accountUsernameWrap: $("#accountUsernameWrap"), accountPassword: $("#accountPassword"), accountConfirm: $("#accountConfirm"), accountConfirmWrap: $("#accountConfirmWrap"), accountModeButton: $("#accountModeButton"), accountSubmitButton: $("#accountSubmitButton"), forgotPasswordButton: $("#forgotPasswordButton"), accountUserActions: $("#accountUserActions"), resendVerificationButton: $("#resendVerificationButton"), logoutAccountButton: $("#logoutAccountButton"), adminButton: $("#adminButton"), adminDialog: $("#adminDialog"), adminForm: $("#adminForm"), adminPassword: $("#adminPassword"), adminHelp: $("#adminHelp"), supportButton: $("#supportButton"), supportPanel: $("#supportPanel"), mainNav: $$(".nav-button"), currentNovelPill: $("#currentNovelPill"), quickReaderButton: $("#quickReaderButton"), quickTranslateButton: $("#quickTranslateButton"), quickBackupButton: $("#quickBackupButton"),
   libraryView: $("#libraryView"), detailView: $("#detailView"), librarySections: $("#librarySections"), libraryToolbar: $("#libraryToolbar"), novelGrid: $("#novelGrid"), novelSearch: $("#novelSearch"), browseFilter: $("#browseFilter"), novelSort: $("#novelSort"), addNovelButton: $("#addNovelButton"), addNovelDialog: $("#addNovelDialog"), addNovelForm: $("#addNovelForm"), cancelAddNovel: $("#cancelAddNovel"), newNovelTitle: $("#newNovelTitle"),
   backToLibrary: $("#backToLibrary"), dashboardCover: $("#dashboardCover"), novelTitle: $("#novelTitle"), novelSummary: $("#novelSummary"), novelTags: $("#novelTags"), novelBookmarkButton: $("#novelBookmarkButton"), novelRating: $("#novelRating"), continueReadingButton: $("#continueReadingButton"), openChaptersButton: $("#openChaptersButton"), refreshNovelButton: $("#refreshNovelButton"), overviewReaderButton: $("#overviewReaderButton"), overviewTranslateButton: $("#overviewTranslateButton"), overviewBackupButton: $("#overviewBackupButton"), novelProgress: $("#novelProgress"), backupSummary: $("#backupSummary"), metricStorage: $("#metricStorage"), metricOriginal: $("#metricOriginal"), metricReference: $("#metricReference"), metricTranslated: $("#metricTranslated"), metricRemaining: $("#metricRemaining"), metricPercent: $("#metricPercent"), metricUpdated: $("#metricUpdated"), metricBackup: $("#metricBackup"), metricModel: $("#metricModel"), metricStatus: $("#metricStatus"),
   chapterSearch: $("#chapterSearch"), chapterFilter: $("#chapterFilter"), chapterSort: $("#chapterSort"), chapterPageSize: $("#chapterPageSize"), chapterJump: $("#chapterJump"), chapterList: $("#chapterList"), selectMissingAi: $("#selectMissingAi"), selectCurrentPage: $("#selectCurrentPage"), clearSelectedChapters: $("#clearSelectedChapters"), selectedChapterCount: $("#selectedChapterCount"), prevPage: $("#prevPage"), nextPage: $("#nextPage"), pageInfo: $("#pageInfo"),
@@ -531,6 +531,12 @@ async function loadAuthState() {
   renderAuthState();
   if (state.auth.authenticated) await loadBackendLibrary().catch((err) => toast(err.message, true));
 }
+async function refreshGoogleLoginStatus() {
+  if (!els.googleLoginButton || !els.googleLoginStatus) return;
+  const status = await api("/api/auth/google/status").catch(() => ({ enabled: false, message: "Google login status unavailable." }));
+  els.googleLoginButton.disabled = !status.enabled;
+  els.googleLoginStatus.textContent = status.enabled ? "Google login is available." : (status.message || "Google login is not configured yet.");
+}
 async function loadAppInfo() { state.appInfo = await api("/api/app").catch(() => ({})); applyAppInfo(); applyReaderPrefs(); }
 async function loadNovels() { els.novelGrid.innerHTML = '<div class="empty-state">Loading library...</div>'; state.novels = (await apiWithRetry("/api/novels")).novels || []; renderNovels(); }
 function renderAdminState() { document.body.classList.toggle("is-admin", state.admin.authenticated); els.adminButton.textContent = state.admin.authenticated ? "Admin / Lock" : "Admin"; els.adminHelp.textContent = state.admin.enabled ? "Enter your admin password to open the control panel." : "Login is disabled because ADMIN_PASSWORD is not set. Private tools are hidden."; if (!state.admin.authenticated && ["translatePanel", "backupsPanel", "settingsPanel"].some((id) => document.getElementById(id).classList.contains("active"))) switchTab("chapters"); }
@@ -567,6 +573,7 @@ function openAccountDialog(mode = state.auth.authenticated ? "settings" : "login
     els.accountEmail.required = true;
   }
   if (els.accountDialog.showModal) els.accountDialog.showModal(); else els.accountEmail.focus();
+  refreshGoogleLoginStatus().catch(() => {});
 }
 async function submitAccount(event) {
   event.preventDefault();
@@ -662,6 +669,9 @@ function setupOnlineRestoreCard() {
 }
 function setupBatchHealthCard() {
   if ($("#batchHealthCard")) return;
+  if (!$("#batchStartChapter")) {
+    els.batchForm?.insertAdjacentHTML("beforeend", `<label><span>Start chapter</span><input id="batchStartChapter" type="number" min="1" placeholder="1"></label><label><span>End chapter</span><input id="batchEndChapter" type="number" min="1" placeholder="Last"></label><label><span>Concurrency</span><select id="batchConcurrency"><option value="1">1 safe</option><option value="2">2 faster</option><option value="3">3 max</option></select></label><label><span>Prompt mode</span><select id="batchMode"><option value="standard">Standard quality</option><option value="draft">Faster draft</option></select></label><label class="check"><input id="batchMissingOnly" type="checkbox" checked> Missing AI only</label><label class="check"><input id="batchOverwrite" type="checkbox"> Overwrite existing AI</label><label class="check"><input id="batchUseReference" type="checkbox" checked> Use Reference if available</label><div class="warning wide-field">Higher concurrency can cost money faster and may hit rate limits. Maximum allowed: 3.</div>`);
+  }
   const panel = document.createElement("section");
   panel.className = "panel";
   panel.id = "batchHealthCard";
@@ -675,13 +685,13 @@ async function checkBatchHealth() {
   if (!box) return;
   box.textContent = "Checking translation health...";
   const data = await api("/api/batch/health", { timeoutMs: 30000 });
-  box.innerHTML = `<strong>${data.ok ? "Healthy" : "Warning"}</strong><br>Novel: ${esc(data.novel_id || "")}; Model: ${esc(data.model || "")}; OpenAI key configured: ${data.openai_key_configured ? "yes" : "no"}<br>${esc(data.message || "")}<details><summary>Raw details</summary>${renderJsonBox(data)}</details>`;
+  box.innerHTML = `<strong>${data.ok ? "Healthy" : "Warning"}</strong><br>Novel: ${esc(data.novel_id || "")}; Model: ${esc(data.model || "")}; OpenAI configured: ${data.openai_configured ? "yes" : "no"}; Storage: ${esc(data.storage_backend || "")}; Database: ${esc(data.database_backend || "")}<br>${esc(data.message || "")}${(data.warnings || []).length ? `<div class="warning">${data.warnings.map(esc).join("<br>")}</div>` : ""}<details><summary>Raw details</summary>${renderJsonBox(data)}</details>`;
 }
 async function batchDryRun() {
   const box = $("#batchHealthStatus");
   if (!box) return;
   box.textContent = "Running batch dry-run...";
-  const data = await api("/api/batch/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ novel_id: state.currentNovel?.novel_id || "i-am-god", dry_run: true, batch_size: Number(els.batchSize?.value || 25), model: els.model?.value || "gpt-4o-mini", max_total_budget: els.maxTotalBudget?.value || "15.00", max_cost_per_chapter: els.maxCostPerChapter?.value || "0.017", retry_failed_chapters: Number(els.retryFailedChapters?.value || 1), stop_when_budget_reached: Boolean(els.stopWhenBudgetReached?.checked) }), timeoutMs: 60000 });
+  const data = await api("/api/batch/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...batchPayload(), dry_run: true }), timeoutMs: 60000 });
   box.innerHTML = `<strong>Dry-run complete.</strong><br>${esc(data.message || "Estimate created. OpenAI was not called.")}<details><summary>Raw details</summary>${renderJsonBox(data)}</details>`;
 }
 function renderOnlineRestoreCard(job = null) {
@@ -1066,14 +1076,32 @@ function renderChapterPicker() {
 }
 
 async function upload(kind, button = null) { const input = kind === "original" ? els.originalFiles : els.referenceFiles; if (!input.files.length) return toast("Choose files first.", true); await withBusy(button, async () => { const form = new FormData(); for (const file of input.files) form.append(kind, file); await api(`/api/novels/${state.currentNovel.novel_id}/upload/${kind}`, { method: "POST", body: form, timeoutMs: 120000 }); input.value = ""; await openNovel(state.currentNovel.novel_id); switchTab("translate"); toast(kind === "original" ? "Original Story uploaded." : "Reference Translation uploaded."); }); }
-function settings(startNow = false) { return { model: els.model.value, max_total_budget: els.maxTotalBudget.value, max_cost_per_chapter: els.maxCostPerChapter.value, retry_failed_chapters: Number(els.retryFailedChapters.value || 0), batch_size: Number(els.batchSize.value || 25), stop_when_budget_reached: els.stopWhenBudgetReached.checked, show_estimate_before_starting: true, test_chapter_only: false, start_now: startNow }; }
-async function buildEstimate() { await withBusy(els.estimateBatch, async () => { try { state.currentJob = await api(`/api/novels/${state.currentNovel.novel_id}/translate/batch`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings(false)), timeoutMs: 60000 }); els.startBatch.disabled = false; renderQueue(); toast("Cost estimate ready. Translation has not started."); } catch (error) { els.startBatch.disabled = true; throw error; } }); }
-async function startBatch() { await withBusy(els.startBatch, async () => { if (!state.currentJob) await buildEstimate(); if (!window.confirm("Start paid translation for this estimated batch?")) return; await api(`/api/novels/${state.currentNovel.novel_id}/jobs/${state.currentJob.job_id}/start`, { method: "POST", timeoutMs: 60000 }); toast("Batch started."); pollJob().catch((err) => toast(err.message, true)); }); }
+function batchPayload() {
+  return {
+    novel_id: state.currentNovel?.novel_id || "i-am-god",
+    model: els.model.value,
+    max_total_budget: els.maxTotalBudget.value,
+    max_cost_per_chapter: els.maxCostPerChapter.value,
+    retry_failed_chapters: Number(els.retryFailedChapters.value || 0),
+    batch_size: Number(els.batchSize.value || 25),
+    start_chapter: Number($("#batchStartChapter")?.value || 1),
+    end_chapter: $("#batchEndChapter")?.value ? Number($("#batchEndChapter").value) : 999999,
+    missing_only: $("#batchMissingOnly")?.checked !== false,
+    overwrite: Boolean($("#batchOverwrite")?.checked),
+    concurrency: Number($("#batchConcurrency")?.value || 1),
+    mode: $("#batchMode")?.value || "standard",
+    use_reference_if_available: $("#batchUseReference")?.checked !== false,
+    stop_when_budget_reached: els.stopWhenBudgetReached.checked,
+    show_estimate_before_starting: true,
+  };
+}
+async function buildEstimate() { await withBusy(els.estimateBatch, async () => { try { const data = await api("/api/batch/estimate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(batchPayload()), timeoutMs: 60000 }); state.currentJob = data.job; state.currentEstimate = data; els.startBatch.disabled = false; renderQueue(); toast("Cost estimate ready. Translation has not started."); } catch (error) { els.startBatch.disabled = true; throw error; } }); }
+async function startBatch() { await withBusy(els.startBatch, async () => { if (!state.currentEstimate) await buildEstimate(); if (!window.confirm("Start paid translation for this estimated batch?")) return; const result = await api("/api/batch/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...batchPayload(), dry_run: false }), timeoutMs: 60000 }); if (result.job) state.currentJob = result.job; else if (result.job_id) state.currentJob = { ...(state.currentJob || {}), job_id: result.job_id, status: result.status || "queued" }; toast(result.error || "Batch started.", Boolean(result.error)); if (!result.error) pollJob().catch((err) => toast(err.message, true)); }); }
 async function pollJob() {
   if (!state.currentJob) return;
   clearTimeout(state.pollTimer);
   try {
-    state.currentJob = await api(`/api/novels/${state.currentNovel.novel_id}/jobs/${state.currentJob.job_id}`, { timeoutMs: 20000 });
+    state.currentJob = await api(`/api/batch/jobs/${state.currentJob.job_id}?novel_id=${encodeURIComponent(state.currentNovel.novel_id)}`, { timeoutMs: 20000 });
     renderQueue();
     if (["queued", "running"].includes(state.currentJob.status)) state.pollTimer = setTimeout(() => pollJob().catch((err) => toast(err.message, true)), 3000);
   } catch (error) {
@@ -1082,7 +1110,7 @@ async function pollJob() {
     toast(error.message, true);
   }
 }
-function renderQueue() { const job = state.currentJob; if (!job) { els.estimateBox.textContent = "No batch estimate yet."; els.jobProgress.style.width = "0%"; els.queueList.innerHTML = '<div class="empty-state">Build a cost estimate to preview the next batch queue.</div>'; return; } const total = job.counts?.total || 0, done = job.counts?.completed || 0; els.jobProgress.style.width = `${total ? Math.round((done / total) * 100) : 0}%`; els.estimateBox.innerHTML = `<strong>${status(job.status)}</strong><br>Chapters: ${total}. Cheapest estimate: ${money(job.estimate?.cheapest_total_cost)}. Recommended estimate: ${money(job.estimate?.recommended_total_cost)}.`; els.queueList.innerHTML = ""; for (const c of job.chapters || []) { const row = document.createElement("article"); row.className = "chapter-row"; row.innerHTML = `<div><div class="chapter-title">${String(c.chapter).padStart(4, "0")} - ${esc(c.title || "")}</div><div class="chapter-meta">${esc(c.error || "Ready")}</div></div><span class="badge ${c.status}">${status(c.status)}</span>`; els.queueList.appendChild(row); } }
+function renderQueue() { const job = state.currentJob; const estimate = state.currentEstimate; if (!job) { els.estimateBox.textContent = "No batch estimate yet."; els.jobProgress.style.width = "0%"; els.queueList.innerHTML = '<div class="empty-state">Build a cost estimate to preview the next batch queue.</div>'; return; } const total = job.counts?.total || 0, done = job.counts?.completed || 0; els.jobProgress.style.width = `${total ? Math.round((done / total) * 100) : 0}%`; els.estimateBox.innerHTML = estimate ? `<strong>${status(job.status)}</strong><br>Selected ${estimate.total_selected}; already translated ${estimate.already_translated}; missing AI ${estimate.missing_ai_translations}; queued ${estimate.estimated_chapters_to_translate}.<br>Approx tokens in/out: ${estimate.estimated_input_tokens}/${estimate.estimated_output_tokens}. Cost range: ${money(estimate.estimated_cost_low)}-${money(estimate.estimated_cost_high)}.<br>${(estimate.warnings || []).map(esc).join("<br>")}` : `<strong>${status(job.status)}</strong><br>Chapters: ${total}. Cheapest estimate: ${money(job.estimate?.cheapest_total_cost)}. Recommended estimate: ${money(job.estimate?.recommended_total_cost)}.`; els.queueList.innerHTML = ""; for (const c of job.chapters || []) { const row = document.createElement("article"); row.className = "chapter-row"; row.innerHTML = `<div><div class="chapter-title">${String(c.chapter).padStart(4, "0")} - ${esc(c.title || "")}</div><div class="chapter-meta">${esc(c.error || "Ready")}</div></div><span class="badge ${c.status}">${status(c.status)}</span>`; els.queueList.appendChild(row); } }
 
 function renderBackupJob(job) {
   if (!els.backupJobStatus) return;
@@ -1319,6 +1347,11 @@ function bind() {
   els.adminForm.onsubmit = (event) => login(event).catch((err) => toast(err.message, true));
   els.accountButton.onclick = () => openAccountDialog(state.auth.authenticated ? "settings" : "login");
   els.registerButton.onclick = () => openAccountDialog("register");
+  els.googleLoginButton.onclick = async () => {
+    const status = await api("/api/auth/google/status").catch(() => ({ enabled: false, message: "Google login status unavailable." }));
+    if (!status.enabled) return toast(status.message || "Google login is not configured yet.", true);
+    window.location.href = "/auth/google/login";
+  };
   els.accountForm.onsubmit = (event) => submitAccount(event).catch((err) => toast(err.message, true));
   els.accountModeButton.onclick = () => openAccountDialog(state.accountMode === "register" ? "login" : "register");
   els.forgotPasswordButton.onclick = () => openAccountDialog("reset");
@@ -1385,7 +1418,7 @@ function bind() {
   window.addEventListener("hashchange", handleRouteChange);
 }
 
-function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=78").then((registration) => registration.update()).catch(() => {}); }
+function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=79").then((registration) => registration.update()).catch(() => {}); }
 async function bootAppData() {
   hideRecovery();
   els.novelGrid.innerHTML = '<div class="empty-state">Loading library...</div>';

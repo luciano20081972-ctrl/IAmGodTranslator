@@ -2,10 +2,25 @@
 
 ## Current Version Target
 
-GodTranslator_Web_v8_0_4_Online_Restore_Translate_Fix.zip
+GodTranslator_Web_v8_1_PARTIAL_Translate_UI_Google.zip
 
 ## Completed Tasks
 
+- Finished a deployable partial v8.1 Translate/UI/Google safety pass.
+- Preserved v8.0.4 Online Supabase Restore, `/api/bootstrap`, `/api/admin/recovery/status`, Supabase hydration, backup/restore, and Original/Reference/AI separation.
+- Upgraded `/api/batch/health` to return structured JSON with model, OpenAI configured status, storage backend, database backend, queue capabilities, concurrency defaults, and warnings.
+- Upgraded `/api/batch/estimate` to return explicit estimate fields: selected range, already translated, missing AI translations, chapters to translate, approximate tokens, approximate cost range, mode, model, and warnings.
+- Upgraded `/api/batch/start` validation for dry-run, chapter range, missing-only, overwrite, concurrency 1-3, and readable missing OpenAI key errors.
+- Updated `NovelManager.create_batch` to respect start/end chapter, missing-only, overwrite, and Supabase-backed chapter materialization when Render local cache is empty.
+- Prevented batch estimate/job cache folders from being uploaded to Supabase during metadata/count/index updates.
+- Updated Translate frontend controls to use `/api/batch/estimate`, `/api/batch/start`, and `/api/batch/jobs/{job_id}`.
+- Added Translate controls for start chapter, end chapter, missing-only, overwrite, concurrency, mode, and reference support.
+- Added a Translation Health card that checks batch endpoints without calling OpenAI.
+- Added safe Google login UI placeholder with backend status check and disabled button when OAuth is not enabled.
+- Added safe `/auth/google/login` and `/auth/google/callback` placeholder routes that do not expose secrets or log tokens.
+- Added basic security headers: `X-Content-Type-Options`, `Referrer-Policy`, and `X-Frame-Options`.
+- Added focused polish for Translate Health, Online Supabase Restore, and Google login UI.
+- Bumped frontend cache/service-worker versions to v79.
 - Finished v8.0.4 online restore and translate stability pass.
 - Separated Local ZIP Restore from Online Supabase Restore in the Backups UI.
 - Added a dedicated Online Supabase Restore card with backup details, online dry-run, online confirm, progress, status, raw details, and rebuild/hydrate/refresh actions.
@@ -88,6 +103,27 @@ GodTranslator_Web_v8_0_4_Online_Restore_Translate_Fix.zip
 
 ## QA Results
 
+- v8.1 Python syntax check passed.
+- v8.1 JavaScript syntax check passed.
+- `requirements.txt` exists, is not `{}`, and contains FastAPI, Uvicorn, dotenv, multipart, OpenAI, and psycopg dependencies.
+- `/api/health`, `/api/bootstrap`, `/api/storage`, `/api/novels`, and `/api/novels/i-am-god/library` returned 200 in TestClient.
+- Security header `X-Content-Type-Options=nosniff` was present.
+- `GET /api/batch/health` returned JSON with `openai_configured=false` when the key was absent.
+- `POST /api/batch/estimate` returned the new schema and did not call OpenAI.
+- `POST /api/batch/start` with `dry_run=true` returned JSON/job data and did not call OpenAI.
+- Invalid chapter range returned JSON 400.
+- Invalid concurrency returned JSON 400.
+- `GET /api/batch/jobs` and `GET /api/batch/jobs/{job_id}` returned JSON.
+- Cancel and retry-failed endpoints returned structured JSON placeholders.
+- Public batch estimate/start endpoints returned 401.
+- Google status returned safe disabled JSON.
+- Google login route returned a safe disabled/configuration response; no tokens or secrets were exposed.
+- Online Supabase backup list and restore dry-run endpoints still worked after v8.1 changes.
+- No OpenAI call was made.
+- No real translation was started.
+- No production data deletion was performed.
+- Known limitation: full Google OAuth exchange/account linking is intentionally not enabled in this partial build.
+- Known limitation: translation cancel/retry-failed endpoints are structured placeholders, not full job-control implementations.
 - v8.0.4 Python syntax check passed.
 - v8.0.4 JavaScript syntax check passed.
 - `requirements.txt` exists, is not `{}`, and contains FastAPI, Uvicorn, dotenv, multipart, OpenAI, and psycopg dependencies.

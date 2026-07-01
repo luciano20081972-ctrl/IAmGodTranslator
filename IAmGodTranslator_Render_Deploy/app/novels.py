@@ -795,11 +795,22 @@ class NovelManager:
 
     def create_batch(self, novel_id: str, settings: dict[str, Any]) -> dict[str, Any]:
         batch_size = max(1, min(200, int(settings.get("batch_size") or 25)))
+        start_chapter = int(settings.get("start_chapter") or 1)
+        end_chapter = int(settings.get("end_chapter") or 999999)
+        missing_only = bool(settings.get("missing_only", True))
+        overwrite = bool(settings.get("overwrite", False))
         references = self.reference_files_by_number(novel_id)
         candidates = [
             chapter for chapter in self.chapters(novel_id)
-            if chapter.get("source_path") and chapter.get("status") != "translated"
+            if chapter.get("source_path")
+            and start_chapter <= int(chapter.get("chapter") or 0) <= end_chapter
+            and (overwrite or not missing_only or not chapter.get("has_translation"))
+            and (overwrite or chapter.get("status") != "translated")
         ][:batch_size]
+        if start_chapter > end_chapter:
+            raise ValueError("Start chapter must be less than or equal to end chapter.")
+        if not candidates:
+            raise ValueError("No chapters need translation for the selected range/settings.")
         materialized = self.novel_dir(novel_id) / "batch_cache"
         materialized_originals = materialized / "originals"
         materialized_references = materialized / "references"
