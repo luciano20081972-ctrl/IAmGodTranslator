@@ -2,10 +2,85 @@
 
 ## Current Version Target
 
-GodTranslator_Web_v9_0_2_Reader_Content_And_v9_Package_Fix.zip
+GodTranslator_Web_v9_0_4_Render_Long_Jobs_Timeout_Fix.zip
+
+## v9.0.4 Render Long Jobs / Wake Hydration Completion
+
+### Completed Tasks
+
+- Added persistent background long-job state under `DATA_DIR/long_jobs` for chapter index rebuilds, local-to-Supabase migration, and translation readiness rebuilds.
+- Added automatic lightweight Supabase hydration for `novels/index.json`, metadata, `counts.json`, `chapter_index.json`, and `translation_readiness.json`.
+- Updated `/api/novels/{novel_id}/library` to return persisted chapter rows immediately when `chapter_index.json` exists.
+- If counts show chapters but the chapter index is missing, empty, or stale, the library endpoint now queues a background chapter-index rebuild instead of blocking the request.
+- Added background admin chapter-index endpoints:
+  - `POST /api/admin/novels/{novel_id}/rebuild-chapter-index/start`
+  - `GET /api/admin/novels/{novel_id}/rebuild-chapter-index/jobs/{job_id}`
+- Added background local-to-Supabase migration endpoint/status polling:
+  - `POST /api/admin/storage/migrate-local-to-supabase/start`
+  - `GET /api/admin/storage/migrate-local-to-supabase/jobs/{job_id}`
+- Added translation readiness cache build/read endpoints and persisted `translation_readiness.json` locally and to Supabase.
+- Made batch estimate/start return quickly from chapter index or readiness cache instead of reading every chapter during the request.
+- Added Translate controls for start chapter, end chapter, Missing AI only, and Overwrite existing AI.
+- Renamed Batch size to Max chapters to translate now.
+- Added frontend progress polling for chapter index rebuild, local-to-Supabase migration, and translation readiness rebuilds.
+- Public chapter-list refresh no longer depends on admin-only job status; it refreshes through the public library endpoint while the index is rebuilding.
+- Bumped frontend cache/service-worker versions to v83.
+
+### Changed Files
+
+- `app/long_jobs.py`
+- `app/novels.py`
+- `app/main.py`
+- `static/app.js`
+- `templates/index.html`
+- `static/service-worker.js`
+- `DEVELOPMENT_PROGRESS.md`
+
+### QA Results
+
+- Python syntax check passed for `app`, `modules`, and `tools`.
+- JavaScript syntax check passed for `static/app.js`.
+- Cache references verified at v83.
+- Public admin/translation endpoints returned 401 before admin login.
+- Admin login worked in TestClient.
+- `/api/health`, `/api/bootstrap`, `/api/novels`, and `/api/novels/i-am-god/library` returned 200 in TestClient.
+- Local 906 Original / 412 Reference / 26 AI fixture returned 906 library rows.
+- Batch estimate returned `original_readable=906`, `ai_existing_readable=26`, `needs_translation=880`, and `max_chapters_to_translate_now=25` without calling OpenAI.
+- Batch dry-run returned 202 and created an estimated queue only; no real translation started.
+- Simulated empty local cache with Supabase `chapter_index.json` available returned 906 rows immediately.
+- Simulated missing Supabase `chapter_index.json` with counts/files available returned `rebuild_queued`, completed the background job, saved remote `chapter_index.json`, and returned rows after refresh.
+- No OpenAI call was made.
+- No full translation was started.
+- No data deletion was performed.
+
+### Known Risks
+
+- If Render sleeps during an active long job, the saved job record is marked interrupted on the next read and the admin should start it again.
+- Public users can see that the chapter index is being prepared, but detailed job progress remains admin-only.
+- Translation readiness cache should be rebuilt after large imports/restores for stricter readable-file estimates.
+
+### Deploy Notes
+
+- Deploy `GodTranslator_Web_v9_0_4_Render_Long_Jobs_Timeout_Fix.zip`.
+- Keep secrets only in Render environment variables.
+- No backup restore should be required after normal Render sleep/wake when Supabase has persisted `chapter_index.json`.
+- If counts exist but the chapter list is not ready after wake, the app should queue chapter-index rebuild automatically and refresh the Chapters tab.
 
 ## Completed Tasks
 
+- Finished v9.0.3 chapter list, translate estimate, reader route, and Google OAuth pass.
+- Added durable per-novel `chapter_index.json` built from actual local files plus canonical and legacy Supabase paths for Original, Reference, AI, and prompts.
+- Added automatic `/api/novels/{novel_id}/library` chapter-index rebuild when the index is missing, empty, or stale while counts/files exist.
+- Added admin-only `POST /api/admin/novels/{novel_id}/rebuild-chapter-index`.
+- Updated chapter library rows to include `has_original`, `has_reference`, `has_ai`/`has_translation`, readable flags, and paths when available.
+- Updated the Chapters tab so default filters do not hide rows, search only filters when text exists, pagination shows visible row ranges, and empty states distinguish missing backend index from active filters.
+- Added Admin Content Health actions for global diagnostics and Rebuild Chapter Index.
+- Extended `GET /api/admin/content/diagnostic?novel_id=i-am-god` to return a global readable-content summary.
+- Added clean reader hash routes in the form `#/reader/{novel_id}/{chapter}/{mode}` while preserving existing novel/chapter hash routes.
+- Updated batch estimate output with `original_readable`, `ai_existing_readable`, `needs_translation`, `skipped_no_original`, and `skipped_already_translated`.
+- Added real Google OAuth redirect/callback support for `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI`; Google users are normal users and are not granted admin.
+- Added explicit Chinese `第1章` filename/title parsing.
+- Bumped frontend cache/service-worker versions to v82.
 - Finished v9.0.2 reader content and packaging fix.
 - Fixed Reader content loading so Original Story, Reference Translation, and AI Translation resolve actual readable text through stored paths, canonical Supabase paths, legacy Supabase paths, filename variants, and local folders.
 - Added admin-only `GET /api/admin/content/diagnostic?novel_id=i-am-god&chapter=1`.
@@ -113,17 +188,33 @@ GodTranslator_Web_v9_0_2_Reader_Content_And_v9_Package_Fix.zip
 ## Files Changed
 
 - `DEVELOPMENT_PROGRESS.md`
+- `.env.example`
+- `DEPLOY_RENDER.md`
 - `static/app.js`
 - `static/service-worker.js`
 - `static/styles.css`
 - `templates/index.html`
+- `app/database.py`
 - `app/storage.py`
 - `app/main.py`
 - `app/novels.py`
+- `modules/chapter.py`
 - `tools/convert_legacy_backup_to_v7.py`
 
 ## QA Results
 
+- v9.0.3 Python syntax check passed.
+- v9.0.3 JavaScript syntax check passed with the bundled Node runtime.
+- `requirements.txt` exists, is not `{}`, and contains valid FastAPI/Uvicorn/OpenAI/psycopg dependencies.
+- 906-original / 412-reference / 26-AI fixture: `POST /api/admin/novels/i-am-god/rebuild-chapter-index` returned rows=906, original_count=906, reference_count=412, ai_count=26.
+- 906-original fixture: `/api/novels/i-am-god/library` returned 906 chapter rows.
+- Reader endpoints loaded chapter 1 Original, Reference, and AI text; chapter 27 missing AI returned a clear missing diagnostic instead of hanging.
+- Global content diagnostic returned index_rows=906, original_readable=906, reference_readable=412, ai_readable=26, needs_translation=880, missing_ai=880.
+- Batch estimate returned original_readable=906, ai_existing_readable=26, needs_translation=880, skipped_no_original=0, skipped_already_translated=26.
+- Batch dry-run returned an estimated job and did not call OpenAI or start real translation.
+- `/api/health`, `/api/bootstrap`, `/api/novels`, and `/api/novels/i-am-god/library` returned 200 in TestClient.
+- Public rebuild/diagnostic/batch endpoints returned 401; admin login worked with a temporary QA password.
+- Google status returned disabled/not configured when OAuth env vars were absent.
 - v9.0.2 Python syntax check passed.
 - v9.0.2 JavaScript syntax check passed with the bundled Node runtime.
 - `requirements.txt` exists, is not `{}`, and contains valid FastAPI/Uvicorn/OpenAI/psycopg dependencies.

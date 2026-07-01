@@ -30,6 +30,10 @@ LOG_LEVEL=INFO
 MAX_UPLOAD_BYTES=52428800
 DATA_DIR=/var/data/IAmGodTranslator
 STORAGE_BACKEND=local
+# Optional Google login:
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REDIRECT_URI=https://your-render-service.onrender.com/auth/google/callback
 ```
 
 Never commit `.env`. Without `ADMIN_PASSWORD`, admin login is disabled and private controls remain hidden.

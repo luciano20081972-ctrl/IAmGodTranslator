@@ -109,7 +109,7 @@ app.innerHTML = `
           <form class="panel" id="referenceUploadForm"><h2>Reference Translation Upload</h2><p class="helper">Reference Translation is optional support text.</p><input id="referenceFiles" name="reference" type="file" accept=".txt,.zip,text/plain,application/zip" multiple><button class="secondary-button" type="submit">Upload Reference Translation</button></form>
         </div>
         <div class="translate-grid">
-          <form class="panel settings-grid" id="batchForm"><h2>Batch Settings</h2><label><span>Model</span><select id="model"><option value="gpt-4o-mini">gpt-4o-mini</option></select></label><label><span>Max total budget</span><input id="maxTotalBudget" type="number" step="0.01" min="0" value="15.00"></label><label><span>Max per-chapter budget</span><input id="maxCostPerChapter" type="number" step="0.001" min="0" value="0.017"></label><label><span>Retry limit</span><input id="retryFailedChapters" type="number" min="0" max="1" value="1"></label><label><span>Batch size</span><input id="batchSize" type="number" min="1" max="200" value="25"></label><label class="check"><input id="stopWhenBudgetReached" type="checkbox" checked> Stop when budget reached</label></form>
+          <form class="panel settings-grid" id="batchForm"><h2>Batch Settings</h2><label><span>Model</span><select id="model"><option value="gpt-4o-mini">gpt-4o-mini</option></select></label><label><span>Max total budget</span><input id="maxTotalBudget" type="number" step="0.01" min="0" value="15.00"></label><label><span>Max per-chapter budget</span><input id="maxCostPerChapter" type="number" step="0.001" min="0" value="0.017"></label><label><span>Retry limit</span><input id="retryFailedChapters" type="number" min="0" max="1" value="1"></label><label><span>Max chapters to translate now</span><input id="batchSize" type="number" min="1" max="200" value="25"></label><label><span>Start chapter</span><input id="batchStartChapter" type="number" min="1" value="1"></label><label><span>End chapter</span><input id="batchEndChapter" type="number" min="1" placeholder="Last chapter"></label><label class="check"><input id="batchMissingOnly" type="checkbox" checked> Missing AI only</label><label class="check"><input id="batchOverwrite" type="checkbox"> Overwrite existing AI</label><label class="check"><input id="stopWhenBudgetReached" type="checkbox" checked> Stop when budget reached</label></form>
           <section class="panel"><h2>Batch Actions</h2><div class="warning">Paid translation warning: starting a batch calls the OpenAI API and may spend money. This will only translate chapters missing AI Translation.</div><p class="helper">Recommended safe batch: 50 chapters. Bigger batches cost more and take longer.</p><div class="actions"><button class="secondary-button" id="estimateBatch" type="button">Show Cost Estimate</button><button class="primary-button" id="startBatch" type="button" disabled>Start Batch</button></div></section>
         </div>
         <section class="panel"><h2>Cost Estimate & Queue Preview</h2><div class="estimate-box" id="estimateBox">No batch estimate yet.</div><div class="progress-track"><div id="jobProgress" class="progress-fill"></div></div><div class="chapter-list compact" id="queueList"></div></section>
@@ -118,7 +118,7 @@ app.innerHTML = `
       <section class="tab-panel admin-only" id="backupsPanel"><div class="warning storage-warning">Backup and restore run as background jobs. Do not refresh during backup/restore.</div><div class="backup-summary" id="backupSummary">Current counts will appear after a novel loads.</div><section class="panel backup-job-panel"><h2>Full Backup Job</h2><p class="helper">Creates a manifest-based ZIP without blocking the web request.</p><div class="actions"><button class="primary-button" id="startFullBackupButton" type="button">Create Full Backup</button><button class="secondary-button" id="cancelFullBackupButton" type="button" disabled>Cancel Backup</button><button class="secondary-button" id="refreshBackupJobsButton" type="button">Refresh Jobs</button></div><div class="progress-track"><div class="progress-fill" id="backupJobProgress"></div></div><div class="estimate-box" id="backupJobStatus">No backup job running.</div></section><div class="backup-grid"><a class="panel link-card" id="downloadEnglish" href="#">Export AI ZIP</a><a class="panel link-card" id="downloadOriginal" href="#">Export Original ZIP</a><a class="panel link-card" id="downloadReference" href="#">Export Reference ZIP</a><a class="panel link-card" id="downloadPrompts" href="#">Export Prompts ZIP</a><form class="panel" id="restoreNovelForm"><h2>Restore Full Backup ZIP</h2><p class="helper">Run dry-run first. Real restore never deletes files and only overwrites when selected.</p><input id="restoreFile" name="backup" type="file" accept=".zip,application/zip" required><label><span>Conflict mode</span><select id="restoreConflictMode"><option value="write_missing_only">Write missing only</option><option value="skip_existing">Skip existing</option><option value="overwrite_existing">Overwrite existing</option></select></label><div class="actions"><button class="secondary-button" id="restoreDryRunButton" type="submit">Dry Run Restore</button><button class="danger-button" id="restoreConfirmButton" type="button" disabled>Confirm Restore</button></div><div class="progress-track"><div class="progress-fill" id="restoreJobProgress"></div></div><div class="estimate-box" id="restoreJobStatus">No restore job running.</div></form><section class="panel"><h2>Recent Backup/Restore Jobs</h2><div class="job-history-list" id="backupJobList">No recent jobs loaded.</div></section><form class="panel" id="importAiForm"><h2>Import AI Translation ZIP</h2><p class="helper">Do not refresh during imports. This writes AI translations only.</p><input id="importAiFile" name="translated_zip" type="file" accept=".zip,application/zip" required><button class="primary-button" id="importAiButton" type="submit">Import AI Translation ZIP</button></form><form class="panel" id="importOriginalForm"><h2>Import Original Chinese ZIP</h2><p class="helper">Do not refresh during imports. This writes original source chapters only.</p><input id="importOriginalFile" name="original_zip" type="file" accept=".zip,application/zip" required><button class="primary-button" id="importOriginalButton" type="submit">Import Original Chinese ZIP</button></form><form class="panel" id="importReferenceForm"><h2>Import Reference Translation ZIP</h2><p class="helper">Do not refresh during imports. This writes reference translations only.</p><input id="importReferenceFile" name="reference_zip" type="file" accept=".zip,application/zip" required><button class="secondary-button" id="importReferenceButton" type="submit">Import Reference Translation ZIP</button></form><form class="panel" id="coverUploadForm"><h2>Novel Cover</h2><input id="coverFile" name="cover" type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" required><button class="secondary-button" type="submit">Upload Cover</button></form></div></section>
 
       <section class="tab-panel admin-only" id="settingsPanel">
-        <section class="admin-dashboard" id="adminDashboard"><div class="admin-dashboard-head"><div><p class="eyebrow">Private control room</p><h2>Admin Dashboard</h2><p class="helper">Manage storage, imports, backups, repair tools, users, and novel settings without crowding the reader experience.</p></div><div class="admin-metrics" id="adminMetrics">Open Storage Health to refresh platform status.</div></div><div class="admin-card-grid"><section class="panel admin-card"><p class="eyebrow">Quick Actions</p><h3>Workspace shortcuts</h3><div class="action-stack"><button class="secondary-button" type="button" data-admin-tab="chapters">Novel Management</button><button class="secondary-button" type="button" data-admin-tab="translate">Translation Tools</button><button class="secondary-button" type="button" data-admin-tab="backups">Backups / Restore</button></div></section><section class="panel admin-card"><p class="eyebrow">Storage Health</p><h3>Persistence check</h3><div class="actions"><button class="secondary-button" id="checkStorageButton" type="button">Check Storage</button><button class="secondary-button" id="migrateStorageButton" type="button">Copy old local data into DATA_DIR</button><button class="primary-button" id="migrateSupabaseButton" type="button">Migrate Local Data to Supabase</button></div><div class="storage-health" id="storageHealth">Storage health has not been checked yet.</div></section><section class="panel admin-card"><p class="eyebrow">Data Repair</p><h3>Audit and safe repair</h3><div class="actions"><button class="secondary-button" id="auditContentButton" type="button">Audit Novel Files</button><button class="secondary-button" id="dryRunRepairButton" type="button">Dry Run Repair</button><button class="danger-button" id="applyRepairButton" type="button">Apply Safe Repair</button></div><div class="estimate-box" id="repairReport">No audit has been run.</div></section><section class="panel admin-card"><p class="eyebrow">Users / Roles</p><h3>Account controls</h3><div class="user-list" id="adminUsersList">User list loads after admin login.</div></section></div></section>
+        <section class="admin-dashboard" id="adminDashboard"><div class="admin-dashboard-head"><div><p class="eyebrow">Private control room</p><h2>Admin Dashboard</h2><p class="helper">Manage storage, imports, backups, repair tools, users, and novel settings without crowding the reader experience.</p></div><div class="admin-metrics" id="adminMetrics">Open Storage Health to refresh platform status.</div></div><div class="admin-card-grid"><section class="panel admin-card"><p class="eyebrow">Quick Actions</p><h3>Workspace shortcuts</h3><div class="action-stack"><button class="secondary-button" type="button" data-admin-tab="chapters">Novel Management</button><button class="secondary-button" type="button" data-admin-tab="translate">Translation Tools</button><button class="secondary-button" type="button" data-admin-tab="backups">Backups / Restore</button></div></section><section class="panel admin-card"><p class="eyebrow">Storage Health</p><h3>Persistence check</h3><div class="actions"><button class="secondary-button" id="checkStorageButton" type="button">Check Storage</button><button class="secondary-button" id="migrateStorageButton" type="button">Copy old local data into DATA_DIR</button><button class="primary-button" id="migrateSupabaseButton" type="button">Start Local -> Supabase Migration</button></div><div class="storage-health" id="storageHealth">Storage health has not been checked yet.</div><div class="estimate-box" id="migrationJobStatus">No migration job running.</div></section><section class="panel admin-card"><p class="eyebrow">Data Repair</p><h3>Audit and safe repair</h3><div class="actions"><button class="secondary-button" id="auditContentButton" type="button">Audit Novel Files</button><button class="secondary-button" id="dryRunRepairButton" type="button">Dry Run Repair</button><button class="danger-button" id="applyRepairButton" type="button">Apply Safe Repair</button></div><div class="estimate-box" id="repairReport">No audit has been run.</div></section><section class="panel admin-card"><p class="eyebrow">Users / Roles</p><h3>Account controls</h3><div class="user-list" id="adminUsersList">User list loads after admin login.</div></section></div></section>
         <form class="panel settings-grid" id="novelSettingsForm"><h2>Novel Management / Settings</h2><label><span>Novel title</span><input id="settingsTitle" type="text"></label><label><span>Source language</span><input id="sourceLanguage" type="text" value="Chinese"></label><label><span>Target language</span><input id="targetLanguage" type="text" value="English"></label><label><span>Default model</span><input id="defaultModel" type="text" value="gpt-4o-mini"></label><label><span>Tags, comma separated</span><input id="settingsTags" type="text"></label><label class="wide-field"><span>Summary</span><textarea id="settingsSummary" rows="4"></textarea></label><label><span>App version</span><input value="7.0 final UI polish" disabled></label><label><span>Storage mode</span><input id="storageModeDisplay" type="text" disabled></label><label><span>DATA_DIR</span><input id="dataDirDisplay" type="text" disabled></label><button class="primary-button" type="submit">Save Settings</button></form>
         <form class="panel settings-grid" id="appIconForm"><h2>Upload App / Library Icon</h2><input id="appIconFile" name="icon" type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" required><button class="secondary-button" type="submit">Upload App / Library Icon</button></form>
         <form class="panel settings-grid" id="appAppearanceForm"><h2>App Appearance</h2><label><span>App display name</span><input id="appDisplayName" type="text"></label><label><span>App subtitle</span><input id="appSubtitleInput" type="text"></label><label><span>Main accent</span><input id="themeMainAccent" type="color"></label><label><span>Button/highlight</span><input id="themeHighlight" type="color"></label><label><span>Header/logo accent</span><input id="themeLogoAccent" type="color"></label><label><span>Card background</span><input id="themeCardBackground" type="color"></label><label><span>Page background</span><input id="themePageBackground" type="color"></label><label><span>Reader background default</span><input id="themeReaderBackground" type="color"></label><label><span>Reader text default</span><input id="themeReaderText" type="color"></label><div class="actions"><button class="primary-button" type="submit">Save Appearance</button><button class="secondary-button" id="resetThemeButton" type="button">Reset Theme</button></div></form>
@@ -147,7 +147,7 @@ app.innerHTML = `
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
-const state = { novels: [], appInfo: {}, admin: { enabled: false, authenticated: false }, auth: { authenticated: false, user: null }, accountMode: "login", workspaces: [{ id: "library", type: "library", title: "Library" }], activeWorkspaceId: "library", libraryMode: "home", currentNovel: null, chapters: [], filteredChapters: [], selectedChapters: new Set(), readerChapter: null, readerTab: "original", currentJob: null, pollTimer: null, backupJobId: null, backupPollTimer: null, restoreJobId: null, restorePollTimer: null, restoreDryRunComplete: false, onlineRestoreJobId: null, onlineRestorePollTimer: null, onlineRestoreDryRunComplete: false, selectedSupabaseBackup: null, readerSize: 18, readerWide: false, chapterPage: 1, pageSize: 50, pickerPage: 1, pickerPageSize: 50, pickerSearch: "", pickerNewest: false, searchTimer: null, readerPrefs: {}, ratings: {}, bookmarks: { novels: {}, chapters: {} }, history: {} };
+const state = { novels: [], appInfo: {}, admin: { enabled: false, authenticated: false }, auth: { authenticated: false, user: null }, accountMode: "login", workspaces: [{ id: "library", type: "library", title: "Library" }], activeWorkspaceId: "library", libraryMode: "home", currentNovel: null, chapters: [], filteredChapters: [], selectedChapters: new Set(), readerChapter: null, readerTab: "original", currentJob: null, pollTimer: null, backupJobId: null, backupPollTimer: null, restoreJobId: null, restorePollTimer: null, restoreDryRunComplete: false, onlineRestoreJobId: null, onlineRestorePollTimer: null, onlineRestoreDryRunComplete: false, migrationJobId: null, migrationPollTimer: null, readinessJobId: null, readinessPollTimer: null, chapterIndexJobId: null, chapterIndexPollTimer: null, selectedSupabaseBackup: null, readerSize: 18, readerWide: false, chapterPage: 1, pageSize: 50, pickerPage: 1, pickerPageSize: 50, pickerSearch: "", pickerNewest: false, searchTimer: null, readerPrefs: {}, ratings: {}, bookmarks: { novels: {}, chapters: {} }, history: {} };
 
 const els = {
   apiStatus: $("#apiStatus"), homeButton: $("#homeButton"), themeToggle: $("#themeToggle"), globalSearch: $("#globalSearch"), brandMark: $("#brandMark"), brandName: $("#brandName"), brandSubtitle: $("#brandSubtitle"), libraryIcon: $("#libraryIcon"), workspaceTabs: $("#workspaceTabs"), breadcrumb: $("#breadcrumb"), accountButton: $("#accountButton"), registerButton: $("#registerButton"), accountDialog: $("#accountDialog"), accountForm: $("#accountForm"), accountTitle: $("#accountTitle"), accountMessage: $("#accountMessage"), googleLoginButton: $("#googleLoginButton"), googleLoginStatus: $("#googleLoginStatus"), accountEmail: $("#accountEmail"), accountUsername: $("#accountUsername"), accountUsernameWrap: $("#accountUsernameWrap"), accountPassword: $("#accountPassword"), accountConfirm: $("#accountConfirm"), accountConfirmWrap: $("#accountConfirmWrap"), accountModeButton: $("#accountModeButton"), accountSubmitButton: $("#accountSubmitButton"), forgotPasswordButton: $("#forgotPasswordButton"), accountUserActions: $("#accountUserActions"), resendVerificationButton: $("#resendVerificationButton"), logoutAccountButton: $("#logoutAccountButton"), adminButton: $("#adminButton"), adminDialog: $("#adminDialog"), adminForm: $("#adminForm"), adminPassword: $("#adminPassword"), adminHelp: $("#adminHelp"), supportButton: $("#supportButton"), supportPanel: $("#supportPanel"), mainNav: $$(".nav-button"), currentNovelPill: $("#currentNovelPill"), quickReaderButton: $("#quickReaderButton"), quickTranslateButton: $("#quickTranslateButton"), quickBackupButton: $("#quickBackupButton"),
@@ -157,7 +157,7 @@ const els = {
   readerPanel: $("#readerPanel"), readerBack: $("#readerBack"), readerLibrary: $("#readerLibrary"), readerShell: $("#readerShell"), prevChapter: $("#prevChapter"), nextChapter: $("#nextChapter"), prevChapterBottom: $("#prevChapterBottom"), nextChapterBottom: $("#nextChapterBottom"), chapterPickerBottom: $("#chapterPickerBottom"), backToTopButton: $("#backToTopButton"), centerChapterPicker: $("#centerChapterPicker"), chapterPickerButton: $("#chapterPickerButton"), readerBookmarkButton: $("#readerBookmarkButton"), chapterPickerPanel: $("#chapterPickerPanel"), readerSettingsButton: $("#readerSettingsButton"), readerSettingsDrawer: $("#readerSettingsDrawer"), closeReaderSettings: $("#closeReaderSettings"), fullscreenReader: $("#fullscreenReader"), readerChapterNumber: $("#readerChapterNumber"), readerChapterTitle: $("#readerChapterTitle"), readerProgress: $("#readerProgress"), readerContent: $("#readerContent"), readerTheme: $("#readerTheme"), readerFontFamily: $("#readerFontFamily"), readerFontSize: $("#readerFontSize"), readerLineHeight: $("#readerLineHeight"), readerParagraphSpacing: $("#readerParagraphSpacing"), readerPageWidth: $("#readerPageWidth"), readerTextAlign: $("#readerTextAlign"), readerBackground: $("#readerBackground"), readerAccent: $("#readerAccent"), readerAllowCopy: $("#readerAllowCopy"), fontDown: $("#fontDown"), fontUp: $("#fontUp"), widthToggle: $("#widthToggle"),
   originalUploadForm: $("#originalUploadForm"), referenceUploadForm: $("#referenceUploadForm"), originalFiles: $("#originalFiles"), referenceFiles: $("#referenceFiles"), model: $("#model"), maxTotalBudget: $("#maxTotalBudget"), maxCostPerChapter: $("#maxCostPerChapter"), retryFailedChapters: $("#retryFailedChapters"), batchSize: $("#batchSize"), stopWhenBudgetReached: $("#stopWhenBudgetReached"), estimateBatch: $("#estimateBatch"), startBatch: $("#startBatch"), estimateBox: $("#estimateBox"), jobProgress: $("#jobProgress"), queueList: $("#queueList"),
   importOriginalForm: $("#importOriginalForm"), importOriginalFile: $("#importOriginalFile"), importOriginalButton: $("#importOriginalButton"), importReferenceForm: $("#importReferenceForm"), importReferenceFile: $("#importReferenceFile"), importReferenceButton: $("#importReferenceButton"), importAiForm: $("#importAiForm"), importAiFile: $("#importAiFile"), importAiButton: $("#importAiButton"), coverUploadForm: $("#coverUploadForm"), coverFile: $("#coverFile"), coverUploadButton: $("#coverUploadForm button[type='submit']"), downloadOriginal: $("#downloadOriginal"), downloadReference: $("#downloadReference"), downloadEnglish: $("#downloadEnglish"), downloadPrompts: $("#downloadPrompts"), startFullBackupButton: $("#startFullBackupButton"), cancelFullBackupButton: $("#cancelFullBackupButton"), refreshBackupJobsButton: $("#refreshBackupJobsButton"), backupJobProgress: $("#backupJobProgress"), backupJobStatus: $("#backupJobStatus"), backupJobList: $("#backupJobList"), restoreNovelForm: $("#restoreNovelForm"), restoreFile: $("#restoreFile"), restoreConflictMode: $("#restoreConflictMode"), restoreDryRunButton: $("#restoreDryRunButton"), restoreConfirmButton: $("#restoreConfirmButton"), restoreJobProgress: $("#restoreJobProgress"), restoreJobStatus: $("#restoreJobStatus"),
-  adminMetrics: $("#adminMetrics"), storageHealth: $("#storageHealth"), checkStorageButton: $("#checkStorageButton"), migrateStorageButton: $("#migrateStorageButton"), migrateSupabaseButton: $("#migrateSupabaseButton"), rebuildIndexButton: $("#rebuildIndexButton"), auditContentButton: $("#auditContentButton"), dryRunRepairButton: $("#dryRunRepairButton"), applyRepairButton: $("#applyRepairButton"), repairReport: $("#repairReport"), adminUsersList: $("#adminUsersList"), novelSettingsForm: $("#novelSettingsForm"), settingsTitle: $("#settingsTitle"), settingsSummary: $("#settingsSummary"), settingsTags: $("#settingsTags"), sourceLanguage: $("#sourceLanguage"), targetLanguage: $("#targetLanguage"), defaultModel: $("#defaultModel"), storageModeDisplay: $("#storageModeDisplay"), dataDirDisplay: $("#dataDirDisplay"), appIconForm: $("#appIconForm"), appIconFile: $("#appIconFile"), appAppearanceForm: $("#appAppearanceForm"), appDisplayName: $("#appDisplayName"), appSubtitleInput: $("#appSubtitleInput"), themeMainAccent: $("#themeMainAccent"), themeHighlight: $("#themeHighlight"), themeLogoAccent: $("#themeLogoAccent"), themeCardBackground: $("#themeCardBackground"), themePageBackground: $("#themePageBackground"), themeReaderBackground: $("#themeReaderBackground"), themeReaderText: $("#themeReaderText"), resetThemeButton: $("#resetThemeButton"), appRecovery: $("#appRecovery"), recoveryMessage: $("#recoveryMessage"), recoveryDetails: $("#recoveryDetails"), recoveryRetry: $("#recoveryRetry"), recoveryCheckHealth: $("#recoveryCheckHealth"), recoveryClearCache: $("#recoveryClearCache"), toast: $("#toast")
+  adminMetrics: $("#adminMetrics"), storageHealth: $("#storageHealth"), checkStorageButton: $("#checkStorageButton"), migrateStorageButton: $("#migrateStorageButton"), migrateSupabaseButton: $("#migrateSupabaseButton"), migrationJobStatus: $("#migrationJobStatus"), rebuildIndexButton: $("#rebuildIndexButton"), auditContentButton: $("#auditContentButton"), dryRunRepairButton: $("#dryRunRepairButton"), applyRepairButton: $("#applyRepairButton"), repairReport: $("#repairReport"), adminUsersList: $("#adminUsersList"), novelSettingsForm: $("#novelSettingsForm"), settingsTitle: $("#settingsTitle"), settingsSummary: $("#settingsSummary"), settingsTags: $("#settingsTags"), sourceLanguage: $("#sourceLanguage"), targetLanguage: $("#targetLanguage"), defaultModel: $("#defaultModel"), storageModeDisplay: $("#storageModeDisplay"), dataDirDisplay: $("#dataDirDisplay"), appIconForm: $("#appIconForm"), appIconFile: $("#appIconFile"), appAppearanceForm: $("#appAppearanceForm"), appDisplayName: $("#appDisplayName"), appSubtitleInput: $("#appSubtitleInput"), themeMainAccent: $("#themeMainAccent"), themeHighlight: $("#themeHighlight"), themeLogoAccent: $("#themeLogoAccent"), themeCardBackground: $("#themeCardBackground"), themePageBackground: $("#themePageBackground"), themeReaderBackground: $("#themeReaderBackground"), themeReaderText: $("#themeReaderText"), resetThemeButton: $("#resetThemeButton"), appRecovery: $("#appRecovery"), recoveryMessage: $("#recoveryMessage"), recoveryDetails: $("#recoveryDetails"), recoveryRetry: $("#recoveryRetry"), recoveryCheckHealth: $("#recoveryCheckHealth"), recoveryClearCache: $("#recoveryClearCache"), toast: $("#toast")
 };
 
 const tabs = $$(".tab");
@@ -404,7 +404,7 @@ function applyReaderPrefs() {
 }
 function libraryRoute() { return "#/library"; }
 function novelRoute(novelId) { return `#/novel/${encodeURIComponent(novelId)}`; }
-function readerRoute(novelId, chapter, mode = state.readerTab) { return `#/novel/${encodeURIComponent(novelId)}/chapter/${Number(chapter)}?mode=${encodeURIComponent(mode || "original")}`; }
+function readerRoute(novelId, chapter, mode = state.readerTab) { return `#/reader/${encodeURIComponent(novelId)}/${Number(chapter)}/${encodeURIComponent(mode || "original")}`; }
 function pushRoute(hash, replace = false) { if (window.location.hash === hash) return; const method = replace ? "replaceState" : "pushState"; history[method]({}, "", hash); }
 function parsedRoute() {
   const hash = window.location.hash || libraryRoute();
@@ -412,6 +412,7 @@ function parsedRoute() {
   const parts = path.split("/").filter(Boolean);
   const params = new URLSearchParams(query);
   if (!parts.length || parts[0] === "library") return { type: "library" };
+  if (parts[0] === "reader" && parts[1] && parts[2]) return { type: "reader", novelId: decodeURIComponent(parts[1]), chapter: Number(parts[2]), mode: decodeURIComponent(parts[3] || params.get("mode") || "original") };
   if (parts[0] === "novel" && parts[1] && parts[2] === "chapter" && parts[3]) return { type: "reader", novelId: decodeURIComponent(parts[1]), chapter: Number(parts[3]), mode: params.get("mode") || "original" };
   if (parts[0] === "novel" && parts[1]) return { type: "novel", novelId: decodeURIComponent(parts[1]) };
   return { type: "library" };
@@ -487,6 +488,10 @@ async function loadNovelWorkspace(workspace) {
   const data = await api(`/api/novels/${workspace.novelId}/library`);
   state.currentNovel = data.novel;
   state.chapters = data.chapters || [];
+  state.chapterDiagnostics = data.diagnostics || null;
+  state.chapterIndexStatus = data.chapter_index_status || "ready";
+  state.chapterIndexMessage = data.message || "";
+  handleChapterIndexStatus(data);
   state.chapterPage = workspace.chapterPage || 1;
   state.readerChapter = workspace.readerChapter || null;
   state.readerTab = workspace.readerTab || state.readerTab || "original";
@@ -675,9 +680,10 @@ function setupBatchHealthCard() {
   const panel = document.createElement("section");
   panel.className = "panel";
   panel.id = "batchHealthCard";
-  panel.innerHTML = `<h2>Translation Health</h2><p class="helper">Checks batch endpoints without calling OpenAI or starting translation.</p><div class="actions"><button class="secondary-button" id="checkBatchHealthButton" type="button">Check Translation Health</button><button class="secondary-button" id="batchDryRunButton" type="button">Batch Dry Run</button></div><div class="estimate-box" id="batchHealthStatus">Not checked yet.</div>`;
+  panel.innerHTML = `<h2>Translation Health</h2><p class="helper">Checks batch endpoints without calling OpenAI or starting translation.</p><div class="actions"><button class="secondary-button" id="checkBatchHealthButton" type="button">Check Translation Health</button><button class="secondary-button" id="rebuildReadinessButton" type="button">Rebuild Translation Readiness</button><button class="secondary-button" id="batchDryRunButton" type="button">Batch Dry Run</button></div><div class="estimate-box" id="readinessStatus">No readiness rebuild running.</div><div class="estimate-box" id="batchHealthStatus">Not checked yet.</div>`;
   $("#translatePanel .workflow-card")?.insertAdjacentElement("afterend", panel);
   $("#checkBatchHealthButton").onclick = checkBatchHealth;
+  $("#rebuildReadinessButton").onclick = rebuildReadiness;
   $("#batchDryRunButton").onclick = batchDryRun;
 }
 function setupStorageCleanupCard() {
@@ -695,24 +701,39 @@ function setupContentHealthCard() {
   const panel = document.createElement("section");
   panel.className = "panel admin-card";
   panel.id = "contentHealthCard";
-  panel.innerHTML = `<p class="eyebrow">Content Health</p><h3>Reader diagnostics</h3><p class="helper">Counts alone do not prove chapter text is readable.</p><label><span>Chapter to test</span><input id="contentDiagnosticChapter" type="number" min="1" value="1"></label><div class="actions"><button class="secondary-button" id="contentDiagnosticButton" type="button">Run Content Diagnostic</button><button class="secondary-button" id="testChapterOneReaderButton" type="button">Test Chapter 1 Reader</button><button class="secondary-button" id="testReadableChapterButton" type="button">Test First Non-Empty Chapter</button><button class="secondary-button" id="contentRebuildIndexButton" type="button">Rebuild Index</button><button class="secondary-button" id="contentRefreshNovelButton" type="button">Refresh Novel Data</button></div><div class="estimate-box" id="contentHealthReport">No content diagnostic has been run.</div>`;
+  panel.innerHTML = `<p class="eyebrow">Content Health</p><h3>Reader diagnostics</h3><p class="helper">Counts alone do not prove chapter text is readable.</p><label><span>Chapter to test</span><input id="contentDiagnosticChapter" type="number" min="1" value="1"></label><div class="actions"><button class="secondary-button" id="contentDiagnosticButton" type="button">Run Content Diagnostic</button><button class="secondary-button" id="contentGlobalDiagnosticButton" type="button">Run Global Diagnostic</button><button class="secondary-button" id="testChapterOneReaderButton" type="button">Test Chapter 1 Reader</button><button class="secondary-button" id="testReadableChapterButton" type="button">Test First Non-Empty Chapter</button><button class="secondary-button" id="contentRebuildChapterIndexButton" type="button">Rebuild Chapter Index</button><button class="secondary-button" id="contentRefreshNovelButton" type="button">Refresh Novel Data</button></div><div class="estimate-box" id="contentHealthReport">No content diagnostic has been run.</div>`;
   $("#storageCleanupCard")?.insertAdjacentElement("afterend", panel);
   $("#contentDiagnosticButton").onclick = () => runContentDiagnostic(Number($("#contentDiagnosticChapter")?.value || state.readerChapter || 1));
+  $("#contentGlobalDiagnosticButton").onclick = () => runContentDiagnostic(null);
   $("#testChapterOneReaderButton").onclick = () => { if (state.currentNovel) openReader(1, state.readerTab || "original"); };
   $("#testReadableChapterButton").onclick = () => {
     const chapter = state.chapters.find((item) => item.has_original || item.has_translation || item.has_reference) || state.chapters[0];
     if (chapter) openReader(chapter.chapter, state.readerTab || "original");
   };
-  $("#contentRebuildIndexButton").onclick = rebuildRecoveryIndex;
+  $("#contentRebuildChapterIndexButton").onclick = rebuildChapterIndex;
   $("#contentRefreshNovelButton").onclick = async () => { if (state.currentNovel) await openNovel(state.currentNovel.novel_id, { skipHistory: true, skipSave: true }); };
 }
 async function runContentDiagnostic(chapter) {
   const box = $("#contentHealthReport");
   if (!box || !state.currentNovel) return;
   box.textContent = "Checking actual readable chapter text...";
-  const data = await api(`/api/admin/content/diagnostic?novel_id=${encodeURIComponent(state.currentNovel.novel_id)}&chapter=${encodeURIComponent(chapter || 1)}`, { timeoutMs: 60000 });
+  const path = chapter ? `/api/admin/content/diagnostic?novel_id=${encodeURIComponent(state.currentNovel.novel_id)}&chapter=${encodeURIComponent(chapter)}` : `/api/admin/content/diagnostic?novel_id=${encodeURIComponent(state.currentNovel.novel_id)}`;
+  const data = await api(path, { timeoutMs: 120000 });
+  if (!chapter) {
+    box.innerHTML = `<strong>Global content diagnostic</strong><br>Index rows ${Number(data.index_rows || 0)}; Original readable ${Number(data.original_readable || 0)}; Reference readable ${Number(data.reference_readable || 0)}; AI readable ${Number(data.ai_readable || 0)}; Needs translation ${Number(data.needs_translation || 0)}<details><summary>Raw details</summary>${renderJsonBox(data)}</details>`;
+    return;
+  }
   const rows = Object.entries(data.modes || {}).map(([mode, info]) => `<tr><th>${esc(mode)}</th><td>${info.found ? (info.empty ? "empty" : "readable") : "missing"}</td><td>${Number(info.text_length || 0)}</td><td>${esc(info.path_used || "none")}</td></tr>`).join("");
   box.innerHTML = `<strong>Chapter ${Number(data.chapter || chapter || 1)}</strong><br>Originals ${Number(data.counts?.originals || 0)}; References ${Number(data.counts?.references || 0)}; AI ${Number(data.counts?.ai_translations || 0)}<br>Recommendation: ${esc(data.recommendation || "")}<table class="mini-table"><thead><tr><th>Mode</th><th>Status</th><th>Chars</th><th>Path used</th></tr></thead><tbody>${rows}</tbody></table><details><summary>Paths checked / raw details</summary>${renderJsonBox(data)}</details>`;
+}
+async function rebuildChapterIndex() {
+  const box = $("#contentHealthReport");
+  if (!box || !state.currentNovel) return;
+  box.textContent = "Starting background chapter index rebuild...";
+  const data = await api(`/api/admin/novels/${encodeURIComponent(state.currentNovel.novel_id)}/rebuild-chapter-index/start`, { method: "POST", timeoutMs: 10000 });
+  state.chapterIndexJobId = data.job_id;
+  box.innerHTML = `<strong>Chapter index rebuild queued.</strong><br>Job: ${esc(data.job_id || "")}<br>The chapter list will refresh automatically.`;
+  pollChapterIndexJob().catch((err) => toast(err.message, true));
 }
 async function runStorageCleanup(dryRun) {
   const retention = Number($("#cleanupRetentionDays")?.value || 7);
@@ -722,6 +743,36 @@ async function runStorageCleanup(dryRun) {
   const endpoint = dryRun ? "/api/admin/storage/cleanup/dry-run" : "/api/admin/storage/cleanup/run";
   const data = await api(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ retention_days: retention, confirm: !dryRun }), timeoutMs: 60000 });
   if (box) box.innerHTML = `<strong>${dryRun ? "Cleanup dry-run" : "Cleanup complete"}</strong><br>Would delete ${(data.would_delete || []).length}; deleted ${(data.deleted || []).length}; kept ${(data.kept || []).length}; size ${Number(data.total_size || 0)} bytes.<br>${(data.warnings || []).map(esc).join("<br>")}<details><summary>Raw details</summary>${renderJsonBox(data)}</details>`;
+}
+function renderLongJob(box, job, label) {
+  if (!box || !job) return;
+  const active = ["queued", "running"].includes(job.status);
+  box.innerHTML = `<strong>${esc(label)}: ${esc(job.status || "unknown")}</strong><br>Stage ${esc(job.stage || "")}; progress ${Number(job.progress || 0)}%; checked ${Number(job.checked || 0)} / ${Number(job.total || 0)}; copied ${Number(job.copied || 0)}; skipped ${Number(job.skipped || 0)}; failed ${Number(job.failed || 0)}${(job.warnings || []).length ? `<br>${(job.warnings || []).map(esc).join("<br>")}` : ""}<div class="actions"><button class="secondary-button" data-refresh-long-job type="button">Refresh Status</button></div><details><summary>Raw details</summary>${renderJsonBox(job)}</details>`;
+  box.querySelector("[data-refresh-long-job]")?.addEventListener("click", () => {
+    if (label.includes("Migration")) pollMigrationJob().catch((err) => toast(err.message, true));
+    else pollReadinessJob().catch((err) => toast(err.message, true));
+  });
+  if (els.migrateSupabaseButton && label.includes("Migration")) els.migrateSupabaseButton.disabled = active;
+}
+async function startSupabaseMigration() {
+  if (!window.confirm("Start Local -> Supabase migration as a background job? Existing matching files are skipped.")) return;
+  try {
+    const job = await api("/api/admin/storage/migrate-local-to-supabase/start", { method: "POST", timeoutMs: 10000 });
+    state.migrationJobId = job.job_id;
+    renderLongJob(els.migrationJobStatus, job, "Migration");
+    pollMigrationJob().catch((err) => toast(err.message, true));
+  } catch (error) {
+    if (els.migrationJobStatus) els.migrationJobStatus.textContent = "This action is large. Check the migration job status instead of starting again.";
+    throw error;
+  }
+}
+async function pollMigrationJob() {
+  if (!state.migrationJobId) return;
+  clearTimeout(state.migrationPollTimer);
+  const job = await api(`/api/admin/storage/migrate-local-to-supabase/jobs/${encodeURIComponent(state.migrationJobId)}`, { timeoutMs: 20000 });
+  renderLongJob(els.migrationJobStatus, job, "Migration");
+  if (["queued", "running"].includes(job.status)) state.migrationPollTimer = setTimeout(() => pollMigrationJob().catch((err) => toast(err.message, true)), 3000);
+  else if (els.migrateSupabaseButton) els.migrateSupabaseButton.disabled = false;
 }
 async function checkBatchHealth() {
   const box = $("#batchHealthStatus");
@@ -734,8 +785,25 @@ async function batchDryRun() {
   const box = $("#batchHealthStatus");
   if (!box) return;
   box.textContent = "Running batch dry-run...";
-  const data = await api("/api/batch/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...batchPayload(), dry_run: true }), timeoutMs: 60000 });
+  const data = await api("/api/batch/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...batchPayload(), dry_run: true }), timeoutMs: 20000 });
   box.innerHTML = `<strong>Dry-run complete.</strong><br>${esc(data.message || "Estimate created. OpenAI was not called.")}<details><summary>Raw details</summary>${renderJsonBox(data)}</details>`;
+}
+async function rebuildReadiness() {
+  const box = $("#readinessStatus");
+  if (box) box.textContent = "Starting Translation Readiness rebuild...";
+  const job = await api("/api/batch/readiness/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ novel_id: state.currentNovel?.novel_id || "i-am-god" }), timeoutMs: 10000 });
+  state.readinessJobId = job.job_id;
+  if (box) box.innerHTML = `<strong>Translation Readiness queued.</strong><br>Job: ${esc(job.job_id || "")}`;
+  pollReadinessJob().catch((err) => toast(err.message, true));
+}
+async function pollReadinessJob() {
+  if (!state.readinessJobId) return;
+  clearTimeout(state.readinessPollTimer);
+  const box = $("#readinessStatus");
+  const job = await api(`/api/batch/readiness/jobs/${encodeURIComponent(state.readinessJobId)}`, { timeoutMs: 20000 });
+  renderLongJob(box, job, "Readiness");
+  if (["queued", "running"].includes(job.status)) state.readinessPollTimer = setTimeout(() => pollReadinessJob().catch((err) => toast(err.message, true)), 3000);
+  if (job.status === "complete") toast("Translation Readiness updated.");
 }
 function renderOnlineRestoreCard(job = null) {
   const info = $("#onlineRestoreBackupInfo"), statusBox = $("#onlineRestoreStatus"), progress = $("#onlineRestoreProgress"), confirm = $("#onlineConfirmRestoreButton");
@@ -940,6 +1008,10 @@ async function openNovel(id, options = {}) {
   const data = await api(`/api/novels/${id}/library`);
   state.currentNovel = data.novel;
   state.chapters = data.chapters || [];
+  state.chapterDiagnostics = data.diagnostics || null;
+  state.chapterIndexStatus = data.chapter_index_status || "ready";
+  state.chapterIndexMessage = data.message || "";
+  handleChapterIndexStatus(data);
   state.chapterPage = 1;
   state.currentJob = null;
   state.activeWorkspaceId = `novel:${id}`;
@@ -951,6 +1023,44 @@ async function openNovel(id, options = {}) {
   switchTab(options.initialTab || "overview");
   renderWorkspaces();
   if (!options.skipHistory) pushRoute(novelRoute(id));
+}
+
+function handleChapterIndexStatus(data) {
+  const statusValue = data.chapter_index_status;
+  if (["rebuild_queued", "rebuilding"].includes(statusValue) && data.chapter_index_job_id) {
+    state.chapterIndexJobId = data.chapter_index_job_id;
+    toast("Chapter index is being prepared after Render wake.");
+    pollChapterIndexJob().catch((err) => toast(err.message, true));
+  }
+}
+
+async function pollChapterIndexJob() {
+  if (!state.currentNovel || !state.chapterIndexJobId) return;
+  clearTimeout(state.chapterIndexPollTimer);
+  const job = await api(`/api/admin/novels/${encodeURIComponent(state.currentNovel.novel_id)}/rebuild-chapter-index/jobs/${encodeURIComponent(state.chapterIndexJobId)}`, { timeoutMs: 20000 }).catch(() => null);
+  if (!job) {
+    const id = state.currentNovel.novel_id;
+    if (els.chapterList && !state.chapters.length) {
+      els.chapterList.innerHTML = `<div class="empty-state">Chapter index is being prepared after Render wake. The list will refresh automatically.</div>`;
+    }
+    state.chapterIndexPollTimer = setTimeout(async () => {
+      await openNovel(id, { skipHistory: true, skipSave: true, initialTab: "chapters" });
+      if (!state.chapters.length) pollChapterIndexJob().catch((err) => toast(err.message, true));
+    }, 5000);
+    return;
+  }
+  if (["queued", "running"].includes(job.status)) {
+    if (els.chapterList && !state.chapters.length) {
+      els.chapterList.innerHTML = `<div class="empty-state">Chapter index is being prepared after Render wake. The list will refresh automatically.<br>Progress ${Number(job.progress || 0)}%; rows ${Number(job.rows || 0)}.</div>`;
+    }
+    state.chapterIndexPollTimer = setTimeout(() => pollChapterIndexJob().catch((err) => toast(err.message, true)), 3500);
+    return;
+  }
+  if (job.status === "complete") {
+    const id = state.currentNovel.novel_id;
+    state.chapterIndexJobId = null;
+    await openNovel(id, { skipHistory: true, skipSave: true, initialTab: "chapters" });
+  }
 }
 
 function renderDetail() {
@@ -993,10 +1103,10 @@ function renderDetail() {
 function modeBadge(label, available) { return `<span class="badge ${available ? "translated" : "missing"}">${label}: ${available ? "available" : "missing"}</span>`; }
 function chapterMatchesFilter(chapter, filter) { const novelId = state.currentNovel?.novel_id; if (filter === "has-original") return chapter.has_original; if (filter === "has-reference") return chapter.has_reference; if (filter === "has-ai") return chapter.has_translation; if (filter === "missing-ai") return !chapter.has_translation; if (filter === "missing-reference") return !chapter.has_reference; if (filter === "bookmarked") return isChapterBookmarked(novelId, chapter.chapter); if (filter === "recently-read") return Boolean(chapterHistory(novelId, chapter.chapter)); if (filter === "ready") return chapter.has_original && !chapter.has_translation; if (filter === "failed") return status(chapter.status) === "failed"; return true; }
 function filteredChapters() {
-  const q = els.chapterSearch.value.toLowerCase();
+  const q = els.chapterSearch.value.trim().toLowerCase();
   const f = els.chapterFilter.value;
   const sort = els.chapterSort.value;
-  const chapters = state.chapters.filter((c) => chapterMatchesFilter(c, f) && `${c.chapter} ${c.title}`.toLowerCase().includes(q));
+  const chapters = state.chapters.filter((c) => chapterMatchesFilter(c, f) && (!q || `${c.chapter} ${c.title}`.toLowerCase().includes(q)));
   return chapters.sort((a, b) => {
     if (sort === "desc") return b.chapter - a.chapter;
     if (sort === "missing-ai") return Number(a.has_translation) - Number(b.has_translation) || a.chapter - b.chapter;
@@ -1012,10 +1122,20 @@ function renderChapters() {
   state.chapterPage = Math.min(Math.max(1, state.chapterPage), totalPages);
   const start = (state.chapterPage - 1) * state.pageSize;
   const chapters = state.filteredChapters.slice(start, start + state.pageSize);
-  els.pageInfo.textContent = `Page ${state.chapterPage} of ${totalPages} (${state.filteredChapters.length} chapters)`;
+  const visibleStart = state.filteredChapters.length ? start + 1 : 0;
+  const visibleEnd = Math.min(start + state.pageSize, state.filteredChapters.length);
+  els.pageInfo.textContent = state.filteredChapters.length ? `Showing ${visibleStart}-${visibleEnd} of ${state.filteredChapters.length} chapters. Page ${state.chapterPage} of ${totalPages}.` : `Page ${state.chapterPage} of ${totalPages} (0 chapters)`;
   els.prevPage.disabled = state.chapterPage <= 1;
   els.nextPage.disabled = state.chapterPage >= totalPages;
-  els.chapterList.innerHTML = chapters.length ? "" : '<div class="empty-state">No chapters match this view.</div>';
+  if (!chapters.length) {
+    const hasBackendRows = state.chapters.length > 0;
+    const preparing = ["rebuild_queued", "rebuilding"].includes(state.chapterIndexStatus);
+    const message = preparing ? "Chapter index is being prepared after Render wake. The list will refresh automatically." : (hasBackendRows ? "No chapters match the current filters." : "No chapter index found. Admin can rebuild the chapter index.");
+    const detail = !hasBackendRows && state.chapterDiagnostics ? `<details><summary>Diagnostics</summary>${renderJsonBox(state.chapterDiagnostics)}</details>` : "";
+    els.chapterList.innerHTML = `<div class="empty-state">${esc(message)}${detail}</div>`;
+  } else {
+    els.chapterList.innerHTML = "";
+  }
   for (const c of chapters) {
     const key = chapterKey(state.currentNovel.novel_id, c.chapter);
     const read = chapterHistory(state.currentNovel.novel_id, c.chapter);
@@ -1148,8 +1268,8 @@ function batchPayload() {
     show_estimate_before_starting: true,
   };
 }
-async function buildEstimate() { await withBusy(els.estimateBatch, async () => { try { const data = await api("/api/batch/estimate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(batchPayload()), timeoutMs: 60000 }); state.currentJob = data.job; state.currentEstimate = data; els.startBatch.disabled = false; renderQueue(); toast("Cost estimate ready. Translation has not started."); } catch (error) { els.startBatch.disabled = true; throw error; } }); }
-async function startBatch() { await withBusy(els.startBatch, async () => { if (!state.currentEstimate) await buildEstimate(); if (!window.confirm("Start paid translation for this estimated batch?")) return; const result = await api("/api/batch/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...batchPayload(), dry_run: false }), timeoutMs: 60000 }); if (result.job) state.currentJob = result.job; else if (result.job_id) state.currentJob = { ...(state.currentJob || {}), job_id: result.job_id, status: result.status || "queued" }; toast(result.error || "Batch started.", Boolean(result.error)); if (!result.error) pollJob().catch((err) => toast(err.message, true)); }); }
+async function buildEstimate() { await withBusy(els.estimateBatch, async () => { try { const data = await api("/api/batch/estimate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(batchPayload()), timeoutMs: 15000 }); state.currentJob = null; state.currentEstimate = data; els.startBatch.disabled = false; renderQueue(); toast("Cost estimate ready. Translation has not started."); } catch (error) { els.startBatch.disabled = true; throw error; } }); }
+async function startBatch() { await withBusy(els.startBatch, async () => { if (!state.currentEstimate) await buildEstimate(); if (!window.confirm("Start paid translation for this estimated batch?")) return; const result = await api("/api/batch/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...batchPayload(), dry_run: false }), timeoutMs: 20000 }); if (result.job) state.currentJob = result.job; else if (result.job_id) state.currentJob = { ...(state.currentJob || {}), job_id: result.job_id, status: result.status || "queued" }; toast(result.error || "Batch started.", Boolean(result.error)); if (!result.error) pollJob().catch((err) => toast(err.message, true)); }); }
 async function pollJob() {
   if (!state.currentJob) return;
   clearTimeout(state.pollTimer);
@@ -1163,7 +1283,7 @@ async function pollJob() {
     toast(error.message, true);
   }
 }
-function renderQueue() { const job = state.currentJob; const estimate = state.currentEstimate; if (!job) { els.estimateBox.textContent = "No batch estimate yet."; els.jobProgress.style.width = "0%"; els.queueList.innerHTML = '<div class="empty-state">Build a cost estimate to preview the next batch queue.</div>'; return; } const total = job.counts?.total || 0, done = job.counts?.completed || 0; els.jobProgress.style.width = `${total ? Math.round((done / total) * 100) : 0}%`; els.estimateBox.innerHTML = estimate ? `<strong>${status(job.status)}</strong><br>Selected ${estimate.total_selected}; already translated ${estimate.already_translated}; missing AI ${estimate.missing_ai_translations}; queued ${estimate.estimated_chapters_to_translate}.<br>Approx tokens in/out: ${estimate.estimated_input_tokens}/${estimate.estimated_output_tokens}. Cost range: ${money(estimate.estimated_cost_low)}-${money(estimate.estimated_cost_high)}.<br>${(estimate.warnings || []).map(esc).join("<br>")}` : `<strong>${status(job.status)}</strong><br>Chapters: ${total}. Cheapest estimate: ${money(job.estimate?.cheapest_total_cost)}. Recommended estimate: ${money(job.estimate?.recommended_total_cost)}.`; els.queueList.innerHTML = ""; for (const c of job.chapters || []) { const row = document.createElement("article"); row.className = "chapter-row"; row.innerHTML = `<div><div class="chapter-title">${String(c.chapter).padStart(4, "0")} - ${esc(c.title || "")}</div><div class="chapter-meta">${esc(c.error || "Ready")}</div></div><span class="badge ${c.status}">${status(c.status)}</span>`; els.queueList.appendChild(row); } }
+function renderQueue() { const job = state.currentJob; const estimate = state.currentEstimate; if (!job && !estimate) { els.estimateBox.textContent = "No batch estimate yet."; els.jobProgress.style.width = "0%"; els.queueList.innerHTML = '<div class="empty-state">Build a cost estimate to preview the next batch queue.</div>'; return; } const total = job?.counts?.total || estimate?.estimated_chapters_to_translate || 0, done = job?.counts?.completed || 0; els.jobProgress.style.width = `${total ? Math.round((done / total) * 100) : 0}%`; els.estimateBox.innerHTML = estimate ? `<strong>${job ? status(job.status) : "Estimate ready"}</strong><br>Original readable ${estimate.original_readable}; AI readable ${estimate.ai_existing_readable}; needs translation ${estimate.needs_translation}; max now ${estimate.max_chapters_to_translate_now || estimate.estimated_chapters_to_translate}.<br>Approx tokens in/out: ${estimate.estimated_input_tokens}/${estimate.estimated_output_tokens}. Cost range: ${money(estimate.estimated_cost_low)}-${money(estimate.estimated_cost_high)}.<br>${(estimate.warnings || []).map(esc).join("<br>")}` : `<strong>${status(job.status)}</strong><br>Chapters: ${total}. Cheapest estimate: ${money(job.estimate?.cheapest_total_cost)}. Recommended estimate: ${money(job.estimate?.recommended_total_cost)}.`; els.queueList.innerHTML = ""; const rows = job?.chapters || (estimate?.chapter_numbers || []).map((number) => ({ chapter: number, title: "", status: "estimated", error: "Ready" })); for (const c of rows) { const row = document.createElement("article"); row.className = "chapter-row"; row.innerHTML = `<div><div class="chapter-title">${String(c.chapter).padStart(4, "0")} - ${esc(c.title || "")}</div><div class="chapter-meta">${esc(c.error || "Ready")}</div></div><span class="badge ${c.status}">${status(c.status)}</span>`; els.queueList.appendChild(row); } }
 
 function renderBackupJob(job) {
   if (!els.backupJobStatus) return;
@@ -1415,7 +1535,7 @@ function bind() {
   els.accountDialog.addEventListener("click", (event) => { if (event.target === els.accountDialog) els.accountDialog.close(); });
   els.checkStorageButton.onclick = () => refreshStorageHealth().catch((err) => toast(err.message, true));
   els.migrateStorageButton.onclick = async () => { if (!window.confirm("Copy old local data into the configured DATA_DIR? Existing different files will be skipped, not overwritten.")) return; const report = await api("/api/admin/storage/migrate-local-data", { method: "POST" }); await refreshStorageHealth(); toast(`Migration copied ${report.copied || 0}, skipped ${report.skipped_existing || 0}, conflicts ${report.conflicts || 0}.`); };
-  els.migrateSupabaseButton.onclick = async () => { if (!window.confirm("Migrate local novel data to Supabase Storage? This copies files and skips existing different files.")) return; const report = await api("/api/admin/storage/migrate-to-supabase", { method: "POST" }); await refreshStorageHealth(); toast(`Supabase migration: originals ${report.originals || 0}, references ${report.references || 0}, AI ${report.ai_translations || 0}, skipped ${report.skipped || 0}, conflicts ${report.conflicts || 0}.`); };
+  els.migrateSupabaseButton.onclick = () => startSupabaseMigration().catch((err) => toast(err.message, true));
   els.rebuildIndexButton.onclick = async () => { const report = await api("/api/admin/index/rebuild", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ novel_id: state.currentNovel?.novel_id || null }), timeoutMs: 60000 }); await loadNovels(); if (state.currentNovel) await openNovel(state.currentNovel.novel_id, { skipHistory: true, skipSave: true, initialTab: "settings" }); await refreshStorageHealth(); toast(`Index rebuilt for ${(report.novels || []).length || 0} novel(s).`); };
   els.auditContentButton.onclick = () => auditContent().catch((err) => toast(err.message, true));
   els.dryRunRepairButton.onclick = () => repairContent(true).catch((err) => toast(err.message, true));
@@ -1473,7 +1593,7 @@ function bind() {
   window.addEventListener("hashchange", handleRouteChange);
 }
 
-function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=81").then((registration) => registration.update()).catch(() => {}); }
+function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=83").then((registration) => registration.update()).catch(() => {}); }
 async function bootAppData() {
   hideRecovery();
   els.novelGrid.innerHTML = '<div class="empty-state">Loading library...</div>';

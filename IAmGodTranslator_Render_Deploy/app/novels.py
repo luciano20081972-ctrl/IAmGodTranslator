@@ -165,6 +165,166 @@ class NovelManager:
         self.write_novel_index()
         return report
 
+    def should_skip_migration_file(self, path: Path) -> bool:
+        parts = {part.lower() for part in path.parts}
+        name = path.name.lower()
+        suffix = path.suffix.lower()
+        if name == ".env" or any(part in parts for part in {".venv", "venv", "env", "__pycache__", "logs", "batch_cache", "tmp", "temp"}):
+            return True
+        if suffix in {".pyc", ".pyo", ".log", ".db", ".sqlite", ".sqlite3", ".zip"}:
+            return True
+        if any(token in name for token in ("secret", "cookie", "session")):
+            return True
+        return False
+
+    def migrate_to_supabase_progress(self, update: Any) -> dict[str, Any]:
+        roots = [self.data_dir / "app", self.novels_dir]
+        files: list[tuple[Path, str]] = []
+        skipped_excluded = 0
+        for root in roots:
+            if not root.exists():
+                continue
+            prefix = "app" if root.name == "app" else "novels"
+            for path in root.rglob("*"):
+                if not path.is_file():
+                    continue
+                if self.should_skip_migration_file(path):
+                    skipped_excluded += 1
+                    continue
+                files.append((path, f"{prefix}/{path.relative_to(root).as_posix()}"))
+        report: dict[str, Any] = {"checked": 0, "total": len(files), "copied": 0, "skipped": skipped_excluded, "failed": 0, "conflicts": 0, "warnings": [], "errors": []}
+        update(stage="scanning", total=len(files), skipped=skipped_excluded, warnings=[f"Skipped {skipped_excluded} excluded runtime/secret/cache file(s)."] if skipped_excluded else [])
+        if self.remote is None:
+            report["warnings"].append("Supabase storage is not configured; no files were uploaded.")
+            update(status="failed", stage="not_configured", progress=100, **report)
+            raise ValueError("Supabase storage is not configured.")
+        for index, (path, remote_path) in enumerate(files, start=1):
+            try:
+                data = path.read_bytes()
+                existing = self.remote.read_bytes(remote_path)
+                if existing == data:
+                    report["skipped"] += 1
+                elif existing is not None:
+                    report["conflicts"] += 1
+                    report["skipped"] += 1
+                else:
+                    self.remote.write_bytes(remote_path, data)
+                    report["copied"] += 1
+            except Exception as exc:
+                report["failed"] += 1
+                if len(report["errors"]) < 50:
+                    report["errors"].append(f"{remote_path}: {exc.__class__.__name__}")
+            report["checked"] = index
+            if index == len(files) or index % 25 == 0:
+                update(stage="uploading", progress=int(index / max(1, len(files)) * 100), **report)
+        try:
+            self.write_novel_index()
+        except Exception as exc:
+            report["warnings"].append(f"Novel index refresh failed: {exc.__class__.__name__}")
+        update(stage="complete", progress=100, **report)
+        return report
+
+    def translation_readiness_path(self, novel_id: str) -> Path:
+        return self.novel_dir(novel_id) / "translation_readiness.json"
+
+    def read_translation_readiness(self, novel_id: str) -> dict[str, Any] | None:
+        path = self.translation_readiness_path(novel_id)
+        if not path.exists():
+            remote_payload = self.remote_json(f"novels/{novel_id}/translation_readiness.json")
+            if isinstance(remote_payload, dict) and isinstance(remote_payload.get("chapters"), list):
+                self.write_json(path, remote_payload)
+                return remote_payload
+            return None
+        try:
+            payload = self.read_json(path)
+            return payload if isinstance(payload.get("chapters"), list) else None
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def write_translation_readiness(self, novel_id: str, payload: dict[str, Any]) -> None:
+        self.write_json(self.translation_readiness_path(novel_id), payload)
+        self.write_remote_json(f"novels/{novel_id}/translation_readiness.json", payload)
+
+    def fast_translation_readiness(self, novel_id: str) -> dict[str, Any]:
+        chapters = self.chapters(novel_id)
+        records = []
+        for chapter in chapters:
+            original_ok = bool(chapter.get("original_readable") or chapter.get("has_original"))
+            ai_ok = bool(chapter.get("ai_readable") or chapter.get("has_translation"))
+            records.append({
+                "chapter": int(chapter.get("chapter") or 0),
+                "title": chapter.get("title") or "",
+                "original_readable": original_ok,
+                "ai_readable": ai_ok,
+                "needs_translation": original_ok and not ai_ok,
+                "characters": int(chapter.get("characters") or 3500),
+            })
+        return self.readiness_payload(novel_id, records, source="chapter_index_fast")
+
+    def readiness_payload(self, novel_id: str, records: list[dict[str, Any]], source: str) -> dict[str, Any]:
+        original_readable = sum(1 for item in records if item.get("original_readable"))
+        ai_readable = sum(1 for item in records if item.get("ai_readable"))
+        needs = sum(1 for item in records if item.get("needs_translation"))
+        return {
+            "ok": True,
+            "novel_id": novel_id,
+            "source": source,
+            "updated_at": utc_now(),
+            "total_indexed": len(records),
+            "original_readable": original_readable,
+            "ai_existing_readable": ai_readable,
+            "needs_translation": needs,
+            "skipped_no_original": len(records) - original_readable,
+            "skipped_already_translated": ai_readable,
+            "chapters": records,
+        }
+
+    def build_translation_readiness(self, novel_id: str, update: Any | None = None) -> dict[str, Any]:
+        chapters = self.chapters(novel_id)
+        records: list[dict[str, Any]] = []
+        total = len(chapters)
+        for index, chapter in enumerate(chapters, start=1):
+            number = int(chapter.get("chapter") or 0)
+            original = self.read_chapter_content(novel_id, number, "original", chapter)
+            ai = self.read_chapter_content(novel_id, number, "ai", chapter)
+            original_ok = original["found"] and not original["empty"]
+            ai_ok = ai["found"] and not ai["empty"]
+            records.append({
+                "chapter": number,
+                "title": chapter.get("title") or "",
+                "original_readable": original_ok,
+                "ai_readable": ai_ok,
+                "needs_translation": original_ok and not ai_ok,
+                "characters": int(original.get("text_length") or 3500),
+            })
+            if update and (index == total or index % 25 == 0):
+                update(stage="checking_chapters", checked=index, total=total, progress=int(index / max(1, total) * 100))
+        payload = self.readiness_payload(novel_id, records, source="actual_text")
+        self.write_translation_readiness(novel_id, payload)
+        return payload
+
+    def hydrate_lightweight_metadata(self, novel_id: str) -> dict[str, Any]:
+        hydrated = {"novel_id": novel_id, "metadata": False, "counts": False, "chapter_index": False, "translation_readiness": False, "warnings": []}
+        if self.remote is None:
+            return hydrated
+        metadata = self.remote_json(f"novels/{novel_id}/metadata.json") or self.remote_json(f"app/novels/{novel_id}/metadata.json")
+        if isinstance(metadata, dict):
+            self.write_json(self.metadata_path(novel_id), metadata)
+            hydrated["metadata"] = True
+        counts = self.remote_json(f"novels/{novel_id}/counts.json") or self.remote_json(f"app/novels/{novel_id}/counts.json")
+        if isinstance(counts, dict):
+            self.write_json(self.novel_dir(novel_id) / "counts.json", counts)
+            hydrated["counts"] = True
+        chapter_index = self.remote_json(f"novels/{novel_id}/chapter_index.json")
+        if isinstance(chapter_index, dict) and isinstance(chapter_index.get("chapters"), list):
+            self.write_json(self.chapter_index_path(novel_id), chapter_index)
+            hydrated["chapter_index"] = True
+        readiness = self.remote_json(f"novels/{novel_id}/translation_readiness.json")
+        if isinstance(readiness, dict) and isinstance(readiness.get("chapters"), list):
+            self.write_json(self.translation_readiness_path(novel_id), readiness)
+            hydrated["translation_readiness"] = True
+        return hydrated
+
     def sync_to_remote(self, novel_id: str | None = None) -> None:
         if self.remote is None:
             return
@@ -345,7 +505,9 @@ class NovelManager:
             try:
                 if self.remote is not None:
                     self.hydrate_remote_metadata(item_id)
-                report["novels"].append(self.write_counts_cache(item_id))
+                counts = self.write_counts_cache(item_id)
+                chapter_index = self.rebuild_chapter_index(item_id)
+                report["novels"].append({**counts, "chapter_index_rows": chapter_index.get("rows", 0)})
             except Exception as exc:
                 report["warnings"].append(f"{item_id}: {exc.__class__.__name__}")
         self.write_novel_index()
@@ -582,7 +744,131 @@ class NovelManager:
         return self.decorate_novel(self.get_metadata(novel_id))
 
     def library(self, novel_id: str) -> dict[str, Any]:
-        return {"novel": self.get_novel(novel_id), "chapters": self.chapters(novel_id)}
+        index = self.read_chapter_index(novel_id)
+        counts = self.active_counts(novel_id)
+        if self.chapter_index_is_valid(novel_id, index):
+            chapters = sorted(index.get("chapters", []), key=lambda item: int(item["chapter"])) if isinstance(index, dict) else []
+            return {"novel": self.get_novel(novel_id), "chapters": chapters, "chapter_index_status": "ready", "chapter_index_rows": len(chapters), "chapter_index_updated_at": index.get("updated_at") if isinstance(index, dict) else None}
+        local_has_files = any(self.chapter_numbers_for_folder(self.folders(novel_id)[key]) for key in ("original", "reference", "ai"))
+        chapters = self.chapters(novel_id, include_remote=False) if local_has_files else []
+        status = "ready_local" if chapters else ("missing" if max(counts.get("originals", 0), counts.get("references", 0), counts.get("ai_translations", 0)) else "empty")
+        response: dict[str, Any] = {"novel": self.get_novel(novel_id), "chapters": chapters, "chapter_index_status": status, "chapter_index_rows": len(chapters)}
+        if status in {"missing", "empty"}:
+            response["message"] = "Chapter index is being prepared after wake." if status == "missing" else "No chapter index found. Admin can rebuild the chapter index."
+            response["diagnostics"] = {"counts": counts, "chapter_index_path": str(self.chapter_index_path(novel_id))}
+        return response
+
+    def chapter_index_path(self, novel_id: str) -> Path:
+        return self.novel_dir(novel_id) / "chapter_index.json"
+
+    def read_chapter_index(self, novel_id: str) -> dict[str, Any] | None:
+        path = self.chapter_index_path(novel_id)
+        if path.exists():
+            try:
+                payload = self.read_json(path)
+                if isinstance(payload.get("chapters"), list):
+                    return payload
+            except (OSError, json.JSONDecodeError):
+                return None
+        remote_payload = self.remote_json(f"novels/{novel_id}/chapter_index.json")
+        if isinstance(remote_payload, dict) and isinstance(remote_payload.get("chapters"), list):
+            self.write_json(path, remote_payload)
+            return remote_payload
+        return None
+
+    def chapter_index_is_valid(self, novel_id: str, payload: dict[str, Any] | None) -> bool:
+        if not payload or not isinstance(payload.get("chapters"), list):
+            return False
+        rows = len(payload["chapters"])
+        counts = self.active_counts(novel_id)
+        expected = max(int(counts.get("originals") or 0), int(counts.get("references") or 0), int(counts.get("ai_translations") or 0))
+        return rows > 0 and (expected == 0 or rows >= expected)
+
+    def rebuild_chapter_index(self, novel_id: str) -> dict[str, Any]:
+        rows: dict[int, dict[str, Any]] = {}
+        paths_scanned: list[str] = []
+        warnings: list[str] = []
+
+        def row_for(number: int, title: str) -> dict[str, Any]:
+            return rows.setdefault(number, self.base_chapter(number, title or f"Chapter {number}"))
+
+        def add_path(category: str, path_value: str, title: str = "") -> None:
+            filename = Path(path_value.replace("\\", "/")).name
+            number = chapter_from_filename(Path(filename))
+            if number is None:
+                warnings.append(f"Could not detect chapter number: {path_value}")
+                return
+            current = row_for(int(number), title or Path(filename).stem)
+            key = {"original": "source_path", "reference": "reference_path", "ai": "output_path", "prompt": "prompt_path"}[category]
+            current[key] = current.get(key) or path_value
+            if category == "ai":
+                current["status"] = "translated"
+
+        for category, folder_key in (("original", "original"), ("reference", "reference"), ("ai", "ai")):
+            folder = self.folders(novel_id)[folder_key]
+            paths_scanned.append(str(folder))
+            if folder.exists():
+                for path in sorted(folder.rglob("*.txt")):
+                    add_path(category, str(path), path.stem)
+
+        if self.remote is not None:
+            for category in ("original", "reference", "ai", "prompt"):
+                remote_paths = self.remote_category_paths(novel_id, category)
+                paths_scanned.extend(sorted({str(Path(path).parent).replace("\\", "/") for path in remote_paths})[:20])
+                for remote_path in remote_paths:
+                    add_path(category, self.remote_marker(remote_path), Path(remote_path).stem)
+
+        chapters = [self.public_chapter(chapter) for chapter in sorted(rows.values(), key=lambda item: int(item["chapter"]))]
+        for chapter in chapters:
+            number = int(chapter["chapter"])
+            chapter["has_ai"] = bool(chapter.get("has_translation"))
+            chapter["original_readable"] = self.path_is_probably_readable(chapter.get("source_path"))
+            chapter["reference_readable"] = self.path_is_probably_readable(chapter.get("reference_path"))
+            chapter["ai_readable"] = self.path_is_probably_readable(chapter.get("output_path"))
+        payload = {
+            "ok": True,
+            "novel_id": novel_id,
+            "updated_at": utc_now(),
+            "rows": len(chapters),
+            "original_count": sum(1 for chapter in chapters if chapter.get("has_original")),
+            "reference_count": sum(1 for chapter in chapters if chapter.get("has_reference")),
+            "ai_count": sum(1 for chapter in chapters if chapter.get("has_translation")),
+            "paths_scanned": sorted(set(paths_scanned))[:120],
+            "warnings": warnings[:100],
+            "chapters": chapters,
+        }
+        self.write_json(self.chapter_index_path(novel_id), payload)
+        self.write_remote_json(f"novels/{novel_id}/chapter_index.json", payload)
+        return payload
+
+    def path_is_probably_readable(self, path_value: object) -> bool:
+        if not path_value:
+            return False
+        text = str(path_value)
+        if text.startswith("supabase://"):
+            return True
+        path = Path(text)
+        return path.is_file() and path.stat().st_size > 0
+
+    def rebuild_chapter_index_report(self, novel_id: str) -> dict[str, Any]:
+        payload = self.rebuild_chapter_index(novel_id)
+        return {key: payload[key] for key in ("ok", "novel_id", "rows", "original_count", "reference_count", "ai_count", "paths_scanned", "warnings")}
+
+    def rebuild_chapter_index_progress(self, novel_id: str, update: Any) -> dict[str, Any]:
+        update(stage="scanning", progress=5, checked=0, rows=0, novel_id=novel_id)
+        payload = self.rebuild_chapter_index(novel_id)
+        report = self.rebuild_chapter_index_report(novel_id)
+        update(
+            stage="complete",
+            progress=100,
+            checked=payload.get("rows", 0),
+            total=payload.get("rows", 0),
+            rows=payload.get("rows", 0),
+            original_count=payload.get("original_count", 0),
+            reference_count=payload.get("reference_count", 0),
+            ai_count=payload.get("ai_count", 0),
+        )
+        return report
 
     async def upload_original(self, novel_id: str, uploads: list[UploadFile]) -> dict[str, Any]:
         await self.service_for(novel_id)._save_uploads(uploads, self.folders(novel_id)["original"])
@@ -1020,6 +1306,55 @@ class NovelManager:
             "message": "Counts alone do not prove chapter text is readable.",
         }
 
+    def global_content_diagnostic(self, novel_id: str) -> dict[str, Any]:
+        index = self.read_chapter_index(novel_id)
+        if not self.chapter_index_is_valid(novel_id, index):
+            index = self.rebuild_chapter_index(novel_id)
+        chapters = index.get("chapters", []) if isinstance(index, dict) else []
+        summary = {
+            "index_rows": len(chapters),
+            "original_readable": 0,
+            "reference_readable": 0,
+            "ai_readable": 0,
+            "needs_translation": 0,
+            "missing_original": 0,
+            "missing_ai": 0,
+            "sample_missing_chapters": [],
+            "sample_unreadable_chapters": [],
+        }
+        for chapter in chapters:
+            number = int(chapter.get("chapter") or 0)
+            original = self.read_chapter_content(novel_id, number, "original", chapter)
+            reference = self.read_chapter_content(novel_id, number, "reference", chapter)
+            ai = self.read_chapter_content(novel_id, number, "ai", chapter)
+            original_ok = original["found"] and not original["empty"]
+            ai_ok = ai["found"] and not ai["empty"]
+            if original_ok:
+                summary["original_readable"] += 1
+            else:
+                summary["missing_original"] += 1
+                if len(summary["sample_unreadable_chapters"]) < 20:
+                    summary["sample_unreadable_chapters"].append(number)
+            if reference["found"] and not reference["empty"]:
+                summary["reference_readable"] += 1
+            if ai_ok:
+                summary["ai_readable"] += 1
+            else:
+                summary["missing_ai"] += 1
+                if len(summary["sample_missing_chapters"]) < 20:
+                    summary["sample_missing_chapters"].append(number)
+            if original_ok and not ai_ok:
+                summary["needs_translation"] += 1
+        return {
+            "ok": True,
+            "novel_id": novel_id,
+            **summary,
+            "counts": self.active_counts(novel_id),
+            "chapter_index_path": str(self.chapter_index_path(novel_id)),
+            "recommendation": "no_action_needed" if summary["index_rows"] else "rebuild_chapter_index",
+            "message": "Global diagnostic checks actual readable text, not counts alone.",
+        }
+
     def cover_path(self, novel_id: str) -> Path | None:
         metadata = self.get_metadata(novel_id)
         cover_file = metadata.get("settings", {}).get("cover_file")
@@ -1210,6 +1545,14 @@ class NovelManager:
             return None
 
     def chapters(self, novel_id: str, include_remote: bool = True) -> list[dict[str, Any]]:
+        if include_remote:
+            index = self.read_chapter_index(novel_id)
+            chapters = index.get("chapters", []) if isinstance(index, dict) else []
+            if self.chapter_index_is_valid(novel_id, index) and chapters:
+                return sorted(chapters, key=lambda item: int(item["chapter"]))
+            local_has_files = any(self.chapter_numbers_for_folder(self.folders(novel_id)[key]) for key in ("original", "reference", "ai"))
+            if self.remote is not None and not local_has_files:
+                return []
         chapters: dict[int, dict[str, Any]] = {}
         for file in sorted(self.folders(novel_id)["original"].rglob("*.txt")):
             parsed = parse_chapter(file)
@@ -1257,7 +1600,8 @@ class NovelManager:
         return {"chapter": number, "title": title, "status": "untranslated", "source_path": source_path, "reference_path": None, "output_path": None, "prompt_path": None, "job_id": None, "updated_at": None}
 
     def public_chapter(self, chapter: dict[str, Any]) -> dict[str, Any]:
-        return {**chapter, "has_translation": bool(chapter.get("output_path")), "has_original": bool(chapter.get("source_path")), "has_reference": bool(chapter.get("reference_path")), "has_prompt": bool(chapter.get("prompt_path"))}
+        has_ai = bool(chapter.get("output_path"))
+        return {**chapter, "has_translation": has_ai, "has_ai": has_ai, "has_original": bool(chapter.get("source_path")), "has_reference": bool(chapter.get("reference_path")), "has_prompt": bool(chapter.get("prompt_path"))}
 
     def merge_status(self, current: str, incoming: str | None) -> str:
         labels = {"completed": "translated", "test_completed": "translated", "running": "translating", "estimated": "queued", "pending": "queued", "queued": "queued", "translating": "translating", "failed": "failed", "skipped": "failed"}
