@@ -85,6 +85,18 @@ def start_chapter_index_job(novel_id: str) -> dict[str, object]:
     )
 
 
+def start_storage_inventory_job(novel_id: str) -> dict[str, object]:
+    active = long_jobs.active("storage-inventory", novel_id=novel_id)
+    if active:
+        return active
+    return long_jobs.start(
+        "storage-inventory",
+        f"Storage inventory rebuild for {novel_id}",
+        lambda update, _state: novels.rebuild_storage_inventory_progress(novel_id, update),
+        metadata={"novel_id": novel_id},
+    )
+
+
 @app.on_event("startup")
 async def startup_lightweight_hydration() -> None:
     try:
@@ -234,12 +246,7 @@ def storage_health_report() -> dict[str, object]:
     counts_without_readable_files = has_active_counts and not has_local_chapter_files and not has_canonical_counts and not has_legacy_counts
     if novels.remote is not None and any(sum(int(v or 0) for v in counts.values() if isinstance(v, int)) for counts in supabase_counts.values()) and not any(local_cache_counts.values()):
         warnings.append("Local cache is empty but Supabase has files. The app is using Supabase/database counts and can rebuild the local cache on demand.")
-    if counts_without_readable_files:
-        warnings.append("Counts exist, but readable chapter files are missing. Restore from Supabase backup is required.")
-        recommended_recovery_action = "restore_from_supabase_backup"
-        recommended_recovery_label = "Counts exist, but readable chapter files are missing. Restore from Supabase backup is required."
-        recommended_recovery_steps = ["List Supabase backups", "Dry-run the newest backup", "Confirm online restore", "Rebuild Supabase index", "Refresh novel data"]
-    elif has_active_counts or has_canonical_counts:
+    if has_local_chapter_files or has_canonical_counts:
         recommended_recovery_action = "none"
         recommended_recovery_label = "Supabase live data ready. No restore needed."
         recommended_recovery_steps = ["Open the library", "Read chapters normally", "Use Full Backup only for explicit admin backup jobs"]
@@ -249,6 +256,11 @@ def storage_health_report() -> dict[str, object]:
         recommended_recovery_action = "migrate_legacy_paths"
         recommended_recovery_label = "Legacy Supabase files were found. Run migration dry-run."
         recommended_recovery_steps = ["Run Deep Scan Supabase", "Run Migrate Legacy Paths dry-run", "If files are listed, confirm migration", "Rebuild Supabase Index", "Refresh Novel Data"]
+    elif counts_without_readable_files:
+        warnings.append("Counts exist, but readable chapter files are missing. Restore from Supabase backup is required.")
+        recommended_recovery_action = "restore_from_supabase_backup"
+        recommended_recovery_label = "Counts exist, but readable chapter files are missing. Restore from Supabase backup is required."
+        recommended_recovery_steps = ["List Supabase backups", "Dry-run the newest backup", "Confirm online restore", "Rebuild Supabase index", "Refresh novel data"]
     elif backup_zips_found and not has_canonical_counts:
         recommended_recovery_action = "restore_from_supabase_backup"
         recommended_recovery_label = "Restore From Supabase Backup"
@@ -735,6 +747,29 @@ async def migrate_local_to_supabase_job(request: Request, job_id: str) -> dict[s
 async def deep_discovery(request: Request, novel_id: str = "i-am-god") -> dict[str, object]:
     require_admin(request)
     return novels.deep_discovery(novel_id)
+
+
+@app.get("/api/admin/storage/inventory/summary")
+async def storage_inventory_summary(request: Request, novel_id: str = "i-am-god") -> dict[str, object]:
+    require_admin(request)
+    return novels.storage_inventory_summary(novel_id, use_cached=False)
+
+
+@app.post("/api/admin/storage/inventory/rebuild/start")
+async def storage_inventory_rebuild_start(request: Request, payload: Annotated[dict[str, object] | None, Body()] = None) -> JSONResponse:
+    require_admin(request)
+    novel_id = str((payload or {}).get("novel_id") or "i-am-god")
+    job = start_storage_inventory_job(novel_id)
+    return JSONResponse({"ok": True, "job_id": job["job_id"], "status": job.get("status", "queued"), "novel_id": novel_id}, status_code=202)
+
+
+@app.get("/api/admin/storage/inventory/jobs/{job_id}")
+async def storage_inventory_job(request: Request, job_id: str) -> dict[str, object]:
+    require_admin(request)
+    job = long_jobs.read("storage-inventory", job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Storage inventory job not found.")
+    return job
 
 
 @app.post("/api/admin/storage/migrate-legacy-paths")
@@ -1330,6 +1365,8 @@ def batch_selection(novel_id: str, payload: dict[str, object]) -> dict[str, obje
     if readiness is None:
         readiness = novels.fast_translation_readiness(novel_id)
         readiness_source = "chapter_index_fast"
+    if readiness.get("ok") is False:
+        raise ValueError(str(readiness.get("message") or "Translation readiness is not prepared yet."))
     records = [
         item for item in readiness.get("chapters", [])
         if start <= int(item.get("chapter") or 0) <= end

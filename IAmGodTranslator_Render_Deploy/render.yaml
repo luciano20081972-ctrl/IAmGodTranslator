@@ -2,7 +2,65 @@
 
 ## Current Version Target
 
-GodTranslator_Web_v9_0_6_Wake_And_Supabase_Scan_Fix.zip
+GodTranslator_Web_v9_0_7_Nonblocking_Inventory_And_Reader_Fix.zip
+
+## v9.0.7 Nonblocking Inventory / Reader Fix
+
+### Completed Tasks
+
+- Fixed the remaining Reader call-chain blocker: `NovelManager.chapter()` now reads the persisted `chapter_index.json` directly and falls back only to local files, avoiding remote inventory discovery during Reader requests.
+- Reader content requests now use exact stored paths from the persisted index and perform at most one bounded Supabase object read for that mode.
+- Added structured `storage_timeout` diagnostics when a stored Supabase object path exists but the object cannot be read.
+- Added explicit admin storage inventory endpoints:
+  - `POST /api/admin/storage/inventory/rebuild/start`
+  - `GET /api/admin/storage/inventory/jobs/{job_id}`
+  - `GET /api/admin/storage/inventory/summary`
+- Inventory rebuild now runs as a long job, lists only canonical prefixes, writes deduped `chapter_index.json`, `storage_inventory.json`, and `counts.json`, and returns terminal `blocked` when counts exist but no canonical readable files are found.
+- Translation readiness now sets `total` from the persisted index immediately and exits as blocked instead of staying at `starting`, `checked=0`, `total=0`.
+- Batch dry-run now fails fast when readiness is not prepared and does not create a queue.
+- `/api/storage` now reports "live data ready" only when local or canonical Supabase chapter files exist; stale metadata counts alone now point to restore/recovery.
+- Bumped frontend cache/service-worker versions to v86.
+
+### Exact Reader Call Chain
+
+- Original Story endpoint: `GET /api/novels/{novel_id}/chapters/{chapter_number}/original`
+- Reference Translation endpoint: `GET /api/novels/{novel_id}/chapters/{chapter_number}/reference`
+- AI Translation endpoint: `GET /api/novels/{novel_id}/chapters/{chapter_number}/english`
+- FastAPI handler: `get_chapter_text()`
+- Manager call: `NovelManager.chapter_text()`
+- Resolver: `NovelManager.read_chapter_content()`
+- Stored remote read: `NovelManager.remote_read_chapter()` -> `SupabaseStorage.read_text()` -> `SupabaseStorage.read_bytes()` -> `SupabaseStorage.request()`
+- Inventory loader is no longer in the Reader path. It is now explicit-only: `rebuild_storage_inventory_progress()` -> `canonical_remote_category_paths()` -> `SupabaseStorage.list_paths()`.
+
+### Request Counts
+
+- Before v9.0.7: a Chapter 1 Reader request could enter `chapters(include_remote=True)`, validate active counts, and list multiple canonical and legacy prefixes before attempting content.
+- After v9.0.7: a Chapter 1 Reader request with an exact persisted path performs 1 Supabase content download and 0 Supabase prefix list calls.
+- Explicit inventory rebuild lists only:
+  - `novels/{novel_id}/originals`
+  - `novels/{novel_id}/references`
+  - `novels/{novel_id}/ai_translations`
+  - `novels/{novel_id}/prompts`
+
+### QA Results
+
+- Python syntax check passed.
+- JavaScript syntax check passed.
+- `requirements.txt` is valid and not `{}`.
+- TestClient passed `/api/health`, `/api/bootstrap`, `/api/storage`, `/api/novels`, and `/api/novels/i-am-god/library`.
+- Public `/api/admin/storage/inventory/rebuild/start`, `/api/batch/start`, and `/api/batch/readiness/start` returned 401.
+- Admin login returned 200 in the local fixture.
+- Admin batch dry-run with no readiness returned quickly with `Translation readiness is not prepared yet`; no queue was created and no OpenAI call was made.
+- Reader fixture with persisted Supabase `source_path` read `novels/i-am-god/originals/0001.txt` and made 0 prefix list calls.
+- Inventory fixture completed with 1 row and listed canonical prefixes only; `legacy_listed=False`.
+- Reader fixture with an unreadable stored Supabase path returned diagnostic status `storage_timeout` and made 0 prefix list calls.
+
+### Deploy Notes
+
+- Deploy `GodTranslator_Web_v9_0_7_Nonblocking_Inventory_And_Reader_Fix.zip`.
+- If Reader still reports `storage_timeout`, check Supabase object existence and storage response time for the exact path shown in diagnostics.
+- If `/api/storage` reports stale counts with no canonical objects, restore from Supabase backup and then run the explicit storage inventory rebuild.
+- Do not run translation until Reader can load Original Story text from the exact stored path.
 
 ## v9.0.6 Wake / Supabase Scan Fix
 

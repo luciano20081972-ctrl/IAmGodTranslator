@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import shutil
+import time
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -248,6 +249,8 @@ class NovelManager:
 
     def fast_translation_readiness(self, novel_id: str) -> dict[str, Any]:
         chapters = self.chapters(novel_id)
+        if not chapters:
+            return {"ok": False, "status": "readiness_not_ready", "novel_id": novel_id, "source": "chapter_index_fast", "updated_at": utc_now(), "total_indexed": 0, "original_readable": 0, "ai_existing_readable": 0, "needs_translation": 0, "skipped_no_original": 0, "skipped_already_translated": 0, "chapters": [], "message": "Translation readiness is not prepared yet.", "recommended_action": "rebuild_storage_inventory"}
         records = []
         for chapter in chapters:
             original_ok = bool(chapter.get("original_readable") or chapter.get("has_original"))
@@ -284,6 +287,13 @@ class NovelManager:
         chapters = self.chapters(novel_id)
         records: list[dict[str, Any]] = []
         total = len(chapters)
+        if update:
+            update(stage="checking_chapters", checked=0, total=total, progress=0)
+        if total == 0:
+            result = {"ok": False, "status": "blocked", "novel_id": novel_id, "source": "actual_text", "updated_at": utc_now(), "total_indexed": 0, "original_readable": 0, "ai_existing_readable": 0, "needs_translation": 0, "skipped_no_original": 0, "skipped_already_translated": 0, "chapters": [], "recommended_action": "rebuild_storage_inventory", "message": "Translation readiness is not prepared yet."}
+            if update:
+                update(status="blocked", stage="blocked", checked=0, total=0, progress=100, recommended_action="rebuild_storage_inventory", message=result["message"])
+            return result
         for index, chapter in enumerate(chapters, start=1):
             number = int(chapter.get("chapter") or 0)
             original = self.read_chapter_content(novel_id, number, "original", chapter)
@@ -301,6 +311,11 @@ class NovelManager:
             if update and (index == total or index % 25 == 0):
                 update(stage="checking_chapters", checked=index, total=total, progress=int(index / max(1, total) * 100))
         payload = self.readiness_payload(novel_id, records, source="actual_text")
+        if total and not payload.get("original_readable"):
+            payload.update({"ok": False, "status": "blocked", "recommended_action": "rebuild_storage_inventory", "message": "Translation readiness could not find readable Original Story files from the persisted index."})
+            if update:
+                update(status="blocked", stage="blocked", checked=total, total=total, progress=100, recommended_action=payload["recommended_action"], message=payload["message"])
+            return payload
         self.write_translation_readiness(novel_id, payload)
         return payload
 
@@ -806,10 +821,8 @@ class NovelManager:
     def chapter_source_files_available(self, novel_id: str) -> bool:
         if any(self.chapter_numbers_for_folder(self.folders(novel_id)[key]) for key in ("original", "reference", "ai")):
             return True
-        if self.remote is None:
-            return False
         for category in ("original", "reference", "ai"):
-            if self.remote_category_paths(novel_id, category):
+            if self._remote_path_cache.get((novel_id, f"canonical:{category}")):
                 return True
         return False
 
@@ -822,14 +835,40 @@ class NovelManager:
             try:
                 payload = self.read_json(path)
                 if isinstance(payload.get("chapters"), list):
-                    return payload
+                    return self.normalize_chapter_index(payload)
             except (OSError, json.JSONDecodeError):
                 return None
         remote_payload = self.remote_json(f"novels/{novel_id}/chapter_index.json")
         if isinstance(remote_payload, dict) and isinstance(remote_payload.get("chapters"), list):
-            self.write_json(path, remote_payload)
-            return remote_payload
+            normalized = self.normalize_chapter_index(remote_payload)
+            self.write_json(path, normalized)
+            return normalized
         return None
+
+    def normalize_chapter_index(self, payload: dict[str, Any]) -> dict[str, Any]:
+        seen: set[int] = set()
+        chapters: list[dict[str, Any]] = []
+        for item in payload.get("chapters", []):
+            if not isinstance(item, dict):
+                continue
+            try:
+                number = int(item.get("chapter") or 0)
+            except (TypeError, ValueError):
+                continue
+            if number <= 0 or number in seen:
+                continue
+            seen.add(number)
+            chapter = dict(item)
+            chapter["chapter"] = number
+            chapters.append(chapter)
+        chapters.sort(key=lambda item: int(item["chapter"]))
+        normalized = dict(payload)
+        normalized["chapters"] = chapters
+        normalized["rows"] = len(chapters)
+        normalized["original_count"] = sum(1 for chapter in chapters if chapter.get("has_original"))
+        normalized["reference_count"] = sum(1 for chapter in chapters if chapter.get("has_reference"))
+        normalized["ai_count"] = sum(1 for chapter in chapters if chapter.get("has_translation") or chapter.get("has_ai"))
+        return normalized
 
     def chapter_index_is_valid(self, novel_id: str, payload: dict[str, Any] | None) -> bool:
         if not payload or not isinstance(payload.get("chapters"), list):
@@ -954,6 +993,117 @@ class NovelManager:
             ai_count=payload.get("ai_count", 0),
         )
         return report
+
+    def storage_inventory_path(self, novel_id: str) -> Path:
+        return self.novel_dir(novel_id) / "storage_inventory.json"
+
+    def storage_inventory_summary(self, novel_id: str, use_cached: bool = True) -> dict[str, Any]:
+        index = self.read_chapter_index(novel_id)
+        metadata_counts = self.active_counts(novel_id)
+        canonical = {"original": 0, "reference": 0, "ai": 0, "prompt": 0}
+        for category in canonical:
+            paths = self._remote_path_cache.get((novel_id, f"canonical:{category}"), []) if use_cached else self.canonical_remote_category_paths(novel_id, category)
+            canonical[category] = len({self.chapter_number_from_remote(path) for path in paths} - {None})
+        return {
+            "ok": True,
+            "novel_id": novel_id,
+            "canonical_original_objects": canonical["original"],
+            "canonical_reference_objects": canonical["reference"],
+            "canonical_ai_objects": canonical["ai"],
+            "canonical_prompt_objects": canonical["prompt"],
+            "chapter_index_rows": int(index.get("rows") or len(index.get("chapters", []))) if isinstance(index, dict) else 0,
+            "metadata_original_count": int(metadata_counts.get("originals") or 0),
+            "metadata_reference_count": int(metadata_counts.get("references") or 0),
+            "metadata_ai_count": int(metadata_counts.get("ai_translations") or 0),
+            "recommended_action": "restore_from_supabase_backup" if max(int(metadata_counts.get("originals") or 0), int(metadata_counts.get("references") or 0), int(metadata_counts.get("ai_translations") or 0)) and not any(canonical.values()) else "none",
+        }
+
+    def rebuild_storage_inventory_progress(self, novel_id: str, update: Any) -> dict[str, Any]:
+        if self.remote is None:
+            result = {"ok": False, "status": "blocked", "novel_id": novel_id, "recommended_action": "configure_supabase", "message": "Supabase storage is not configured."}
+            update(status="blocked", stage="blocked", progress=100, **result)
+            return result
+        metadata_count_max = 0
+        try:
+            cached_counts = self.read_json(self.novel_dir(novel_id) / "counts.json").get("counts", {})
+        except Exception:
+            cached_counts = {}
+        if not cached_counts:
+            remote_counts_payload = self.remote_json(f"novels/{novel_id}/counts.json")
+            cached_counts = remote_counts_payload.get("counts", {}) if isinstance(remote_counts_payload, dict) else {}
+        metadata_count_max = max(int(cached_counts.get("originals") or 0), int(cached_counts.get("references") or 0), int(cached_counts.get("ai_translations") or 0))
+        started = time.monotonic()
+        max_runtime = float(os.getenv("STORAGE_INVENTORY_MAX_SECONDS", "90"))
+        categories = (("original", "listing_originals"), ("reference", "listing_references"), ("ai", "listing_ai"), ("prompt", "listing_prompts"))
+        found: dict[str, list[str]] = {}
+        errors = 0
+        for index, (category, stage) in enumerate(categories, start=1):
+            if time.monotonic() - started > max_runtime:
+                result = {"ok": False, "status": "blocked", "novel_id": novel_id, "recommended_action": "retry_inventory_rebuild", "message": "Storage inventory rebuild exceeded the time limit."}
+                update(status="blocked", stage="blocked", progress=100, errors=errors, **result)
+                return result
+            update(stage=stage, progress=int((index - 1) / len(categories) * 90), prefixes_checked=index - 1, objects_found=sum(len(paths) for paths in found.values()), errors=errors)
+            try:
+                found[category] = self.canonical_remote_category_paths(novel_id, category)
+            except Exception as exc:
+                errors += 1
+                logger.warning("Inventory listing failed for %s/%s: %s", novel_id, category, exc.__class__.__name__)
+                found[category] = []
+        rows: dict[int, dict[str, Any]] = {}
+
+        def row_for(number: int, title: str) -> dict[str, Any]:
+            return rows.setdefault(number, self.base_chapter(number, title or f"Chapter {number}"))
+
+        for category, paths in found.items():
+            for remote_path in paths:
+                number = self.chapter_number_from_remote(remote_path)
+                if number is None or number <= 0:
+                    continue
+                current = row_for(int(number), Path(remote_path).stem)
+                key = {"original": "source_path", "reference": "reference_path", "ai": "output_path", "prompt": "prompt_path"}[category]
+                current[key] = self.remote_marker(remote_path)
+                if category == "ai":
+                    current["status"] = "translated"
+        chapters = [self.public_chapter(chapter) for chapter in sorted(rows.values(), key=lambda item: int(item["chapter"]))]
+        for chapter in chapters:
+            chapter["has_ai"] = bool(chapter.get("has_translation"))
+            chapter["original_readable"] = bool(chapter.get("source_path"))
+            chapter["reference_readable"] = bool(chapter.get("reference_path"))
+            chapter["ai_readable"] = bool(chapter.get("output_path"))
+        payload = self.normalize_chapter_index({
+            "ok": True,
+            "status": "complete",
+            "novel_id": novel_id,
+            "updated_at": utc_now(),
+            "rows": len(chapters),
+            "original_count": sum(1 for chapter in chapters if chapter.get("has_original")),
+            "reference_count": sum(1 for chapter in chapters if chapter.get("has_reference")),
+            "ai_count": sum(1 for chapter in chapters if chapter.get("has_translation")),
+            "chapters": chapters,
+            "paths_scanned": [f"novels/{novel_id}/{REMOTE_PREFIXES[category]}" for category in found],
+            "warnings": [],
+        })
+        inventory = {"ok": True, "status": "complete", "novel_id": novel_id, "updated_at": utc_now(), "canonical": {category: len(paths) for category, paths in found.items()}, "errors": errors}
+        self.write_json(self.storage_inventory_path(novel_id), inventory)
+        self.write_json(self.chapter_index_path(novel_id), payload)
+        self.write_remote_json(f"novels/{novel_id}/chapter_index.json", payload)
+        self.write_remote_json(f"novels/{novel_id}/storage_inventory.json", inventory)
+        counts = {
+            "originals": int(payload.get("original_count") or 0),
+            "references": int(payload.get("reference_count") or 0),
+            "ai_translations": int(payload.get("ai_count") or 0),
+            "prompts": int(inventory["canonical"].get("prompt") or 0),
+            "remaining": max(0, int(payload.get("original_count") or 0) - int(payload.get("ai_count") or 0)),
+        }
+        self.write_json(self.novel_dir(novel_id) / "counts.json", {"novel_id": novel_id, "counts": counts, "updated_at": utc_now()})
+        self.write_remote_json(f"novels/{novel_id}/counts.json", {"novel_id": novel_id, "counts": counts, "updated_at": utc_now()})
+        result = {**inventory, "rows": payload.get("rows", 0), "original_count": payload.get("original_count", 0), "reference_count": payload.get("reference_count", 0), "ai_count": payload.get("ai_count", 0), "recommended_action": "restore_from_supabase_backup" if not any(inventory["canonical"].values()) and metadata_count_max else "none"}
+        if result["recommended_action"] == "restore_from_supabase_backup":
+            result.update({"status": "blocked", "ok": False, "message": "Metadata counts exist, but canonical chapter objects were not found. Restore from Supabase backup is required."})
+            update(status="blocked", stage="blocked", progress=100, prefixes_checked=len(categories), objects_found=0, errors=errors, **result)
+            return result
+        update(stage="complete", progress=100, prefixes_checked=len(categories), objects_found=sum(len(paths) for paths in found.values()), errors=errors, rows=payload.get("rows", 0))
+        return result
 
     async def upload_original(self, novel_id: str, uploads: list[UploadFile]) -> dict[str, Any]:
         await self.service_for(novel_id)._save_uploads(uploads, self.folders(novel_id)["original"])
@@ -1241,7 +1391,12 @@ class NovelManager:
         return sum(self.service_for(item["novel_id"]).resume_incomplete_jobs() for item in self.iter_metadata())
 
     def chapter(self, novel_id: str, chapter_number: int) -> dict[str, Any] | None:
-        return next((chapter for chapter in self.chapters(novel_id) if int(chapter["chapter"]) == chapter_number), None)
+        index = self.read_chapter_index(novel_id)
+        if isinstance(index, dict):
+            for chapter in index.get("chapters", []):
+                if int(chapter.get("chapter") or 0) == chapter_number:
+                    return chapter
+        return next((chapter for chapter in self.chapters(novel_id, include_remote=False) if int(chapter["chapter"]) == chapter_number), None)
 
     def kind_to_category(self, kind: str) -> str:
         if kind in {"english", "ai", "translation"}:
@@ -1275,6 +1430,21 @@ class NovelManager:
                 seen.add(path)
         return candidates
 
+    def canonical_remote_category_paths(self, novel_id: str, category: str) -> list[str]:
+        if self.remote is None:
+            return []
+        cache_key = (novel_id, f"canonical:{category}")
+        if cache_key in self._remote_path_cache:
+            return list(self._remote_path_cache[cache_key])
+        prefix = f"novels/{novel_id}/{REMOTE_PREFIXES[category]}"
+        try:
+            paths = [path for path in self.remote.list_paths(prefix) if path.lower().endswith(".txt")]
+        except Exception as exc:
+            logger.warning("Supabase canonical %s listing failed for %s: %s", category, novel_id, exc.__class__.__name__)
+            paths = []
+        self._remote_path_cache[cache_key] = paths[:5000]
+        return list(self._remote_path_cache[cache_key])
+
     def local_path_candidates(self, novel_id: str, chapter_number: int, category: str) -> list[Path]:
         folders = self.folders(novel_id)
         folder_map = {"original": [folders["original"]], "reference": [folders["reference"]], "ai": [folders["ai"]], "prompt": [folders["output"]]}
@@ -1296,7 +1466,7 @@ class NovelManager:
                             seen.add(key)
         return candidates
 
-    def read_chapter_content(self, novel_id: str, chapter_number: int, kind: str, chapter_data: dict[str, Any] | None = None) -> dict[str, Any]:
+    def read_chapter_content(self, novel_id: str, chapter_number: int, kind: str, chapter_data: dict[str, Any] | None = None, use_remote_inventory: bool = False) -> dict[str, Any]:
         category = self.kind_to_category(kind)
         path_key = self.kind_path_key(kind)
         paths_checked: list[str] = []
@@ -1315,6 +1485,7 @@ class NovelManager:
             }
 
         stored = chapter.get(path_key) if chapter else None
+        stored_remote_failed = False
         if stored:
             stored_text = str(stored)
             paths_checked.append(stored_text)
@@ -1322,12 +1493,13 @@ class NovelManager:
                 text = self.remote_read_chapter(stored_text)
                 if text is not None:
                     return finish(True, text, stored_text, "stored_remote")
+                stored_remote_failed = True
             else:
                 path = Path(stored_text)
                 if path.is_file():
                     return finish(True, read_text(path), stored_text, "stored_local")
 
-        if self.remote is not None:
+        if self.remote is not None and use_remote_inventory:
             for remote_path in self.remote_path_candidates(novel_id, chapter_number, category):
                 marker = self.remote_marker(remote_path)
                 if marker in paths_checked:
@@ -1345,7 +1517,14 @@ class NovelManager:
             if path.is_file():
                 return finish(True, read_text(path), path_text, "local_candidate")
 
-        return finish(False)
+        result = finish(False)
+        if stored_remote_failed:
+            result["status"] = "storage_timeout"
+            result["message"] = "Supabase storage did not respond in time or the stored object could not be read."
+        elif self.remote is not None and not use_remote_inventory:
+            result["status"] = "inventory_not_ready" if chapter and not stored else "missing_exact_path"
+            result["message"] = "Chapter storage inventory is not ready yet." if result["status"] == "inventory_not_ready" else "No exact chapter path is available in the chapter index."
+        return result
 
     def chapter_text(self, novel_id: str, chapter_number: int, kind: str) -> dict[str, Any] | None:
         chapter = self.chapter(novel_id, chapter_number)

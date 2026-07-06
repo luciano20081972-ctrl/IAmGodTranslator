@@ -1623,7 +1623,7 @@ function bind() {
   window.addEventListener("hashchange", handleRouteChange);
 }
 
-function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=85").then((registration) => registration.update()).catch(() => {}); }
+function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=86").then((registration) => registration.update()).catch(() => {}); }
 async function bootAppData() {
   hideRecovery();
   els.novelGrid.innerHTML = '<div class="empty-state">Loading library...</div>';
