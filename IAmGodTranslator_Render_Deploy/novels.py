@@ -93,11 +93,6 @@ async def startup_lightweight_hydration() -> None:
             if not novel_id:
                 continue
             novels.hydrate_lightweight_metadata(novel_id)
-            index = novels.read_chapter_index(novel_id)
-            counts = novels.active_counts(novel_id)
-            has_counts = max(int(counts.get("originals") or 0), int(counts.get("references") or 0), int(counts.get("ai_translations") or 0)) > 0
-            if has_counts and not novels.chapter_index_is_valid(novel_id, index):
-                start_chapter_index_job(novel_id)
     except Exception as exc:
         logging.getLogger(__name__).warning("Startup lightweight hydration skipped: %s", exc.__class__.__name__)
 
@@ -1422,9 +1417,10 @@ async def batch_start(request: Request, payload: Annotated[dict[str, object], Bo
     settings.update({"start_now": False, "show_estimate_before_starting": True})
     try:
         estimate = batch_selection(novel_id, settings)
-        job = novels.create_batch(novel_id, settings)
+        settings["chapter_numbers"] = estimate.get("chapter_numbers", [])
         if dry_run:
-            return JSONResponse({"ok": True, "dry_run": True, **estimate, "job": job, "message": "Dry-run created an estimated queue only. OpenAI was not called."}, status_code=202)
+            return JSONResponse({"ok": True, "dry_run": True, **estimate, "message": "Dry-run used Translation Readiness and did not create a queue or call OpenAI."}, status_code=202)
+        job = novels.create_batch(novel_id, settings)
         if not os.getenv("OPENAI_API_KEY"):
             return JSONResponse({"ok": False, **estimate, "job": job, "error": "OPENAI_API_KEY is not configured. Estimate was created, but translation was not started."}, status_code=400)
         novels.start_job(novel_id, job["job_id"])

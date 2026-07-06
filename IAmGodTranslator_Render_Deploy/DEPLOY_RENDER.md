@@ -10,10 +10,10 @@
   <link rel="manifest" href="/manifest.json">
   <link rel="apple-touch-icon" href="/static/icons/icon.svg">
   <link rel="icon" href="/static/icons/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/styles.css?v=84">
+  <link rel="stylesheet" href="/static/styles.css?v=85">
 </head>
 <body>
   <div id="app"></div>
-  <script src="/static/app.js?v=84" defer></script>
+  <script src="/static/app.js?v=85" defer></script>
 </body>
 </html>

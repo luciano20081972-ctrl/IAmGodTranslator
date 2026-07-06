@@ -7,6 +7,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -51,7 +52,7 @@ class SupabaseStorage:
         self.headers = {"Authorization": f"Bearer {config.service_role_key}", "apikey": config.service_role_key}
 
     def object_url(self, path: str) -> str:
-        return f"{self.base_url}/object/{self.bucket}/{path.lstrip('/')}"
+        return f"{self.base_url}/object/{self.bucket}/{quote(path.lstrip('/'), safe='/')}"
 
     def request(self, method: str, url: str, data: bytes | None = None, headers: dict[str, str] | None = None, timeout: float | None = None) -> tuple[int, bytes]:
         request = Request(url, data=data, headers={**self.headers, **(headers or {})}, method=method)

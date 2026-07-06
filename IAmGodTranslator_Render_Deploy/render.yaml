@@ -2,7 +2,51 @@
 
 ## Current Version Target
 
-GodTranslator_Web_v9_0_5_Restore_And_Polling_Fix.zip
+GodTranslator_Web_v9_0_6_Wake_And_Supabase_Scan_Fix.zip
+
+## v9.0.6 Wake / Supabase Scan Fix
+
+### Completed Tasks
+
+- Fixed unsafe Supabase object URL construction by percent-encoding object paths with `quote(path, safe="/")`.
+- Removed guessed per-chapter Supabase GET probing from `remote_path_candidates()`.
+- Changed remote chapter resolution to list object paths once per relevant prefix, cache those lists, and read only paths that actually exist.
+- Added remote path cache invalidation after canonical uploads.
+- Changed FastAPI startup hydration to avoid active-count scans and background rebuild queueing.
+- Kept wake behavior centered on persisted `chapter_index.json`; library loads rows from that index without reading chapter text.
+- Changed batch dry-run to use readiness/index only and avoid creating a queue.
+- Passed selected chapter numbers into real queue creation so a batch of 5 fetches only selected Original/Reference files.
+- Updated recovery UI so a successful `/api/health` changes the message to "The server is online, but this operation is taking too long."
+- Bumped frontend cache/service-worker versions to v85.
+
+### Root Cause
+
+- Function: `NovelManager.read_chapter_content()`
+- Caller: Reader content endpoints, content diagnostics, translation queue creation, and translation readiness rebuilds.
+- Generator: `remote_path_candidates()` built many guessed Supabase object paths per chapter, then `remote_read_chapter()` attempted GET requests for each candidate.
+- Failure mode: paths with spaces or Unicode were manually concatenated into raw URLs, causing `InvalidURL` and `UnicodeEncodeError` warnings while the app progressed chapter by chapter.
+- Before fix: up to dozens of Supabase GET attempts per chapter per mode when files were missing or path variants differed.
+- After fix: 0 guessed GET attempts. The app lists remote object names once per prefix/category and performs at most one GET for a matched existing path.
+
+### QA Results
+
+- Python syntax check passed.
+- JavaScript syntax check passed.
+- Cache references verified at v85.
+- Safe URL encoding verified for spaces and Chinese Unicode filenames.
+- Persisted Supabase `chapter_index.json` with 906 rows loaded through `/api/novels/i-am-god/library` without listing chapter folders or reading chapter text.
+- Resolver simulation found `Chapter 059.txt` with 1 Supabase read; missing chapter 58 performed 0 Supabase reads instead of trying filename variants.
+- Batch estimate for 5 chapters selected chapters 27-31, reported 880 needs translation, did not call OpenAI, and did not list folders.
+- Batch dry-run did not create a queue and did not call OpenAI.
+- Existing v9.0.5 blocked restore-required state and tab polling fix remain intact.
+- No translation was started.
+
+### Deploy Notes
+
+- Deploy `GodTranslator_Web_v9_0_6_Wake_And_Supabase_Scan_Fix.zip`.
+- On Render wake, `/api/health` should respond before any chapter discovery work.
+- If `chapter_index.json` exists in Supabase, the library should load from it directly.
+- If the index is missing, rebuild should be an explicit/background operation, not a startup blocker.
 
 ## v9.0.5 Restore Recommendation / Chapter Polling Fix
 

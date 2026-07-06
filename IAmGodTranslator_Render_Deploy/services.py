@@ -56,6 +56,7 @@ class NovelManager:
         self.novels_dir = self.data_dir / "novels"
         self.reader_state_path = self.data_dir / "reader_state.json"
         self.remote_error: str | None = None
+        self._remote_path_cache: dict[tuple[str, str], list[str]] = {}
         self.disable_startup_remote_sync = (os.getenv("DISABLE_STARTUP_REMOTE_SYNC") or "true").lower() != "false"
         self._startup_phase = True
         self.remote = self.build_remote_storage()
@@ -342,6 +343,14 @@ class NovelManager:
         except Exception:
             logger.exception("Failed to sync local files to Supabase")
 
+    def clear_remote_path_cache(self, novel_id: str | None = None) -> None:
+        if novel_id is None:
+            self._remote_path_cache.clear()
+            return
+        for key in list(self._remote_path_cache):
+            if key[0] == novel_id:
+                self._remote_path_cache.pop(key, None)
+
     def upload_canonical_chapter_files(self, novel_id: str) -> None:
         if self.remote is None:
             return
@@ -354,6 +363,7 @@ class NovelManager:
                 number = chapter_from_filename(path)
                 filename = f"{int(number):04d}.txt" if number is not None else path.name
                 self.remote.write_bytes(f"novels/{novel_id}/{REMOTE_PREFIXES[category]}/{filename}", path.read_bytes(), "text/plain; charset=utf-8")
+        self.clear_remote_path_cache(novel_id)
 
     def write_novel_index(self) -> None:
         if self.remote is None:
@@ -420,6 +430,9 @@ class NovelManager:
     def remote_category_paths(self, novel_id: str, category: str) -> list[str]:
         if self.remote is None:
             return []
+        cache_key = (novel_id, category)
+        if cache_key in self._remote_path_cache:
+            return list(self._remote_path_cache[cache_key])
         prefixes = [f"novels/{novel_id}/{REMOTE_PREFIXES[category]}"]
         prefixes.extend(f"app/novels/{novel_id}/{legacy}" for legacy in LEGACY_REMOTE_PREFIXES.get(category, ()))
         paths: list[str] = []
@@ -432,7 +445,8 @@ class NovelManager:
                         seen.add(path)
             except Exception as exc:
                 logger.warning("Supabase %s listing failed for %s at %s: %s", category, novel_id, prefix, exc.__class__.__name__)
-        return paths[:5000]
+        self._remote_path_cache[cache_key] = paths[:5000]
+        return list(self._remote_path_cache[cache_key])
 
     def remote_category_counts(self, novel_id: str) -> dict[str, dict[str, int]]:
         canonical: dict[str, int] = {}
@@ -1158,6 +1172,7 @@ class NovelManager:
         overwrite = bool(settings.get("overwrite", False))
         if start_chapter > end_chapter:
             raise ValueError("Start chapter must be less than or equal to end chapter.")
+        selected_numbers = {int(number) for number in settings.get("chapter_numbers", []) if int(number or 0) > 0} if isinstance(settings.get("chapter_numbers"), list) else set()
         references = self.reference_files_by_number(novel_id)
         candidates: list[dict[str, Any]] = []
         readable_originals = 0
@@ -1165,12 +1180,13 @@ class NovelManager:
             number = int(chapter.get("chapter") or 0)
             if number < start_chapter or number > end_chapter:
                 continue
+            if selected_numbers and number not in selected_numbers:
+                continue
             original_result = self.read_chapter_content(novel_id, number, "original", chapter)
             if not original_result["found"] or not str(original_result.get("text") or "").strip():
                 continue
             readable_originals += 1
-            ai_result = self.read_chapter_content(novel_id, number, "ai", chapter)
-            ai_readable = ai_result["found"] and not ai_result["empty"]
+            ai_readable = bool(chapter.get("ai_readable") or chapter.get("has_translation"))
             if overwrite or not missing_only or not ai_readable:
                 candidates.append({**chapter, "_original_text": original_result["text"]})
             if len(candidates) >= batch_size:
@@ -1253,14 +1269,6 @@ class NovelManager:
     def remote_path_candidates(self, novel_id: str, chapter_number: int, category: str) -> list[str]:
         candidates: list[str] = []
         seen: set[str] = set()
-        prefixes = [f"novels/{novel_id}/{REMOTE_PREFIXES[category]}"]
-        prefixes.extend(f"app/novels/{novel_id}/{legacy}" for legacy in LEGACY_REMOTE_PREFIXES.get(category, ()))
-        for prefix in prefixes:
-            for filename in self.chapter_filename_candidates(chapter_number):
-                path = f"{prefix}/{filename}"
-                if path not in seen:
-                    candidates.append(path)
-                    seen.add(path)
         for path in self.remote_category_paths(novel_id, category):
             if self.chapter_number_from_remote(path) == chapter_number and path not in seen:
                 candidates.append(path)

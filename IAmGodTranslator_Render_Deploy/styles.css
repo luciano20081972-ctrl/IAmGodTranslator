@@ -243,6 +243,13 @@ function showRecovery(error) {
   els.appRecovery.hidden = false;
   els.apiStatus.textContent = "Offline";
   els.apiStatus.classList.remove("ok");
+  if (detail.endpoint !== "/api/health") {
+    api("/api/health", { timeoutMs: 5000 }).then(() => {
+      els.recoveryMessage.textContent = "The server is online, but this operation is taking too long.";
+      els.apiStatus.textContent = "Online";
+      els.apiStatus.classList.add("ok");
+    }).catch(() => {});
+  }
 }
 function hideRecovery() { if (els.appRecovery) els.appRecovery.hidden = true; }
 async function clearFrontendCache() {
@@ -1616,7 +1623,7 @@ function bind() {
   window.addEventListener("hashchange", handleRouteChange);
 }
 
-function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=84").then((registration) => registration.update()).catch(() => {}); }
+function registerServiceWorker() { if (!("serviceWorker" in navigator)) return; navigator.serviceWorker.register("/service-worker.js?v=85").then((registration) => registration.update()).catch(() => {}); }
 async function bootAppData() {
   hideRecovery();
   els.novelGrid.innerHTML = '<div class="empty-state">Loading library...</div>';
