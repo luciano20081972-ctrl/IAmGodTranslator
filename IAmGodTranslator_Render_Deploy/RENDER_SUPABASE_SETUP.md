@@ -1,98 +1,104 @@
-# Render Free + Supabase Setup
+from pathlib import Path
 
-GodTranslator can stay on Render Free while Supabase stores long-term data. Render may sleep when inactive, but uploaded chapters, covers, backups, prompts, exports, accounts, bookmarks, ratings, and reading history should live in Supabase when Supabase is active.
 
-## 1. Create Supabase
+class FileSystem:
 
-1. Create a Supabase project.
-2. Create private Storage buckets:
-   - `novel-files`
-   - `covers`
-   - `backups`
-   - `exports`
-3. Copy these values from Supabase:
-   - `SUPABASE_URL`
-   - `SUPABASE_ANON_KEY`
-   - `SUPABASE_SERVICE_ROLE_KEY`
-   - `DATABASE_URL`
+    def __init__(self):
 
-For `DATABASE_URL` on Render, use Supabase Connect -> Connection Pooling / Supavisor. Choose the Transaction pooler or Session pooler connection string. Do not use the direct connection string on Render if it resolves to IPv6, because Render may show `Network is unreachable`.
+        self.root = Path(__file__).resolve().parent.parent
 
-## 2. Add Render Environment Variables
+        # -----------------------------
+        # Source folders
+        # -----------------------------
 
-Set these on Render:
+        self.source = self.root / "Source"
 
-```env
-STORAGE_BACKEND=supabase
-DATA_DIR=data
-SUPABASE_URL=your Supabase project URL
-SUPABASE_ANON_KEY=your Supabase anon key
-SUPABASE_SERVICE_ROLE_KEY=your Supabase service role key
-SUPABASE_BUCKET=novel-files
-DATABASE_URL=your Supabase pooler/Supavisor Postgres connection string
-OPENAI_API_KEY=your OpenAI API key
-OPENAI_MODEL=gpt-4o-mini
-PYTHON_VERSION=3.12.7
-ADMIN_PASSWORD=choose a private admin password
-SESSION_SECRET=choose a long random secret
-SITE_URL=https://iamgodtranslator.onrender.com
-DISABLE_STARTUP_REMOTE_SYNC=true
-```
+        self.chinese = self.source / "Chinese"
+        self.novelfire = self.source / "NovelFire"
 
-Never commit `.env`, API keys, database passwords, or service role keys. The service role key is used only by the FastAPI backend.
+        # -----------------------------
+        # Translation folders
+        # -----------------------------
 
-## 3. Deploy
+        self.translation = self.root / "Translation"
 
-1. Redeploy the Render service.
-2. Open `/api/storage`.
-3. Confirm:
-   - storage backend is `supabase`
-   - Supabase is configured
-   - database backend is `postgres`
-   - storage warnings are clear or understood
-4. Open Admin -> Storage Health.
-5. Click `Migrate Local Data to Supabase` if local data needs to be copied up.
-6. Use the smaller ZIP exports/imports for Original, Reference, AI Translation, and Prompts.
-7. Admin -> Backups can start a background Full Backup job. It creates a manifest ZIP and, when possible, uploads the completed ZIP to the private `backups` bucket after the local file is complete.
-8. Full restore uses an admin-only background job. Upload a backup ZIP, run dry-run first, review the report, then confirm a real restore if needed.
+        self.drafts = self.translation / "Drafts"
+        self.reviewed = self.translation / "Reviewed"
+        self.english = self.translation / "Final"
 
-## 4. Notes
+        # -----------------------------
+        # Other folders
+        # -----------------------------
 
-Render Free may sleep when inactive. That is acceptable for personal/testing use because Supabase stores the durable data. Later, when traffic or users exist, upgrade Render to Starter. If Supabase Free limits or pauses become a problem, upgrade Supabase.
+        self.prompts = self.root / "Prompts"
+        self.logs = self.root / "Logs"
+        self.output = self.root / "Output"
 
-Keep `DISABLE_STARTUP_REMOTE_SYNC=true` on Render Free. The app will bind to `$PORT` first and use Supabase during normal API requests/imports, instead of scanning or restoring remote storage during startup.
+        self.create_folders()
 
-Automatic novel ingestion from external websites is intentionally not included. Only import content you own, have permission to use, or are legally allowed to process.
+    def create_folders(self):
 
-## Backup Job Notes
+        folders = [
+            self.source,
+            self.chinese,
+            self.novelfire,
+            self.translation,
+            self.drafts,
+            self.reviewed,
+            self.english,
+            self.prompts,
+            self.logs,
+            self.output,
+        ]
 
-Full backups are asynchronous so a large backup does not block the web request that starts it. The backup ZIP includes a `manifest.json`, `backup_info.json`, novel metadata, original chapters, reference chapters, AI translations, prompts, and covers. It does not include `.env`, logs, sessions, databases, runtime job files, generated release ZIPs, or secrets.
+        for folder in folders:
+            folder.mkdir(parents=True, exist_ok=True)
 
-Full restore is also asynchronous. Restore validates `manifest.json` and maps only canonical paths:
+    def chapter_file(self, folder: Path, chapter: int):
 
-- `novels/{novel_id}/originals/{chapter}.txt`
-- `novels/{novel_id}/references/{chapter}.txt`
-- `novels/{novel_id}/ai_translations/{chapter}.txt`
-- `novels/{novel_id}/prompts/{chapter}.txt`
+        files = sorted(folder.glob(f"{chapter:04d}*.txt"))
 
-If a backup has no manifest, the app allows dry-run only and skips uncertain files. Restore never deletes files. Existing files are handled by the selected conflict mode.
+        if files:
+            return files[0]
 
-If a process restarts during a backup, the interrupted job is marked `stale` on the next startup. Start a new backup job after the app is healthy.
+        return None
 
-Content audit/repair tools are admin-only and conservative. They report old or suspicious paths and can refresh the local novel index, but they do not automatically move uncertain reference/AI files.
+    def load_chapter(self, folder: Path, chapter: int):
 
-## v8.1 Translate and Google Login Notes
+        file = self.chapter_file(folder, chapter)
 
-Translate tools are admin-only. Use Translation Health first, then Cost Estimate, then Start Batch. Estimates and dry-runs do not call OpenAI. Real translation requires `OPENAI_API_KEY` and should use `OPENAI_MODEL=gpt-4o-mini` unless you intentionally choose another model.
+        if file is None:
+            return None
 
-Batch settings default to missing AI translations only, no overwrite, and concurrency 1. Concurrency 2 or 3 may spend faster and may hit rate limits.
+        with open(file, "r", encoding="utf-8") as f:
+            text = f.read()
 
-Google login has a safe disabled placeholder in this build. The UI checks `/api/auth/google/status` and shows a disabled button unless OAuth is fully enabled. Keep `GOOGLE_CLIENT_SECRET` only in Render environment variables; never expose it to static JavaScript.
+        return {
+            "number": chapter,
+            "title": file.stem,
+            "text": text,
+            "path": file,
+        }
 
-## v9.0 Partial Production Notes
+    def save_text(self, folder: Path, chapter: int, text: str):
 
-Normal wake/login should not require Full Backup or Online Restore. `/api/bootstrap` is lightweight and reports whether live Supabase data is ready. If canonical/active counts exist, recovery should show no restore needed.
+        folder.mkdir(parents=True, exist_ok=True)
 
-Storage Cleanup is admin-only and conservative. It targets runtime/export/job-temp files only and never deletes active novels, chapters, translations, covers, metadata, counts, or the latest successful backup. Run dry-run before cleanup.
+        filename = folder / f"{chapter:04d}.txt"
 
-Translation job cancel now marks pending/running chapters as cancelled. Retry Failed only retries failed chapters and returns a structured error if none exist.
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(text)
+
+        return filename
+
+    def prompt_file(self, chapter):
+        return self.prompts / f"{chapter:04d}.txt"
+
+    def draft_file(self, chapter):
+        return self.drafts / f"{chapter:04d}.txt"
+
+    def reviewed_file(self, chapter):
+        return self.reviewed / f"{chapter:04d}.txt"
+
+    def english_file(self, chapter):
+        return self.english / f"{chapter:04d}.txt"

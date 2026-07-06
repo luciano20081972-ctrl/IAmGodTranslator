@@ -269,6 +269,50 @@ class TranslationService:
 
         return self._public_state(self._read_json(state_path))
 
+    def cancel_job(self, job_id: str) -> dict[str, Any]:
+        job_dir = self.job_dir(job_id)
+        state = self._load_state(job_dir)
+        if state is None:
+            raise ValueError("Job not found.")
+        state["cancel_requested"] = True
+        for chapter in state.get("chapters", []):
+            if chapter.get("status") in {"pending", "queued", "translating"}:
+                chapter["status"] = "cancelled"
+                chapter["error"] = "Cancelled by admin."
+        state["status"] = "cancelled"
+        state["finished_at"] = utc_now()
+        state["error"] = "Cancelled by admin."
+        self._refresh_counts(state)
+        self._save_state(job_dir, state)
+        task = self._tasks.get(job_id)
+        if task and not task.done():
+            task.cancel()
+        return self._public_state(state)
+
+    def retry_failed_job(self, job_id: str) -> dict[str, Any]:
+        job_dir = self.job_dir(job_id)
+        state = self._load_state(job_dir)
+        if state is None:
+            raise ValueError("Job not found.")
+        retried = 0
+        for chapter in state.get("chapters", []):
+            if chapter.get("status") == "failed":
+                chapter["status"] = "pending"
+                chapter["error"] = None
+                chapter["tries"] = 0
+                retried += 1
+        if retried == 0:
+            raise ValueError("No failed chapters are available to retry.")
+        state["status"] = "queued"
+        state["cancel_requested"] = False
+        state["finished_at"] = None
+        state["error"] = None
+        state["retry_failed_count"] = retried
+        self._refresh_counts(state)
+        self._save_state(job_dir, state)
+        self.start_job(job_id)
+        return self._public_state(state)
+
     def chapter_output(self, job_id: str, chapter: int) -> Path | None:
         output = self.job_folders(self.job_dir(job_id))["english"] / f"{chapter:04d}.txt"
         return output if output.exists() else None
@@ -494,7 +538,14 @@ class TranslationService:
             self._save_state(job_dir, state)
 
             for chapter_state in state["chapters"]:
+                if state.get("cancel_requested"):
+                    state["status"] = "cancelled"
+                    state["finished_at"] = utc_now()
+                    self._save_state(job_dir, state)
+                    return
                 if chapter_state["status"] == "completed":
+                    continue
+                if chapter_state["status"] == "cancelled":
                     continue
 
                 if not self._within_budget(state, chapter_state):
@@ -556,6 +607,9 @@ class TranslationService:
 
             if state["counts"]["completed"] == state["counts"]["total"]:
                 state["status"] = "completed"
+                state["finished_at"] = utc_now()
+            elif any(chapter.get("status") == "cancelled" for chapter in state.get("chapters", [])):
+                state["status"] = "cancelled"
                 state["finished_at"] = utc_now()
             elif state["counts"]["failed"] > 0:
                 state["status"] = "failed"
@@ -856,6 +910,7 @@ class TranslationService:
             "completed": sum(1 for chapter in chapters if chapter["status"] == "completed"),
             "failed": sum(1 for chapter in chapters if chapter["status"] == "failed"),
             "skipped": sum(1 for chapter in chapters if chapter["status"] == "skipped"),
+            "cancelled": sum(1 for chapter in chapters if chapter["status"] == "cancelled"),
         }
 
     def _public_state(self, state: dict[str, Any]) -> dict[str, Any]:

@@ -4,19 +4,27 @@ import logging
 import os
 import hmac
 import hashlib
+import json
+import secrets
 import shutil
+import time
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlencode
+from urllib.request import Request as UrlRequest, urlopen
 
 from dotenv import load_dotenv
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.backup_jobs import BackupJobManager
 from app.database import AppDatabase
+from app.long_jobs import LongJobManager
 from app.novels import NovelManager
 from app.services import PROJECT_ROOT, TranslationService
+from app.storage import SupabaseStorage
 
 
 load_dotenv()
@@ -53,13 +61,54 @@ except Exception as exc:  # pragma: no cover - public pages should stay up if th
             logging.getLogger(__name__).warning("SQLite database fallback failed: %s", fallback_exc)
 
 backup_jobs = BackupJobManager(service.data_dir, novels, database, os.getenv("STORAGE_BACKEND", "local").lower())
+long_jobs = LongJobManager(service.data_dir)
+RECOVERY_STATE: dict[str, object] = {"last_action": None, "last_dry_run_result": None, "selected_backup": None, "restore_job_id": None, "recommended_next_action": None}
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 ADMIN_COOKIE = "igt_admin"
 AUTH_COOKIE = "gt_session"
+GOOGLE_STATE_COOKIE = "gt_google_state"
 REQUIRED_STORAGE_FOLDERS = ("novels", "originals", "references", "ai_translations", "prompts", "backups", "uploads", "covers", "settings", "exports", "logs")
 BACKUP_DISABLED_MESSAGE = "Legacy synchronous full backup/restore is disabled on Render Free. Use Admin Backups for async full backup and restore jobs."
+
+
+def start_chapter_index_job(novel_id: str) -> dict[str, object]:
+    active = long_jobs.active("chapter-index", novel_id=novel_id)
+    if active:
+        return active
+    return long_jobs.start(
+        "chapter-index",
+        f"Chapter index rebuild for {novel_id}",
+        lambda update, _state: novels.rebuild_chapter_index_progress(novel_id, update),
+        metadata={"novel_id": novel_id},
+    )
+
+
+@app.on_event("startup")
+async def startup_lightweight_hydration() -> None:
+    try:
+        for item in list(novels.iter_metadata())[:50]:
+            novel_id = str(item.get("novel_id") or "")
+            if not novel_id:
+                continue
+            novels.hydrate_lightweight_metadata(novel_id)
+            index = novels.read_chapter_index(novel_id)
+            counts = novels.active_counts(novel_id)
+            has_counts = max(int(counts.get("originals") or 0), int(counts.get("references") or 0), int(counts.get("ai_translations") or 0)) > 0
+            if has_counts and not novels.chapter_index_is_valid(novel_id, index):
+                start_chapter_index_job(novel_id)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Startup lightweight hydration skipped: %s", exc.__class__.__name__)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    return response
 
 
 def admin_password() -> str | None:
@@ -164,16 +213,51 @@ def storage_health_report() -> dict[str, object]:
         "covers_uploads": count("cover.*") + count("covers/*") + count("uploads/*"),
     }
     supabase_counts: dict[str, object] = {}
+    canonical_supabase_counts: dict[str, object] = {}
+    legacy_supabase_counts: dict[str, object] = {}
     active_counts: dict[str, object] = {}
+    backup_zips_found: list[object] = []
+    recommended_recovery_action = "none"
+    recommended_recovery_label = "No recovery needed."
+    recommended_recovery_steps: list[str] = []
     try:
         for item in novels.iter_metadata():
             novel_id = str(item["novel_id"])
             supabase_counts[novel_id] = novels.remote_counts(novel_id).get("counts", {}) if novels.remote is not None else {}
+            category_counts = novels.remote_category_counts(novel_id) if novels.remote is not None else {"canonical": {}, "legacy": {}}
+            canonical_supabase_counts[novel_id] = category_counts.get("canonical", {})
+            legacy_supabase_counts[novel_id] = category_counts.get("legacy", {})
             active_counts[novel_id] = novels.active_counts(novel_id)
+        if novels.remote is not None:
+            backup_zips_found = novels.supabase_backup_zips()
     except Exception as exc:
         warnings.append(f"Count hydration warning: {exc.__class__.__name__}")
+    has_active_counts = any(sum(int(v or 0) for v in counts.values() if isinstance(v, int)) for counts in active_counts.values())
+    has_canonical_counts = any(sum(int(v or 0) for v in counts.values()) for counts in canonical_supabase_counts.values())
+    has_legacy_counts = any(sum(int(v or 0) for v in counts.values()) for counts in legacy_supabase_counts.values())
+    has_local_chapter_files = any(int(local_cache_counts.get(key) or 0) for key in ("originals", "references", "ai_translations"))
+    counts_without_readable_files = has_active_counts and not has_local_chapter_files and not has_canonical_counts and not has_legacy_counts
     if novels.remote is not None and any(sum(int(v or 0) for v in counts.values() if isinstance(v, int)) for counts in supabase_counts.values()) and not any(local_cache_counts.values()):
         warnings.append("Local cache is empty but Supabase has files. The app is using Supabase/database counts and can rebuild the local cache on demand.")
+    if counts_without_readable_files:
+        warnings.append("Counts exist, but readable chapter files are missing. Restore from Supabase backup is required.")
+        recommended_recovery_action = "restore_from_supabase_backup"
+        recommended_recovery_label = "Counts exist, but readable chapter files are missing. Restore from Supabase backup is required."
+        recommended_recovery_steps = ["List Supabase backups", "Dry-run the newest backup", "Confirm online restore", "Rebuild Supabase index", "Refresh novel data"]
+    elif has_active_counts or has_canonical_counts:
+        recommended_recovery_action = "none"
+        recommended_recovery_label = "Supabase live data ready. No restore needed."
+        recommended_recovery_steps = ["Open the library", "Read chapters normally", "Use Full Backup only for explicit admin backup jobs"]
+    elif novels.remote is not None and has_legacy_counts and not has_canonical_counts:
+        warnings.append("Canonical chapter folders are empty, but legacy Supabase data/backups were found.")
+        warnings.append("Files found in legacy Supabase paths. Migration recommended.")
+        recommended_recovery_action = "migrate_legacy_paths"
+        recommended_recovery_label = "Legacy Supabase files were found. Run migration dry-run."
+        recommended_recovery_steps = ["Run Deep Scan Supabase", "Run Migrate Legacy Paths dry-run", "If files are listed, confirm migration", "Rebuild Supabase Index", "Refresh Novel Data"]
+    elif backup_zips_found and not has_canonical_counts:
+        recommended_recovery_action = "restore_from_supabase_backup"
+        recommended_recovery_label = "Restore From Supabase Backup"
+        recommended_recovery_steps = ["List Supabase backups", "Dry-run the newest backup", "Confirm online restore", "Rebuild Supabase index", "Refresh novel data"]
 
     report = service.storage_status()
     report.update(
@@ -186,8 +270,15 @@ def storage_health_report() -> dict[str, object]:
             "counts": local_cache_counts,
             "local_cache_counts": local_cache_counts,
             "supabase_counts": supabase_counts,
+            "canonical_supabase_counts": canonical_supabase_counts,
+            "legacy_supabase_counts": legacy_supabase_counts,
             "database_counts": {},
             "active_counts_used_by_app": active_counts,
+            "backup_zips_found": backup_zips_found,
+            "recommended_recovery_action": recommended_recovery_action,
+            "recommended_recovery_label": recommended_recovery_label,
+            "recommended_recovery_steps": recommended_recovery_steps,
+            "latest_recovery_state": RECOVERY_STATE,
             "database": database.status(),
         }
     )
@@ -241,6 +332,45 @@ def migrate_local_data() -> dict[str, object]:
     return {"source_folders_checked": checked, "destination": str(destination), "copied": copied, "skipped_existing": skipped, "conflicts": conflicts, "errors": errors}
 
 
+def storage_cleanup_report(dry_run: bool = True, retention_days: int = 7) -> dict[str, object]:
+    data_dir = service.data_dir.resolve()
+    cutoff = time.time() - max(1, retention_days) * 86400
+    allowed_roots = [data_dir / "exports", data_dir / "backup_jobs", data_dir / "logs"]
+    report: dict[str, object] = {
+        "ok": True,
+        "dry_run": dry_run,
+        "retention_days": retention_days,
+        "would_delete": [],
+        "deleted": [],
+        "kept": [],
+        "total_size": 0,
+        "warnings": ["Cleanup never deletes active novels, chapters, translations, covers, metadata, counts, or the latest successful backup."],
+        "latest_backup_protected": True,
+        "active_data_protected": True,
+    }
+    for root in allowed_roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+                item = {"path": str(path.relative_to(data_dir)), "size": stat.st_size}
+                if stat.st_mtime <= cutoff or path.suffix.lower() in {".tmp", ".log"}:
+                    report["total_size"] = int(report["total_size"]) + stat.st_size
+                    if dry_run:
+                        report["would_delete"].append(item)
+                    else:
+                        path.unlink(missing_ok=True)
+                        report["deleted"].append(item)
+                else:
+                    report["kept"].append(item)
+            except OSError as exc:
+                report["warnings"].append(f"{path.name}: {exc.__class__.__name__}")
+    return report
+
+
 @app.middleware("http")
 async def cache_control_headers(request, call_next):
     response = await call_next(request)
@@ -264,6 +394,11 @@ async def resume_jobs() -> None:
 @app.get("/", include_in_schema=False)
 async def home() -> FileResponse:
     return FileResponse(TEMPLATE_DIR / "index.html")
+
+
+@app.head("/", include_in_schema=False)
+async def head_home() -> Response:
+    return Response(status_code=200)
 
 
 @app.get("/manifest.json", include_in_schema=False)
@@ -416,7 +551,72 @@ async def auth_reset_password(payload: Annotated[dict[str, object], Body()]) -> 
 @app.get("/api/auth/google/status")
 async def google_status() -> dict[str, object]:
     configured = all(os.getenv(name) for name in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI"))
-    return {"configured": configured, "enabled": False, "message": "Google login foundation is present; OAuth callback wiring is left for production setup."}
+    return {"configured": configured, "enabled": configured, "message": "Google login is available." if configured else "Google login is not configured yet."}
+
+
+@app.get("/auth/google/login")
+async def google_login(request: Request):
+    configured = all(os.getenv(name) for name in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI"))
+    if not configured:
+        return JSONResponse({"ok": False, "enabled": False, "detail": "Google login is not configured yet."}, status_code=503)
+    state = secrets.token_urlsafe(24)
+    params = {
+        "client_id": os.getenv("GOOGLE_CLIENT_ID", ""),
+        "redirect_uri": os.getenv("GOOGLE_REDIRECT_URI", ""),
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "access_type": "online",
+        "prompt": "select_account",
+    }
+    response = RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}", status_code=302)
+    response.set_cookie(GOOGLE_STATE_COOKIE, state, httponly=True, secure=request.url.scheme == "https", samesite="lax", max_age=600)
+    return response
+
+
+@app.get("/auth/google/callback")
+async def google_callback(request: Request, code: str | None = None, state: str | None = None, error: str | None = None) -> RedirectResponse:
+    target = "/#/library"
+    if error:
+        target += "?auth_error=google"
+        return RedirectResponse(target, status_code=302)
+    expected_state = request.cookies.get(GOOGLE_STATE_COOKIE)
+    response = RedirectResponse(target, status_code=302)
+    response.delete_cookie(GOOGLE_STATE_COOKIE)
+    if not code or not state or not expected_state or not hmac.compare_digest(state, expected_state):
+        response.headers["Location"] = "/#/library?auth_error=google_state"
+        return response
+    try:
+        token_request = UrlRequest(
+            "https://oauth2.googleapis.com/token",
+            data=urlencode({
+                "client_id": os.getenv("GOOGLE_CLIENT_ID", ""),
+                "client_secret": os.getenv("GOOGLE_CLIENT_SECRET", ""),
+                "redirect_uri": os.getenv("GOOGLE_REDIRECT_URI", ""),
+                "grant_type": "authorization_code",
+                "code": code,
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with urlopen(token_request, timeout=15) as token_response:
+            token_data = json.loads(token_response.read().decode("utf-8"))
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise ValueError("Google token response did not include an access token.")
+        user_request = UrlRequest("https://openidconnect.googleapis.com/v1/userinfo", headers={"Authorization": f"Bearer {access_token}"})
+        with urlopen(user_request, timeout=15) as user_response:
+            user_data = json.loads(user_response.read().decode("utf-8"))
+        email = str(user_data.get("email") or "")
+        username = str(user_data.get("name") or user_data.get("given_name") or email.split("@", 1)[0])
+        user = database.get_or_create_oauth_user(email, username)
+        session, expires_at = database.create_session(str(user["id"]))
+        response.set_cookie(AUTH_COOKIE, session, httponly=True, secure=request.url.scheme == "https", samesite="lax", expires=expires_at)
+        return response
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Google login failed: %s", exc.__class__.__name__)
+        response.headers["Location"] = "/#/library?auth_error=google"
+        return response
 
 
 @app.get("/api/storage")
@@ -430,10 +630,79 @@ async def storage_status() -> dict[str, object]:
     return status
 
 
+@app.get("/api/bootstrap")
+async def bootstrap(request: Request) -> dict[str, object]:
+    storage = storage_health_report()
+    canonical_counts = storage.get("canonical_supabase_counts", {})
+    active_counts = storage.get("active_counts_used_by_app", {})
+    canonical_data_exists = any(sum(int(v or 0) for v in counts.values()) for counts in canonical_counts.values() if isinstance(counts, dict))
+    active_data_exists = any(sum(int(v or 0) for v in counts.values() if isinstance(v, int)) for counts in active_counts.values() if isinstance(counts, dict))
+    restore_needed = storage.get("recommended_recovery_action") == "restore_from_supabase_backup"
+    if restore_needed:
+        active_data_exists = False
+    return {
+        "ok": True,
+        "app_version": app.version,
+        "admin": {"enabled": bool(admin_password()), "authenticated": is_admin(request)},
+        "user": current_user(request),
+        "novels": novels.list_novels(),
+        "storage": {
+            "backend": os.getenv("STORAGE_BACKEND", "local").lower(),
+            "supabase_enabled": novels.remote is not None,
+            "active_counts_used_by_app": storage.get("active_counts_used_by_app", {}),
+            "canonical_data_exists": canonical_data_exists,
+            "active_data_exists": active_data_exists,
+            "restore_needed": restore_needed,
+            "recommended_recovery_action": storage.get("recommended_recovery_action"),
+            "recommended_recovery_label": storage.get("recommended_recovery_label"),
+            "warnings": storage.get("warnings", []),
+        },
+        "recovery": RECOVERY_STATE,
+        "message": "Bootstrap is lightweight. It does not run backup, restore, or download chapter text.",
+    }
+
+
+@app.get("/api/admin/recovery/status")
+async def recovery_status(request: Request) -> dict[str, object]:
+    require_admin(request)
+    job = backup_jobs.get_job(str(RECOVERY_STATE.get("restore_job_id"))) if RECOVERY_STATE.get("restore_job_id") else None
+    storage = storage_health_report()
+    active_counts = storage.get("active_counts_used_by_app", {})
+    live_ready = storage.get("recommended_recovery_action") != "restore_from_supabase_backup" and any(sum(int(v or 0) for v in counts.values() if isinstance(v, int)) for counts in active_counts.values() if isinstance(counts, dict))
+    return {"ok": True, "recovery": {**RECOVERY_STATE, "restore_job_status": job, "live_data_ready": live_ready, "active_counts": active_counts, "recommended_next_action": "none" if live_ready else RECOVERY_STATE.get("recommended_next_action")}, "storage": storage}
+
+
 @app.post("/api/admin/storage/migrate-local-data")
 async def migrate_storage(request: Request) -> dict[str, object]:
     require_admin(request)
     return migrate_local_data()
+
+
+@app.post("/api/admin/storage/cleanup/dry-run")
+async def cleanup_storage_dry_run(request: Request, payload: Annotated[dict[str, object] | None, Body()] = None) -> dict[str, object]:
+    require_admin(request)
+    retention_days = int((payload or {}).get("retention_days") or 7)
+    return storage_cleanup_report(dry_run=True, retention_days=retention_days)
+
+
+@app.post("/api/admin/storage/cleanup/run")
+async def cleanup_storage_run(request: Request, payload: Annotated[dict[str, object] | None, Body()] = None) -> dict[str, object]:
+    require_admin(request)
+    payload = payload or {}
+    if not bool(payload.get("confirm")):
+        raise HTTPException(status_code=400, detail="Cleanup requires confirm=true.")
+    retention_days = int(payload.get("retention_days") or 7)
+    return storage_cleanup_report(dry_run=False, retention_days=retention_days)
+
+
+@app.get("/api/admin/content/diagnostic")
+async def admin_content_diagnostic(request: Request, novel_id: str = "i-am-god", chapter: int | None = None) -> dict[str, object]:
+    require_admin(request)
+    if chapter is None:
+        return novels.global_content_diagnostic(novel_id)
+    if chapter < 1:
+        raise HTTPException(status_code=400, detail="Chapter must be 1 or greater.")
+    return novels.content_diagnostic(novel_id, chapter)
 
 
 @app.post("/api/admin/storage/sync-supabase")
@@ -447,8 +716,78 @@ async def sync_storage_to_supabase(request: Request) -> dict[str, object]:
 @app.post("/api/admin/storage/migrate-to-supabase")
 async def migrate_to_supabase(request: Request) -> dict[str, object]:
     require_admin(request)
+    job = long_jobs.start("migrate-local-to-supabase", "Local to Supabase migration", lambda update, _state: novels.migrate_to_supabase_progress(update))
+    return {"ok": True, "job_id": job["job_id"], "status": "queued", "message": "Migration is running as a background job. Poll the job status instead of starting again."}
+
+
+@app.post("/api/admin/storage/migrate-local-to-supabase/start")
+async def migrate_local_to_supabase_start(request: Request) -> JSONResponse:
+    require_admin(request)
+    job = long_jobs.start("migrate-local-to-supabase", "Local to Supabase migration", lambda update, _state: novels.migrate_to_supabase_progress(update))
+    return JSONResponse({"ok": True, "job_id": job["job_id"], "status": "queued"}, status_code=202)
+
+
+@app.get("/api/admin/storage/migrate-local-to-supabase/jobs/{job_id}")
+async def migrate_local_to_supabase_job(request: Request, job_id: str) -> dict[str, object]:
+    require_admin(request)
+    job = long_jobs.read("migrate-local-to-supabase", job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Migration job not found.")
+    return job
+
+
+@app.get("/api/admin/storage/deep-discovery")
+async def deep_discovery(request: Request, novel_id: str = "i-am-god") -> dict[str, object]:
+    require_admin(request)
+    return novels.deep_discovery(novel_id)
+
+
+@app.post("/api/admin/storage/migrate-legacy-paths")
+async def migrate_legacy_paths(request: Request, payload: Annotated[dict[str, object], Body()]) -> dict[str, object]:
+    require_admin(request)
     try:
-        return novels.migrate_to_supabase()
+        return novels.migrate_legacy_paths(
+            str(payload.get("novel_id") or "i-am-god"),
+            dry_run=bool(payload.get("dry_run", True)),
+            confirm=bool(payload.get("confirm", False)),
+            overwrite=bool(payload.get("overwrite", False)),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/admin/backups/supabase")
+async def list_supabase_backups(request: Request, novel_id: str = "i-am-god") -> dict[str, object]:
+    require_admin(request)
+    return {"ok": True, "backups": novels.supabase_backup_zips(novel_id)}
+
+
+@app.post("/api/admin/backups/restore-from-supabase")
+async def restore_from_supabase_backup(request: Request, payload: Annotated[dict[str, object], Body()]) -> JSONResponse:
+    require_admin(request)
+    bucket = str(payload.get("bucket") or "novel-files")
+    path = str(payload.get("path") or "").strip()
+    if not path.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Choose a Supabase backup ZIP path.")
+    dry_run = bool(payload.get("dry_run", True))
+    if not dry_run and not bool(payload.get("confirm", False)):
+        raise HTTPException(status_code=400, detail="Real restore requires confirm=true.")
+    try:
+        remote = novels.remote if novels.remote is not None and getattr(novels.remote, "bucket", "") == bucket else SupabaseStorage(bucket=bucket)
+        data = remote.read_bytes(path)
+        if data is None:
+            raise HTTPException(status_code=404, detail="Supabase backup ZIP not found.")
+        job = backup_jobs.start_full_restore(data, Path(path).name, dry_run=dry_run, conflict_mode=str(payload.get("conflict_mode") or "write_missing_only"))
+        selected = {"bucket": bucket, "path": path, "filename": Path(path).name}
+        RECOVERY_STATE.update({
+            "last_action": "online_restore_dry_run" if dry_run else "online_restore_confirm",
+            "selected_backup": selected,
+            "restore_job_id": job.get("job_id"),
+            "recommended_next_action": "confirm_online_restore" if dry_run else "rebuild_index",
+        })
+        if dry_run:
+            RECOVERY_STATE["last_dry_run_result"] = job
+        return JSONResponse(job, status_code=202)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -467,6 +806,28 @@ async def hydrate_novel_from_supabase(request: Request, novel_id: str) -> dict[s
         raise HTTPException(status_code=400, detail="Supabase storage is not enabled.")
     novels.hydrate_remote_metadata(novel_id)
     return novels.rebuild_index(novel_id)
+
+
+@app.post("/api/admin/novels/{novel_id}/rebuild-chapter-index")
+async def rebuild_chapter_index(request: Request, novel_id: str) -> dict[str, object]:
+    require_admin(request)
+    return novels.rebuild_chapter_index_report(novel_id)
+
+
+@app.post("/api/admin/novels/{novel_id}/rebuild-chapter-index/start")
+async def rebuild_chapter_index_start(request: Request, novel_id: str) -> JSONResponse:
+    require_admin(request)
+    job = start_chapter_index_job(novel_id)
+    return JSONResponse({"ok": True, "job_id": job.get("job_id"), "status": job.get("status", "queued"), "novel_id": novel_id}, status_code=202)
+
+
+@app.get("/api/admin/novels/{novel_id}/rebuild-chapter-index/jobs/{job_id}")
+async def rebuild_chapter_index_job(request: Request, novel_id: str, job_id: str) -> dict[str, object]:
+    require_admin(request)
+    job = long_jobs.read("chapter-index", job_id)
+    if job is None or job.get("novel_id") != novel_id:
+        raise HTTPException(status_code=404, detail="Chapter index rebuild job not found.")
+    return job
 
 
 @app.post("/api/admin/storage/clear-backup-state")
@@ -781,7 +1142,16 @@ async def delete_novel(request: Request, novel_id: str) -> dict[str, str]:
 
 @app.get("/api/novels/{novel_id}/library")
 async def get_library(novel_id: str) -> dict[str, object]:
-    return novels.library(novel_id)
+    data = novels.library(novel_id)
+    if data.get("chapter_index_status") in {"missing", "empty"}:
+        counts = data.get("diagnostics", {}).get("counts", {}) if isinstance(data.get("diagnostics"), dict) else {}
+        has_counts = max(int(counts.get("originals") or 0), int(counts.get("references") or 0), int(counts.get("ai_translations") or 0)) > 0
+        if has_counts and novels.chapter_source_files_available(novel_id):
+            job = start_chapter_index_job(novel_id)
+            data["chapter_index_status"] = "rebuild_queued" if job.get("status") == "queued" else "rebuilding"
+            data["chapter_index_job_id"] = job.get("job_id")
+            data["message"] = "Chapter index is being prepared after wake."
+    return data
 
 
 @app.get("/api/novels/{novel_id}/chapters")
@@ -881,6 +1251,225 @@ async def start_novel_job(request: Request, novel_id: str, job_id: str) -> dict[
     require_admin(request)
     novels.start_job(novel_id, job_id)
     return {"status": "queued"}
+
+
+def batch_novel_id(payload: dict[str, object] | None = None) -> str:
+    value = str((payload or {}).get("novel_id") or "").strip()
+    if value:
+        return value
+    items = novels.list_novels()
+    return str(items[0]["novel_id"]) if items else "i-am-god"
+
+
+@app.get("/api/batch/health")
+async def batch_health(request: Request) -> dict[str, object]:
+    novel_id = batch_novel_id()
+    novel = novels.get_novel(novel_id)
+    readiness = novels.read_translation_readiness(novel_id)
+    warnings = []
+    if not os.getenv("OPENAI_API_KEY"):
+        warnings.append("OpenAI is not configured. Translation cannot start yet.")
+    return {
+        "ok": True,
+        "enabled": True,
+        "admin_authenticated": is_admin(request),
+        "novel_id": novel_id,
+        "model": os.getenv("OPENAI_MODEL") or novel.get("current_model") or "gpt-4o-mini",
+        "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
+        "storage_backend": os.getenv("STORAGE_BACKEND", "local").lower(),
+        "database_backend": database.status().get("backend"),
+        "supports_estimate": True,
+        "supports_queue": True,
+        "supports_cancel": True,
+        "supports_retry_failed": True,
+        "default_concurrency": 1,
+        "max_safe_concurrency": 3,
+        "missing_only_default": True,
+        "overwrite_default": False,
+        "counts": novel.get("counts", {}),
+        "readiness_cached": readiness is not None,
+        "readiness_updated_at": readiness.get("updated_at") if readiness else None,
+        "warnings": warnings,
+        "message": "Batch health is available. Estimate and dry-run do not call OpenAI.",
+    }
+
+
+@app.post("/api/batch/readiness/start")
+async def batch_readiness_start(request: Request, payload: Annotated[dict[str, object] | None, Body()] = None) -> JSONResponse:
+    require_admin(request)
+    selected = batch_novel_id(payload)
+    job = long_jobs.start("translation-readiness", f"Translation readiness for {selected}", lambda update, _state: novels.build_translation_readiness(selected, update))
+    return JSONResponse({"ok": True, "job_id": job["job_id"], "status": "queued", "novel_id": selected}, status_code=202)
+
+
+@app.get("/api/batch/readiness/jobs/{job_id}")
+async def batch_readiness_job(request: Request, job_id: str) -> dict[str, object]:
+    require_admin(request)
+    job = long_jobs.read("translation-readiness", job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Translation readiness job not found.")
+    return job
+
+
+@app.get("/api/batch/readiness")
+async def batch_readiness_status(request: Request, novel_id: str | None = None) -> dict[str, object]:
+    require_admin(request)
+    selected = novel_id or batch_novel_id()
+    readiness = novels.read_translation_readiness(selected) or novels.fast_translation_readiness(selected)
+    return {
+        key: readiness.get(key)
+        for key in ("ok", "novel_id", "source", "updated_at", "total_indexed", "original_readable", "ai_existing_readable", "needs_translation", "skipped_no_original", "skipped_already_translated")
+    }
+
+
+def batch_selection(novel_id: str, payload: dict[str, object]) -> dict[str, object]:
+    start = int(payload.get("start_chapter") or 1)
+    end = int(payload.get("end_chapter") or 999999)
+    if start > end:
+        raise ValueError("Start chapter must be less than or equal to end chapter.")
+    batch_size = max(1, min(200, int(payload.get("batch_size") or 25)))
+    missing_only = bool(payload.get("missing_only", True))
+    overwrite = bool(payload.get("overwrite", False))
+    readiness = novels.read_translation_readiness(novel_id)
+    readiness_source = "cached_actual_text"
+    if readiness is None:
+        readiness = novels.fast_translation_readiness(novel_id)
+        readiness_source = "chapter_index_fast"
+    records = [
+        item for item in readiness.get("chapters", [])
+        if start <= int(item.get("chapter") or 0) <= end
+    ]
+    chapters = [item for item in records if item.get("original_readable")]
+    already = [item for item in records if item.get("ai_readable")]
+    needs = [item for item in records if item.get("original_readable") and (overwrite or not missing_only or not item.get("ai_readable"))]
+    selected = needs[:batch_size]
+    missing_originals = [int(item.get("chapter") or 0) for item in records if not item.get("original_readable")]
+    sample_missing_ai = [int(item.get("chapter") or 0) for item in records if item.get("original_readable") and not item.get("ai_readable")][:20]
+    if not chapters:
+        raise ValueError("No readable original chapter text was found. Run Content Diagnostic/Repair first.")
+    estimated_input = 0
+    estimated_output = 0
+    for chapter in selected:
+        text_len = int(chapter.get("characters") or 3500)
+        estimated_input += max(400, text_len // 2)
+        estimated_output += max(600, int(text_len * 0.65))
+    low = (estimated_input / 1_000_000 * 0.15) + (estimated_output / 1_000_000 * 0.60)
+    high = low * 1.75
+    warnings = ["Estimate is approximate.", "Estimate does not call OpenAI.", "Estimate uses cached Translation Readiness. Rebuild readiness after imports/restores."]
+    if readiness_source == "chapter_index_fast":
+        warnings.append("No actual-text readiness cache exists yet. Rebuild Translation Readiness for stricter readable-file validation.")
+    if missing_originals:
+        warnings.append(f"{len(missing_originals)} chapter(s) in range have no readable Original Story file.")
+    return {
+        "novel_id": novel_id,
+        "start_chapter": start,
+        "end_chapter": end if end != 999999 else None,
+        "total_selected": len(chapters),
+        "already_translated": len(already),
+        "missing_ai_translations": len(needs),
+        "estimated_chapters_to_translate": len(selected),
+        "original_chapters_indexed": len(records),
+        "original_chapters_with_text": len(chapters),
+        "original_readable": len(chapters),
+        "ai_chapters_indexed": len(records),
+        "ai_chapters_with_text": len(already),
+        "ai_existing_readable": len(already),
+        "already_translated_in_range": len(already),
+        "chapters_ready_to_translate": len(selected),
+        "needs_translation": len(needs),
+        "max_chapters_to_translate_now": batch_size,
+        "skipped_no_original": len(missing_originals),
+        "skipped_already_translated": len(already),
+        "empty_original_chapters": [],
+        "missing_original_chapters": missing_originals[:50],
+        "sample_missing_ai_chapters": sample_missing_ai,
+        "paths_checked": [],
+        "readiness_source": readiness_source,
+        "readiness_updated_at": readiness.get("updated_at"),
+        "estimated_input_tokens": estimated_input,
+        "estimated_output_tokens": estimated_output,
+        "estimated_cost_low": round(low, 4),
+        "estimated_cost_high": round(high, 4),
+        "model": str(payload.get("model") or os.getenv("OPENAI_MODEL") or "gpt-4o-mini"),
+        "mode": str(payload.get("mode") or "standard"),
+        "warnings": warnings,
+        "chapter_numbers": [int(chapter.get("chapter") or 0) for chapter in selected],
+    }
+
+
+@app.post("/api/batch/estimate")
+async def batch_estimate(request: Request, payload: Annotated[dict[str, object], Body()]) -> JSONResponse:
+    require_admin(request)
+    novel_id = batch_novel_id(payload)
+    settings = dict(payload)
+    settings.update({"start_now": False, "show_estimate_before_starting": True})
+    try:
+        estimate = batch_selection(novel_id, settings)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse({"ok": True, "dry_run": True, **estimate, "message": "Estimate used Translation Readiness and did not call OpenAI."}, status_code=200)
+
+
+@app.post("/api/batch/start")
+async def batch_start(request: Request, payload: Annotated[dict[str, object], Body()]) -> JSONResponse:
+    require_admin(request)
+    novel_id = batch_novel_id(payload)
+    settings = dict(payload)
+    dry_run = bool(settings.pop("dry_run", False))
+    concurrency = int(settings.get("concurrency") or 1)
+    if concurrency not in {1, 2, 3}:
+        raise HTTPException(status_code=400, detail="Concurrency must be 1, 2, or 3.")
+    settings.update({"start_now": False, "show_estimate_before_starting": True})
+    try:
+        estimate = batch_selection(novel_id, settings)
+        job = novels.create_batch(novel_id, settings)
+        if dry_run:
+            return JSONResponse({"ok": True, "dry_run": True, **estimate, "job": job, "message": "Dry-run created an estimated queue only. OpenAI was not called."}, status_code=202)
+        if not os.getenv("OPENAI_API_KEY"):
+            return JSONResponse({"ok": False, **estimate, "job": job, "error": "OPENAI_API_KEY is not configured. Estimate was created, but translation was not started."}, status_code=400)
+        novels.start_job(novel_id, job["job_id"])
+        return JSONResponse({"ok": True, "dry_run": False, "novel_id": novel_id, "job_id": job["job_id"], "status": "queued"}, status_code=202)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/batch/jobs")
+async def batch_jobs(request: Request, novel_id: str | None = None) -> dict[str, object]:
+    require_admin(request)
+    selected = novel_id or batch_novel_id()
+    return {"ok": True, "novel_id": selected, "jobs": novels.service_for(selected).list_jobs()}
+
+
+@app.get("/api/batch/jobs/{job_id}")
+async def batch_job(request: Request, job_id: str, novel_id: str | None = None) -> dict[str, object]:
+    require_admin(request)
+    selected = novel_id or batch_novel_id()
+    job = novels.service_for(selected).get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Batch job not found.")
+    return job
+
+
+@app.post("/api/batch/jobs/{job_id}/cancel")
+async def batch_cancel(request: Request, job_id: str, payload: Annotated[dict[str, object] | None, Body()] = None) -> dict[str, object]:
+    require_admin(request)
+    selected = batch_novel_id(payload)
+    try:
+        job = novels.service_for(selected).cancel_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "novel_id": selected, "job": job, "message": "Translation job cancellation requested."}
+
+
+@app.post("/api/batch/jobs/{job_id}/retry-failed")
+async def batch_retry_failed(request: Request, job_id: str, payload: Annotated[dict[str, object] | None, Body()] = None) -> dict[str, object]:
+    require_admin(request)
+    selected = batch_novel_id(payload)
+    try:
+        job = novels.service_for(selected).retry_failed_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "novel_id": selected, "job": job, "message": "Failed chapters were queued for retry."}
 
 
 @app.get("/api/novels/{novel_id}/jobs/{job_id}")

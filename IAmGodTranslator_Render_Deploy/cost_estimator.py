@@ -8,11 +8,13 @@ from typing import Any
 
 CONTENT_PATTERNS = [
     r"第\s*(\d+)\s*章\s*(.*)",
+    r"第\s*(\d+)\s*章\s*(.*)",
     r"Chapter\s+(\d+)\s*[:：-]?\s*(.*)",
 ]
 
 FILENAME_PATTERNS = [
     r"Chapter\s+(\d+)",
+    r"第\s*(\d+)\s*章",
     r"第\s*(\d+)\s*章",
     r"^(\d{1,6})\b",
 ]

@@ -1,41 +1,26 @@
-# IAmGodTranslator Web v3
+# Render Deployment
 
-FastAPI web app for translating and reading web novel chapters while preserving the existing Python translator modules. Version 3 adds public reader pages with admin-only translation, import, backup, and settings controls.
+## Commands
 
-## Features
+Build command:
 
-- Novel Library home with search, sorting, and novel cards.
-- Public per-novel dashboard for Chapters and Reader.
-- Admin-only Translate, Backups, Settings, imports, restores, downloads, cover upload, and app icon upload.
-- Original Story uploads for source chapters.
-- Optional Reference Translation uploads for support/reference text.
-- Queue and cost estimate before translation.
-- Explicit Start Batch button with paid translation warning.
-- Online reader with separate Original Story, Reference Translation, and AI Translation modes.
-- Download English ZIP, prompts ZIP, single translated chapters, or full novel backup ZIP.
-- Restore a full novel backup ZIP.
-- Persistent storage through `DATA_DIR`, suitable for Render persistent disks.
-- Mobile-friendly PWA with Safari Add to Home Screen support.
-
-## Local Setup
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+```bash
 pip install -r requirements.txt
-Copy-Item .env.example .env
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Set `OPENAI_API_KEY` only in `.env` locally or in the hosting environment.
+Start command:
 
-## Render Settings
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
 
-- Build command: `pip install -r requirements.txt`
-- Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-- Root Directory: `IAmGodTranslator_Render_Deploy` if this folder is inside a larger repository.
+Root Directory, if this project is in a subfolder:
 
-Environment variables:
+```text
+IAmGodTranslator_Render_Deploy
+```
+
+## Environment Variables
 
 ```env
 OPENAI_API_KEY=your OpenAI API key
@@ -45,36 +30,41 @@ LOG_LEVEL=INFO
 MAX_UPLOAD_BYTES=52428800
 DATA_DIR=/var/data/IAmGodTranslator
 STORAGE_BACKEND=local
+# Optional Google login:
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REDIRECT_URI=https://your-render-service.onrender.com/auth/google/callback
 ```
 
-To persist through Supabase Storage instead, set `STORAGE_BACKEND=supabase`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `SUPABASE_BUCKET=novel-data` in Render. Keep the Supabase service role key only in backend environment variables.
+Never commit `.env`. Without `ADMIN_PASSWORD`, admin login is disabled and private controls remain hidden.
 
-Do not commit `.env`. Set `ADMIN_PASSWORD` on Render or the admin tools stay hidden and locked. For long jobs, attach a Render persistent disk mounted at `/var/data` or use Supabase Storage.
+For Supabase Storage persistence instead of local Render disk storage, set:
 
-## Data Layout
+```env
+STORAGE_BACKEND=supabase
+SUPABASE_URL=your Supabase project URL
+SUPABASE_SERVICE_ROLE_KEY=your service role key
+SUPABASE_BUCKET=novel-data
+```
+
+Keep `SUPABASE_SERVICE_ROLE_KEY` only in Render environment variables. It is used by the FastAPI backend and must never be exposed in frontend JavaScript.
+
+## Persistent Disk
+
+For long translation jobs, attach a Render persistent disk mounted at `/var/data` and keep `DATA_DIR=/var/data/IAmGodTranslator`.
+
+The app stores novels under `DATA_DIR/novels/<novel_id>/`. Legacy jobs migrate into `DATA_DIR/novels/i-am-god/jobs/` without deleting the old folders.
+
+## Verify
+
+After deploy, open:
 
 ```text
-<DATA_DIR or ./data>/
-  novels/
-    i-am-god/
-      metadata.json
-      Original/
-      Reference/
-      jobs/
-      Backups/
-      Output/
+https://your-render-service.onrender.com/api/health
+https://your-render-service.onrender.com/api/storage
+https://your-render-service.onrender.com/api/novels
 ```
 
-Legacy `<DATA_DIR>/jobs/*` folders are copied into `novels/i-am-god/jobs/` on startup. The old folders are not deleted.
+## iPhone
 
-## iPhone Home Screen
-
-Open the deployed Render URL in Safari, tap Share, choose Add to Home Screen, then launch the app from the Home Screen icon.
-
-## Safety
-
-- Cost estimates do not call OpenAI.
-- Uploads and estimates do not start translation automatically.
-- Translation starts only after pressing Start Batch and confirming.
-- Public visitors can read available chapters but cannot modify data or start paid work.
-- Release ZIPs must exclude `.env`, API keys, `.venv`, `__pycache__`, runtime job data, logs, generated prompts, and generated translations.
+Open the deployed app in Safari, open a translated chapter in Reader, tap Share, then Add to Home Screen.

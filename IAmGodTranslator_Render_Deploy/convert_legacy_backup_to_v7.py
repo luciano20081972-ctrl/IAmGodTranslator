@@ -1871,6 +1871,9 @@ input::placeholder { color:rgba(159,177,169,.62); }
   background:rgba(255,255,255,.04);
 }
 .account-user-actions[hidden] { display:none; }
+body:not(.is-admin) #apiStatus {
+  display:none;
+}
 
 .app-recovery[hidden] { display:none; }
 .app-recovery {
@@ -1921,12 +1924,178 @@ input::placeholder { color:rgba(159,177,169,.62); }
   cursor:wait;
 }
 
+.json-report {
+  max-height:320px;
+  overflow:auto;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  font-size:.82rem;
+  color:var(--muted);
+}
+
+.recovery-dashboard {
+  display:grid;
+  gap:16px;
+}
+.recovery-summary {
+  display:grid;
+  gap:12px;
+}
+.recovery-action-grid {
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+  gap:12px;
+}
+.recovery-action-card {
+  display:grid;
+  gap:10px;
+  border:1px solid rgba(184,211,196,.14);
+  border-radius:14px;
+  padding:14px;
+  background:rgba(255,255,255,.045);
+  box-shadow:0 18px 48px rgba(0,0,0,.18);
+}
+.recovery-action-head {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+}
+.recovery-action-card p {
+  margin:0;
+  color:var(--muted);
+}
+.recovery-action-card small {
+  color:var(--muted);
+  overflow-wrap:anywhere;
+}
+.recovery-action-card details {
+  border-top:1px solid rgba(184,211,196,.1);
+  padding-top:8px;
+}
+.recovery-badge {
+  display:inline-flex;
+  align-items:center;
+  min-height:24px;
+  border-radius:999px;
+  padding:3px 9px;
+  border:1px solid rgba(184,211,196,.16);
+  color:var(--muted);
+  background:rgba(255,255,255,.05);
+  font-size:.76rem;
+  text-transform:capitalize;
+}
+.recovery-badge.running,
+.recovery-badge.needs-backup-restore,
+.recovery-badge.legacy-migration-available {
+  color:#dfffee;
+  border-color:rgba(106,230,169,.36);
+  background:rgba(106,230,169,.1);
+}
+.recovery-badge.completed,
+.recovery-badge.completed-copied {
+  color:#c7f8d8;
+  border-color:rgba(106,230,169,.28);
+}
+.recovery-badge.failed {
+  color:#ffd0d0;
+  border-color:rgba(255,116,116,.38);
+  background:rgba(255,116,116,.1);
+}
+.progress-fill.indeterminate {
+  width:55% !important;
+  animation:recovery-progress 1.2s ease-in-out infinite alternate;
+}
+.recovery-log {
+  border:1px solid rgba(184,211,196,.12);
+  border-radius:14px;
+  padding:14px;
+  background:rgba(0,0,0,.16);
+}
+.recovery-log h4 {
+  margin:0 0 8px;
+}
+.recovery-log p {
+  margin:6px 0;
+  color:var(--muted);
+  overflow-wrap:anywhere;
+}
+.online-restore-card {
+  border-color:rgba(106,230,169,.22);
+  background:linear-gradient(145deg,rgba(17,31,26,.9),rgba(11,15,17,.92));
+}
+.google-login-button {
+  width:100%;
+  justify-content:center;
+  margin:8px 0 4px;
+  border-color:rgba(255,255,255,.18);
+  background:rgba(255,255,255,.08);
+}
+.google-login-button:disabled {
+  opacity:.55;
+  cursor:not-allowed;
+}
+#batchHealthCard {
+  border-color:rgba(104,209,180,.2);
+  background:linear-gradient(145deg,rgba(20,31,33,.92),rgba(10,14,16,.94));
+}
+#batchHealthStatus,
+#onlineRestoreStatus {
+  line-height:1.65;
+}
+.settings-grid .wide-field {
+  grid-column:1/-1;
+}
+.success-panel {
+  margin-top:10px;
+  border:1px solid rgba(106,230,169,.28);
+  border-radius:12px;
+  padding:10px 12px;
+  color:#dfffee;
+  background:rgba(106,230,169,.1);
+}
+@keyframes recovery-progress {
+  from { transform:translateX(-20%); opacity:.65; }
+  to { transform:translateX(45%); opacity:1; }
+}
+
 dialog {
   border-color:rgba(184,211,196,.18);
   border-radius:16px;
   box-shadow:0 30px 90px rgba(0,0,0,.52);
 }
 dialog::backdrop { background:rgba(0,0,0,.68); backdrop-filter:blur(4px); }
+
+.reader-diagnostic {
+  margin-top:28px;
+  padding:14px 16px;
+  border:1px solid rgba(184,211,196,.16);
+  border-radius:12px;
+  background:rgba(10,16,14,.68);
+  color:var(--muted);
+  font-size:.88rem;
+}
+.reader-diagnostic summary { color:var(--text); cursor:pointer; font-weight:700; }
+.reader-diagnostic ol {
+  margin:10px 0 0;
+  padding-left:20px;
+  overflow-wrap:anywhere;
+}
+.mini-table {
+  width:100%;
+  margin-top:12px;
+  border-collapse:collapse;
+  font-size:.88rem;
+}
+.mini-table th,
+.mini-table td {
+  padding:8px 10px;
+  border-bottom:1px solid rgba(184,211,196,.12);
+  text-align:left;
+  vertical-align:top;
+  overflow-wrap:anywhere;
+}
+.mini-table th { color:var(--text); }
 
 @media (min-width:1100px) {
   .tabs {

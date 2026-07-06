@@ -1,104 +1,32 @@
-from pathlib import Path
-
-
-class FileSystem:
-
-    def __init__(self):
-
-        self.root = Path(__file__).resolve().parent.parent
-
-        # -----------------------------
-        # Source folders
-        # -----------------------------
-
-        self.source = self.root / "Source"
-
-        self.chinese = self.source / "Chinese"
-        self.novelfire = self.source / "NovelFire"
-
-        # -----------------------------
-        # Translation folders
-        # -----------------------------
-
-        self.translation = self.root / "Translation"
-
-        self.drafts = self.translation / "Drafts"
-        self.reviewed = self.translation / "Reviewed"
-        self.english = self.translation / "Final"
-
-        # -----------------------------
-        # Other folders
-        # -----------------------------
-
-        self.prompts = self.root / "Prompts"
-        self.logs = self.root / "Logs"
-        self.output = self.root / "Output"
-
-        self.create_folders()
-
-    def create_folders(self):
-
-        folders = [
-            self.source,
-            self.chinese,
-            self.novelfire,
-            self.translation,
-            self.drafts,
-            self.reviewed,
-            self.english,
-            self.prompts,
-            self.logs,
-            self.output,
-        ]
-
-        for folder in folders:
-            folder.mkdir(parents=True, exist_ok=True)
-
-    def chapter_file(self, folder: Path, chapter: int):
-
-        files = sorted(folder.glob(f"{chapter:04d}*.txt"))
-
-        if files:
-            return files[0]
-
-        return None
-
-    def load_chapter(self, folder: Path, chapter: int):
-
-        file = self.chapter_file(folder, chapter)
-
-        if file is None:
-            return None
-
-        with open(file, "r", encoding="utf-8") as f:
-            text = f.read()
-
-        return {
-            "number": chapter,
-            "title": file.stem,
-            "text": text,
-            "path": file,
-        }
-
-    def save_text(self, folder: Path, chapter: int, text: str):
-
-        folder.mkdir(parents=True, exist_ok=True)
-
-        filename = folder / f"{chapter:04d}.txt"
-
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write(text)
-
-        return filename
-
-    def prompt_file(self, chapter):
-        return self.prompts / f"{chapter:04d}.txt"
-
-    def draft_file(self, chapter):
-        return self.drafts / f"{chapter:04d}.txt"
-
-    def reviewed_file(self, chapter):
-        return self.reviewed / f"{chapter:04d}.txt"
-
-    def english_file(self, chapter):
-        return self.english / f"{chapter:04d}.txt"
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-4o-mini
+ADMIN_PASSWORD=
+SESSION_SECRET=
+LOG_LEVEL=INFO
+MAX_UPLOAD_BYTES=52428800
+PYTHON_VERSION=3.12.7
+# Optional. Leave blank locally to use ./data. Render Free can use data plus Supabase, or a persistent disk path on paid plans.
+DATA_DIR=data
+# Optional. Leave blank to use SQLite at DATA_DIR/godtranslator.db. sqlite:///... is supported in this lightweight build.
+DATABASE_URL=
+# Optional. Use local unless set to supabase.
+STORAGE_BACKEND=local
+SUPABASE_URL=
+SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+SUPABASE_BUCKET=novel-files
+# Keep true on Render Free so Supabase reads/scans never block startup before the web port opens.
+DISABLE_STARTUP_REMOTE_SYNC=true
+SUPABASE_TIMEOUT_SECONDS=10
+SUPABASE_HEALTH_TIMEOUT_SECONDS=5
+# Optional account email settings. Do not commit real secrets.
+SMTP_HOST=
+SMTP_PORT=
+SMTP_USER=
+SMTP_PASSWORD=
+SMTP_FROM=
+SITE_URL=https://iamgodtranslator.onrender.com
+# Optional Google OAuth. Button stays disabled until all three are configured.
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REDIRECT_URI=
