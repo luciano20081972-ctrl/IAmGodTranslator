@@ -1,1 +1,6 @@
-{}
+fastapi<1.0,>=0.115
+uvicorn[standard]<1.0,>=0.30
+python-dotenv>=1.0
+python-multipart>=0.0.9
+openai>=1.0.0
+psycopg[binary]<4.0,>=3.2
