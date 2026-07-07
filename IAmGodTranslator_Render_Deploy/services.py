@@ -1509,7 +1509,7 @@ class NovelManager:
                 if text is not None:
                     return finish(True, text, marker, "remote_candidate")
 
-        for path in self.local_path_candidates(novel_id, chapter_number, category):
+        for path in ([] if self.remote is not None else self.local_path_candidates(novel_id, chapter_number, category)):
             path_text = str(path)
             if path_text in paths_checked:
                 continue
