@@ -1,1 +1,1 @@
-"""FastAPI web application for IAmGodTranslator."""
+"""GodTranslator v10 database-first backend."""
