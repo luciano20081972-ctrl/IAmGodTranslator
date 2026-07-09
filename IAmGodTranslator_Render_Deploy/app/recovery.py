@@ -31,7 +31,10 @@ class Candidate:
     character_count: int
 
 
-def reference_diagnostic(db: Database, novel_id: str, start: int = REFERENCE_START, end: int = REFERENCE_END) -> dict[str, Any]:
+def reference_diagnostic(db: Database, novel_id: str, start: int | None = None, end: int | None = None) -> dict[str, Any]:
+    configured_start, configured_end = db.reference_range(novel_id)
+    start = start if start is not None else configured_start if configured_start is not None else REFERENCE_START
+    end = end if end is not None else configured_end if configured_end is not None else REFERENCE_END
     chapters = db.table("chapters")
     with db.connect() as conn:
         rows = conn.execute(

@@ -232,6 +232,8 @@ class Database:
             "cover_url": "TEXT",
             "source_url": "TEXT",
             "reference_source_url": "TEXT",
+            "reference_target_start": "INTEGER",
+            "reference_target_end": "INTEGER",
             "metadata_json": "TEXT",
             "is_archived": "INTEGER NOT NULL DEFAULT 0",
         }
@@ -322,9 +324,10 @@ class Database:
                 f"""
                 INSERT INTO {self.table('novels')} (
                     id, title, summary, model, status, author, cover_url, source_url,
-                    reference_source_url, metadata_json, is_archived, created_at, updated_at
+                    reference_source_url, reference_target_start, reference_target_end,
+                    metadata_json, is_archived, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     title = excluded.title,
                     summary = excluded.summary,
@@ -334,6 +337,8 @@ class Database:
                     cover_url = excluded.cover_url,
                     source_url = excluded.source_url,
                     reference_source_url = excluded.reference_source_url,
+                    reference_target_start = excluded.reference_target_start,
+                    reference_target_end = excluded.reference_target_end,
                     metadata_json = excluded.metadata_json,
                     is_archived = excluded.is_archived,
                     updated_at = excluded.updated_at
@@ -348,6 +353,8 @@ class Database:
                     payload.get("cover_url"),
                     payload.get("source_url"),
                     payload.get("reference_source_url"),
+                    optional_int(payload.get("reference_target_start")),
+                    optional_int(payload.get("reference_target_end")),
                     metadata_json,
                     1 if payload.get("is_archived") else 0,
                     now,
@@ -417,7 +424,9 @@ class Database:
             rows = conn.execute(
                 f"""
                 SELECT n.id, n.title, n.summary, n.model, n.status, n.created_at, n.updated_at,
-                    n.author, n.cover_url, n.source_url, n.reference_source_url, n.metadata_json, n.is_archived,
+                    n.author, n.cover_url, n.source_url, n.reference_source_url,
+                    n.reference_target_start, n.reference_target_end,
+                    n.metadata_json, n.is_archived,
                     COUNT(c.id) AS chapter_count,
                     SUM(CASE WHEN c.original_text IS NOT NULL AND LENGTH(TRIM(c.original_text)) > 0 THEN 1 ELSE 0 END) AS original_count,
                     SUM(CASE WHEN c.reference_text IS NOT NULL AND LENGTH(TRIM(c.reference_text)) > 0 THEN 1 ELSE 0 END) AS reference_count,
@@ -442,6 +451,21 @@ class Database:
                 (1 if archived else 0, "archived" if archived else "active", utc_now(), novel_id),
             )
         return self.novel(novel_id) or {}
+
+    def reference_range(self, novel_id: str) -> tuple[int | None, int | None]:
+        novel = self.novel(novel_id) or {}
+        start = optional_int(novel.get("reference_target_start"))
+        end = optional_int(novel.get("reference_target_end"))
+        if start is None or end is None:
+            metadata = novel.get("metadata") if isinstance(novel.get("metadata"), dict) else {}
+            start = start if start is not None else optional_int(metadata.get("reference_target_start"))
+            end = end if end is not None else optional_int(metadata.get("reference_target_end"))
+        if (start is None or end is None) and novel_id == "i-am-god":
+            start = 1
+            end = 434
+        if start is not None and end is not None and start > end:
+            start, end = end, start
+        return start, end
 
     def library(self, novel_id: str, limit: int = 2000, offset: int = 0, search: str = "", view: str = "all") -> dict[str, Any]:
         novel = self.novel(novel_id)
@@ -1005,6 +1029,7 @@ class Database:
             )
 
     def missing_data(self, novel_id: str) -> dict[str, Any]:
+        reference_start, reference_end = self.reference_range(novel_id)
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -1020,7 +1045,14 @@ class Database:
             ).fetchall()
         return {
             "missing_original": [int(row["chapter_number"]) for row in rows if row["missing_original"]],
-            "missing_reference": [int(row["chapter_number"]) for row in rows if row["missing_reference"]],
+            "missing_reference": [
+                int(row["chapter_number"])
+                for row in rows
+                if row["missing_reference"]
+                and (reference_start is None or int(row["chapter_number"]) >= reference_start)
+                and (reference_end is None or int(row["chapter_number"]) <= reference_end)
+            ],
+            "reference_target_range": {"start": reference_start, "end": reference_end},
             "translation_errors": [{"chapter_number": int(row["chapter_number"]), "error": row["translation_error"]} for row in rows if readable(row["translation_error"])],
         }
 
@@ -1182,9 +1214,9 @@ def public_chapter_row(row: Any) -> dict[str, Any]:
 
 def public_novel_row(row: Any) -> dict[str, Any]:
     payload = dict(row)
-    for key in ("chapter_count", "original_count", "reference_count", "ai_count", "is_archived"):
+    for key in ("chapter_count", "original_count", "reference_count", "ai_count", "is_archived", "reference_target_start", "reference_target_end"):
         if key in payload:
-            payload[key] = int(payload[key] or 0)
+            payload[key] = int(payload[key]) if payload[key] is not None else None
     metadata = payload.get("metadata_json")
     try:
         payload["metadata"] = json.loads(metadata) if metadata else {}
@@ -1193,6 +1225,15 @@ def public_novel_row(row: Any) -> dict[str, Any]:
     payload.pop("metadata_json", None)
     payload["remaining_count"] = max(0, int(payload.get("original_count") or 0) - int(payload.get("ai_count") or 0))
     return payload
+
+
+def optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def public_job_row(row: Any) -> dict[str, Any]:

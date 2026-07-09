@@ -201,6 +201,8 @@ function renderNovelForm() {
     <label>Cover URL<input name="cover_url"></label>
     <label>Source URL<input name="source_url"></label>
     <label>Reference Source URL<input name="reference_source_url"></label>
+    <label>Reference target start<input name="reference_target_start" type="number" min="1" placeholder="1"></label>
+    <label>Reference target end<input name="reference_target_end" type="number" min="1" placeholder="434"></label>
     <label>Default model<input name="model" value="gpt-4o-mini"></label>
     <label class="wide">Summary<textarea name="summary" rows="3"></textarea></label>
     <button class="primary" type="submit">Save Novel</button>
@@ -462,7 +464,7 @@ async function openAdmin() {
       ${pageHeader("Admin", "Operational view for database health, jobs, imports, missing data, and exports.", [["Version", "10.1.0"], ["Schema", overview.overview.schema], ["Chapters", overview.overview.chapters], ["Needs Translation", overview.overview.needs_translation]])}
       <section class="dashboard-grid">
         <div class="panel"><h2>Database Health</h2><pre>${escapeHtml(JSON.stringify(dbHealth.health, null, 2))}</pre></div>
-        <div class="panel"><h2>Missing Data</h2>${recoveryList("Missing Original", missing.missing.missing_original)}${recoveryList("Missing Reference", missing.missing.missing_reference)}${objectDetails("Translation errors", missing.missing.translation_errors)}</div>
+        <div class="panel"><h2>Missing Data</h2><p class="muted">Reference range: ${escapeHtml(missing.missing.reference_target_range?.start ?? "all")} - ${escapeHtml(missing.missing.reference_target_range?.end ?? "all")}</p>${recoveryList("Missing Original", missing.missing.missing_original)}${recoveryList("Missing Reference", missing.missing.missing_reference)}${objectDetails("Translation errors", missing.missing.translation_errors)}</div>
         <div class="panel"><h2>Backup & Export</h2><p class="muted">Exports a versioned ZIP from PostgreSQL. No automatic restore or startup scanning.</p><a class="button primary" href="/api/novels/${state.currentNovelId}/backup">Export Novel Backup</a></div>
       </section>
       <section class="table-card"><h2>Translation Jobs</h2>${renderJobsTable(jobs.jobs || [])}</section>
