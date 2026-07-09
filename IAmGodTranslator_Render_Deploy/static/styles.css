@@ -760,6 +760,28 @@ pre {
   color: var(--text);
 }
 
+.admin-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  margin: 1rem 0;
+}
+
+.admin-tabs a {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: .62rem .9rem;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.admin-tabs a.active,
+.admin-tabs a:hover {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--line));
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 .command-dialog {
   width: min(720px, calc(100vw - 2rem));
   border: 1px solid var(--line);

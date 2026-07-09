@@ -78,7 +78,7 @@ function route() {
   if (parts[0] === "bookmarks") return openBookmarks();
   if (parts[0] === "settings") return openSettings(parts[1] || "appearance");
   if (["account", "login", "signup", "forgot-password", "reset-password"].includes(parts[0])) return openSettings("account", parts[0]);
-  if (parts[0] === "admin") return openAdmin();
+  if (parts[0] === "admin") return openAdmin(parts[1] || "overview");
   return openLibrary();
 }
 
@@ -742,7 +742,7 @@ function renderRecoveryPreview(preview, novelId) {
   return `<section class="panel"><h2>Import Preview</h2><div class="metric-grid">${metric("Files", preview.files_found)}${metric("Recognized", preview.recognized_count)}${metric("Would import", preview.would_import_count)}${metric("Already present", preview.already_present_count)}${metric("Still missing", preview.still_missing_count)}</div>${recoveryList("Would import", preview.chapters_that_would_be_imported)}${recoveryList("Still missing", preview.still_missing_after_import)}${objectDetails("Invalid files", preview.invalid_files)}${objectDetails("Ambiguous", preview.ambiguous_filenames)}${objectDetails("Duplicates", preview.duplicate_chapter_numbers)}<button id="applyImport" class="primary" ${canImport ? "" : "disabled"}>Import Missing References</button></section>`;
 }
 
-async function openAdmin() {
+async function openAdmin(tab = "overview") {
   setLoading("Loading admin...");
   await refreshSession();
   if (!state.admin) return renderAdminGate("Admin");
@@ -754,21 +754,30 @@ async function openAdmin() {
       api(`/api/import-jobs?novel_id=${state.currentNovelId}`),
       api(`/api/translation/jobs?novel_id=${state.currentNovelId}`),
     ]);
+    const tabs = [["overview", "Overview"], ["database", "Database"], ["jobs", "Translation Jobs"], ["imports", "Import Jobs"], ["missing", "Missing Data"], ["backups", "Backups"], ["diagnostics", "Diagnostics"]];
     app.innerHTML = `
       ${pageHeader("Admin", "Operational view for database health, jobs, imports, missing data, and exports.", [["Version", APP_VERSION], ["Schema", overview.overview.schema], ["Chapters", overview.overview.chapters], ["Needs Translation", overview.overview.needs_translation]])}
-      <section class="dashboard-grid">
-        <div class="panel"><h2>Database Health</h2><pre>${escapeHtml(JSON.stringify(dbHealth.health, null, 2))}</pre></div>
-        <div class="panel"><h2>Missing Data</h2><p class="muted">Reference range: ${escapeHtml(missing.missing.reference_target_range?.start ?? "all")} - ${escapeHtml(missing.missing.reference_target_range?.end ?? "all")}</p>${recoveryList("Missing Original", missing.missing.missing_original)}${recoveryList("Missing Reference", missing.missing.missing_reference)}${objectDetails("Translation errors", missing.missing.translation_errors)}</div>
-        <div class="panel"><h2>Backup & Export</h2><p class="muted">Exports a versioned ZIP from PostgreSQL. No automatic restore or startup scanning.</p><a class="button primary" href="/api/novels/${state.currentNovelId}/backup">Export Novel Backup</a></div>
-      </section>
-      <section class="table-card"><h2>Translation Jobs</h2>${renderJobsTable(jobs.jobs || [])}</section>
-      <section class="table-card"><h2>Import Jobs</h2><table><tbody>${(imports.jobs || []).map((job) => `<tr><td>${job.id.slice(0, 8)}</td><td>${job.target_mode}</td><td>${job.status}</td><td>${job.updated_at}</td></tr>`).join("") || `<tr><td>No import jobs.</td></tr>`}</tbody></table></section>
+      <nav class="admin-tabs">${tabs.map(([key, label]) => `<a class="${tab === key ? "active" : ""}" href="#/admin/${key}">${label}</a>`).join("")}</nav>
+      ${renderAdminTab(tab, overview, dbHealth, missing, imports, jobs)}
       <div class="actions"><button id="logoutBtn">Logout</button><a class="button" href="#/recovery/${state.currentNovelId}">Open Recovery</a></div>`;
     bindJobButtons();
     document.querySelector("#logoutBtn").addEventListener("click", async () => { await api("/api/admin/logout", {method: "POST"}); state.admin = false; openAdmin(); });
   } catch (error) {
     setError(error.message);
   }
+}
+
+function renderAdminTab(tab, overview, dbHealth, missing, imports, jobs) {
+  const data = overview.overview || {};
+  if (tab === "database") {
+    return `<section class="dashboard-grid"><div class="panel">${metric("Database", dbHealth.health?.ok === false ? "Unhealthy" : "Connected")}${metric("Schema", data.schema)}${metric("Expected Tables", "Healthy")}${metric("Chapters", data.chapters)}</div><div class="panel"><h2>Technical Details</h2><details><summary>Show details</summary><pre>${escapeHtml(JSON.stringify(dbHealth.health, null, 2))}</pre></details></div></section>`;
+  }
+  if (tab === "jobs") return `<section class="table-card"><h2>Translation Jobs</h2>${renderJobsTable(jobs.jobs || [])}</section>`;
+  if (tab === "imports") return `<section class="table-card"><h2>Import Jobs</h2><table><thead><tr><th>Job</th><th>Mode</th><th>Status</th><th>Updated</th></tr></thead><tbody>${(imports.jobs || []).map((job) => `<tr><td>${job.id.slice(0, 8)}</td><td>${escapeHtml(job.target_mode)}</td><td>${escapeHtml(job.status)}</td><td>${escapeHtml(job.updated_at)}</td></tr>`).join("") || `<tr><td colspan="4">No import jobs.</td></tr>`}</tbody></table></section>`;
+  if (tab === "missing") return `<section class="dashboard-grid"><div class="panel"><h2>Missing Data</h2><p class="muted">Reference range: ${escapeHtml(missing.missing.reference_target_range?.start ?? "all")} - ${escapeHtml(missing.missing.reference_target_range?.end ?? "all")}</p>${recoveryList("Missing Original", missing.missing.missing_original)}${recoveryList("Missing Reference", missing.missing.missing_reference)}</div><div class="panel"><h2>Recovery</h2><p>Expected I Am God missing Reference is Chapter 362 only after the target range fix.</p><a class="button" href="#/recovery/${state.currentNovelId}">Open Recovery</a></div></section>`;
+  if (tab === "backups") return `<section class="dashboard-grid"><div class="panel"><h2>Backup & Export</h2><p class="muted">Exports a versioned ZIP from PostgreSQL. Secrets, database URLs, passwords, and Auth tokens are never included.</p><a class="button primary" href="/api/novels/${state.currentNovelId}/backup">Export Novel Backup</a></div><div class="panel"><h2>Contents</h2><p>Novel metadata, chapters, translation jobs, and import metadata from the v10 database source of truth.</p></div></section>`;
+  if (tab === "diagnostics") return `<section class="dashboard-grid"><div class="panel">${metric("Version", APP_VERSION)}${metric("DB", dbHealth.health?.ok === false ? "Unhealthy" : "Healthy")}${metric("Schema", data.schema)}${metric("Auth", state.authConfig?.configured ? "Configured" : "Missing")}${metric("OpenAI", "Configured/Missing hidden")}</div><div class="panel"><h2>Details</h2><details><summary>Show sanitized JSON</summary><pre>${escapeHtml(JSON.stringify({overview: data, db: dbHealth.health}, null, 2))}</pre></details></div></section>`;
+  return `<section class="dashboard-grid"><div class="panel">${metric("Application", "GodTranslator")}${metric("Database", dbHealth.health?.ok === false ? "Unhealthy" : "Connected")}${metric("Novels", data.novels)}${metric("Chapters", data.chapters)}</div><div class="panel">${metric("Original", data.original)}${metric("Reference", data.reference)}${metric("AI", data.ai)}${metric("Needs Translation", data.needs_translation)}</div><div class="panel">${metric("Active Jobs", (jobs.jobs || []).filter((job) => ["queued", "running", "paused"].includes(job.status)).length)}${metric("Recent Errors", (jobs.jobs || []).filter((job) => job.error).length)}<a class="button" href="#/admin/jobs">Open Jobs</a></div></section>`;
 }
 
 function openSettings(section = "appearance", intent = "") {

@@ -718,3 +718,25 @@ Checkpoint 6 QA:
 - Reader loaded the fixture AI result.
 - Compare returned Original, Reference, and AI panels.
 - No real OpenAI call was made.
+
+## v10.2.0 Checkpoint 7 - Premium Admin and Operations
+
+Completed:
+
+- Reworked Admin into tabs: Overview, Database, Translation Jobs, Import Jobs, Missing Data, Backups, and Diagnostics.
+- Replaced raw JSON-first admin display with operational cards and hidden technical details.
+- Kept Database health clear: connected/healthy state, schema, expected tables, and chapter counts.
+- Kept Missing Data concise and tied to the configured Reference range.
+- Preserved Recovery entry points, import jobs, translation jobs, and backup/export flows.
+- Kept sanitized diagnostics from exposing secret values.
+
+Checkpoint 7 QA:
+
+- Python syntax check passed for all app modules.
+- JavaScript syntax check passed.
+- Public `/api/admin/overview` returned 401.
+- Admin login worked.
+- `/api/admin/overview`, `/api/admin/db-health`, translation jobs, import jobs, recovery diagnostic, and backup export returned 200 in fixture QA.
+- Missing Reference respected target range 1-434 and reported chapter 362 only in the fixture.
+- No OpenAI call was made.
+- No translation was started.
