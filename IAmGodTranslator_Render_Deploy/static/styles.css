@@ -389,6 +389,44 @@ h3 { margin: 0 0 0.45rem; }
   margin-top: 1rem;
 }
 
+.translate-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 380px);
+  gap: 1rem;
+  align-items: start;
+}
+
+.translate-steps {
+  display: grid;
+  gap: 1rem;
+}
+
+.estimate-panel {
+  position: sticky;
+  top: 6rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--line));
+  border-radius: 22px;
+  background: rgba(21, 29, 26, 0.92);
+  padding: 1rem;
+  box-shadow: var(--shadow);
+}
+
+.compare-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.compare-panel {
+  max-height: 72vh;
+  overflow: auto;
+}
+
+.compare-panel p {
+  line-height: 1.75;
+  color: var(--muted);
+}
+
 .chapter-link {
   display: flex;
   justify-content: space-between;
@@ -825,9 +863,12 @@ pre {
   .table-card { overflow-x: auto; }
   th, td { min-width: 8rem; }
   .novel-hero,
-  .split-panels {
+  .split-panels,
+  .translate-workspace,
+  .compare-grid {
     grid-template-columns: 1fr;
   }
+  .estimate-panel { position: static; }
   .hero-cover {
     width: min(260px, 72vw);
   }

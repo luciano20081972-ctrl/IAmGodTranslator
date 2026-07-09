@@ -17,7 +17,7 @@ from fastapi import Body, Depends, FastAPI, File, HTTPException, Query, Request,
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.db import Database
+from app.db import Database, model_pricing
 from app.recovery import parse_uploads, recovery_request, reference_diagnostic
 
 
@@ -217,6 +217,12 @@ def require_admin(request: Request) -> None:
         raise HTTPException(status_code=401, detail="admin_required")
 
 
+def require_translator(request: Request) -> None:
+    user = current_user(request)
+    if not user or user.role not in {"translator", "admin"}:
+        raise HTTPException(status_code=401, detail="translator_required")
+
+
 def require_user(request: Request) -> RequestUser:
     user = current_user(request)
     if not user:
@@ -377,6 +383,24 @@ def get_novel(novel_id: str) -> dict[str, object]:
     return {"ok": True, "novel": novel, "counts": counts}
 
 
+@app.get("/api/models")
+def model_registry() -> dict[str, object]:
+    configured = [item.strip() for item in (os.getenv("OPENAI_MODEL_REGISTRY") or "gpt-4o-mini,gpt-4o").split(",") if item.strip()]
+    models = []
+    for model in configured:
+        pricing = model_pricing(model)
+        models.append(
+            {
+                "id": model,
+                "display_name": model,
+                "description": "OpenAI model configured for controlled novel translation.",
+                "enabled": True,
+                "pricing": pricing if pricing else {"note": "Pricing not configured."},
+            }
+        )
+    return {"ok": True, "models": models}
+
+
 @app.get("/api/novels/{novel_id}/library")
 def library(
     novel_id: str,
@@ -398,27 +422,39 @@ def chapter_text(novel_id: str, chapter_number: int, mode: str) -> dict[str, obj
     return database.chapter_text(novel_id, chapter_number, mode)
 
 
+@app.get("/api/novels/{novel_id}/compare/{chapter_number}")
+def compare_chapter(novel_id: str, chapter_number: int, _: None = Depends(require_translator)) -> dict[str, object]:
+    return {
+        "ok": True,
+        "novel_id": novel_id,
+        "chapter_number": chapter_number,
+        "original": database.chapter_text(novel_id, chapter_number, "original"),
+        "reference": database.chapter_text(novel_id, chapter_number, "reference"),
+        "ai": database.chapter_text(novel_id, chapter_number, "ai"),
+    }
+
+
 @app.post("/api/translation/estimate")
-def translation_estimate(payload: dict[str, Any] = Body(...), _: None = Depends(require_admin)) -> dict[str, object]:
+def translation_estimate(payload: dict[str, Any] = Body(...), _: None = Depends(require_translator)) -> dict[str, object]:
     novel_id = payload.get("novel_id") or "i-am-god"
     chapters = selected_chapters(novel_id, payload)
     return database.estimate_translation(novel_id, chapters, payload)
 
 
 @app.post("/api/translation/jobs")
-def create_translation_job(payload: dict[str, Any] = Body(...), _: None = Depends(require_admin)) -> dict[str, object]:
+def create_translation_job(payload: dict[str, Any] = Body(...), _: None = Depends(require_translator)) -> dict[str, object]:
     novel_id = payload.get("novel_id") or "i-am-god"
     chapters = selected_chapters(novel_id, payload)
     return {"ok": True, "job": database.create_translation_job(novel_id, chapters, payload)}
 
 
 @app.get("/api/translation/jobs")
-def list_translation_jobs(novel_id: str | None = None, _: None = Depends(require_admin)) -> dict[str, object]:
+def list_translation_jobs(novel_id: str | None = None, _: None = Depends(require_translator)) -> dict[str, object]:
     return {"ok": True, "jobs": database.translation_jobs(novel_id=novel_id)}
 
 
 @app.get("/api/translation/jobs/{job_id}")
-def get_translation_job(job_id: str, _: None = Depends(require_admin)) -> dict[str, object]:
+def get_translation_job(job_id: str, _: None = Depends(require_translator)) -> dict[str, object]:
     job = database.translation_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="translation_job_not_found")
@@ -426,27 +462,27 @@ def get_translation_job(job_id: str, _: None = Depends(require_admin)) -> dict[s
 
 
 @app.post("/api/translation/jobs/{job_id}/pause")
-def pause_translation_job(job_id: str, _: None = Depends(require_admin)) -> dict[str, object]:
+def pause_translation_job(job_id: str, _: None = Depends(require_translator)) -> dict[str, object]:
     return {"ok": True, "job": database.set_job_status(job_id, "paused")}
 
 
 @app.post("/api/translation/jobs/{job_id}/resume")
-def resume_translation_job(job_id: str, _: None = Depends(require_admin)) -> dict[str, object]:
+def resume_translation_job(job_id: str, _: None = Depends(require_translator)) -> dict[str, object]:
     return {"ok": True, "job": database.set_job_status(job_id, "queued")}
 
 
 @app.post("/api/translation/jobs/{job_id}/stop")
-def stop_translation_job(job_id: str, _: None = Depends(require_admin)) -> dict[str, object]:
+def stop_translation_job(job_id: str, _: None = Depends(require_translator)) -> dict[str, object]:
     return {"ok": True, "job": database.set_job_status(job_id, "cancelled")}
 
 
 @app.post("/api/translation/jobs/{job_id}/retry-failed")
-def retry_failed(job_id: str, _: None = Depends(require_admin)) -> dict[str, object]:
+def retry_failed(job_id: str, _: None = Depends(require_translator)) -> dict[str, object]:
     return {"ok": True, "job": database.retry_failed_items(job_id)}
 
 
 @app.post("/api/translation/jobs/{job_id}/run-next")
-def run_next_translation(job_id: str, mock: bool = Query(False), _: None = Depends(require_admin)) -> dict[str, object]:
+def run_next_translation(job_id: str, mock: bool = Query(False), _: None = Depends(require_translator)) -> dict[str, object]:
     translator = fake_translator if mock else openai_translator
     return {"ok": True, "job": database.run_next_translation_item(job_id, translator)}
 

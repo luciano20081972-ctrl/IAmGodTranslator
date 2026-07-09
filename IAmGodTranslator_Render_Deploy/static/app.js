@@ -68,6 +68,8 @@ function route() {
   updateNav(parts[0] || "library");
   if (parts[0] === "reader" && parts[1] && parts[2]) return openReader(parts[1], Number(parts[2]), parts[3] || state.source);
   if (parts[0] === "novel" && parts[1]) return openNovelDetail(parts[1]);
+  if (parts[0] === "compare" && parts[1] && parts[2]) return openCompare(parts[1], Number(parts[2]));
+  if (parts[0] === "jobs") return openJobCenter();
   if (parts[0] === "chapters" && parts[1]) return openChapters(parts[1]);
   if (parts[0] === "translate") return openTranslate(parts[1] || state.currentNovelId, params);
   if (parts[0] === "recovery") return openRecovery(parts[1] || state.currentNovelId);
@@ -96,7 +98,7 @@ function renderNav() {
     ["chapters", "Chapters", `#/chapters/${state.currentNovelId}`, true],
     ["history", "History", "#/history", Boolean(state.account)],
     ["bookmarks", "Bookmarks", "#/bookmarks", Boolean(state.account)],
-    ["translate", "Translate", `#/translate/${state.currentNovelId}`, state.admin],
+    ["translate", "Translate", `#/translate/${state.currentNovelId}`, canTranslate()],
     ["novels", "Novels", "#/novels", state.admin],
     ["recovery", "Recovery", `#/recovery/${state.currentNovelId}`, state.admin],
     ["admin", "Admin", "#/admin", state.admin],
@@ -106,6 +108,10 @@ function renderNav() {
     accountBtn.textContent = state.account?.display_name || state.account?.email || (state.admin ? "Admin" : "Guest");
     accountBtn.href = "#/account";
   }
+}
+
+function canTranslate() {
+  return state.admin || state.role === "translator";
 }
 
 function setLoading(label = "Loading...") {
@@ -287,7 +293,7 @@ function renderNovelCard(novel) {
         <div class="actions">
           <a class="button primary" href="#/novel/${encodeURIComponent(novel.id)}">Open</a>
           <a class="button" href="#/reader/${encodeURIComponent(novel.id)}/1/${state.source}">Read</a>
-          ${state.admin ? `<a class="button" href="#/translate/${encodeURIComponent(novel.id)}">Translate</a>` : ""}
+          ${canTranslate() ? `<a class="button" href="#/translate/${encodeURIComponent(novel.id)}">Translate</a>` : ""}
         </div>
       </div>
     </article>`;
@@ -298,6 +304,7 @@ async function openNovelDetail(novelId) {
   try {
     state.currentNovelId = novelId;
     localStorage.setItem("gt-current-novel", novelId);
+    state.lastEstimate = null;
     await loadNovels();
     const detail = await api(`/api/novels/${encodeURIComponent(novelId)}`);
     const library = await api(`/api/novels/${encodeURIComponent(novelId)}/library?limit=8`);
@@ -317,7 +324,7 @@ async function openNovelDetail(novelId) {
           <div class="actions">
             <a class="button primary" href="${current ? `#/reader/${current.novel_id}/${current.chapter_number}/${current.source}` : `#/reader/${novel.id}/1/${state.source}`}">Continue Reading</a>
             <a class="button" href="#/chapters/${novel.id}">Chapters</a>
-            ${state.admin ? `<a class="button" href="#/translate/${novel.id}">Translate</a><a class="button" href="#/novels">Edit</a>` : ""}
+            ${canTranslate() ? `<a class="button" href="#/translate/${novel.id}">Translate</a>` : ""}${state.admin ? `<a class="button" href="#/novels">Edit</a>` : ""}
           </div>
         </div>
       </section>
@@ -422,12 +429,12 @@ function renderChapters(payload) {
       <select id="chapterNovel">${state.novels.map((n) => `<option value="${n.id}" ${n.id === novel.id ? "selected" : ""}>${escapeHtml(n.title)}</option>`).join("")}</select>
       <input class="search" id="chapterSearch" type="search" value="${escapeAttr(state.chapterSearch)}" placeholder="Search chapter number or title">
       <select id="chapterView">${chapterViews.map(([value, label]) => `<option value="${value}" ${value === state.chapterView ? "selected" : ""}>${label}</option>`).join("")}</select>
-      ${state.admin ? `<a class="button" href="#/translate/${novel.id}">Translate</a><a class="button" href="#/recovery/${novel.id}">Recovery</a>` : ""}
+      ${canTranslate() ? `<a class="button" href="#/translate/${novel.id}">Translate</a>` : ""}${state.admin ? `<a class="button" href="#/recovery/${novel.id}">Recovery</a>` : ""}
     </section>
     <section class="table-card">
       <div class="table-meta">Showing ${state.chapterTotal ? state.chapterOffset + 1 : 0}-${Math.min(state.chapterOffset + state.pageSize, state.chapterTotal)} of ${state.chapterTotal} chapters</div>
       <table><thead><tr><th>Chapter</th><th>Original</th><th>Reference</th><th>AI</th><th>Status</th><th></th></tr></thead><tbody>
-        ${state.chapters.map((chapter) => `<tr><td><strong>Chapter ${chapter.chapter_number}</strong><br><span>${escapeHtml(chapter.title)}</span></td><td>${badge("Original", chapter.has_original)}</td><td>${badge("Reference", chapter.has_reference)}</td><td>${badge("AI", chapter.has_ai)}</td><td>${escapeHtml(chapter.translation_status || "")}</td><td class="row-actions"><a class="button" href="#/reader/${novel.id}/${chapter.chapter_number}/${state.source}">Read</a>${state.admin ? `<a class="button" href="#/translate/${novel.id}?chapter=${chapter.chapter_number}">Translate</a>` : ""}</td></tr>`).join("") || `<tr><td colspan="6">No chapters match this view.</td></tr>`}
+        ${state.chapters.map((chapter) => `<tr><td><strong>Chapter ${chapter.chapter_number}</strong><br><span>${escapeHtml(chapter.title)}</span></td><td>${badge("Original", chapter.has_original)}</td><td>${badge("Reference", chapter.has_reference)}</td><td>${badge("AI", chapter.has_ai)}</td><td>${escapeHtml(chapter.translation_status || "")}</td><td class="row-actions"><a class="button" href="#/reader/${novel.id}/${chapter.chapter_number}/${state.source}">Read</a>${canTranslate() ? `<a class="button" href="#/translate/${novel.id}?chapter=${chapter.chapter_number}">Translate</a><a class="button" href="#/compare/${novel.id}/${chapter.chapter_number}">Compare</a>` : ""}</td></tr>`).join("") || `<tr><td colspan="6">No chapters match this view.</td></tr>`}
       </tbody></table>
       <div class="pager"><button id="prevPage" ${state.chapterOffset <= 0 ? "disabled" : ""}>Previous</button><button id="nextPage" ${state.chapterOffset + state.pageSize >= state.chapterTotal ? "disabled" : ""}>Next</button></div>
     </section>`;
@@ -551,31 +558,31 @@ async function openTranslate(novelId, params = new URLSearchParams()) {
     localStorage.setItem("gt-current-novel", novelId);
     await refreshSession();
     await loadNovels();
-    if (!state.admin) return renderAdminGate("Translate");
-    const jobs = await api(`/api/translation/jobs?novel_id=${encodeURIComponent(novelId)}`);
+    if (!canTranslate()) return renderAdminGate("Translate");
+    const [jobs, modelRegistry] = await Promise.all([
+      api(`/api/translation/jobs?novel_id=${encodeURIComponent(novelId)}`),
+      api("/api/models"),
+    ]);
     const novel = state.novels.find((item) => item.id === novelId) || {};
+    const models = modelRegistry.models || [];
     app.innerHTML = `
       ${pageHeader("Translate", "Plan controlled translation jobs from Original text, with Reference as optional guidance.", [["Novel", novel.title || novelId], ["Default model", novel.model || "gpt-4o-mini"]])}
-      <section class="panel form-grid" id="translateForm">
-        <label>Novel<select id="translateNovel">${state.novels.map((n) => `<option value="${n.id}" ${n.id === novelId ? "selected" : ""}>${escapeHtml(n.title)}</option>`).join("")}</select></label>
-        <label>Chapters<input id="translateChapters" value="${escapeAttr(params.get("chapter") || "")}" placeholder="26,53,60-70"></label>
-        <label><input id="allUntranslated" type="checkbox"> All untranslated</label>
-        <label>Model<input id="model" value="${escapeAttr(novel.model || "gpt-4o-mini")}"></label>
-        <label>Max total budget<input id="maxTotalBudget" type="number" step="0.01"></label>
-        <label>Max cost per chapter<input id="maxPerChapterBudget" type="number" step="0.001"></label>
-        <label>Retry count<input id="retryCount" type="number" value="1"></label>
-        <label>Batch size<input id="batchSize" type="number" value="25"></label>
-        <label><input id="stopOnBudget" type="checkbox" checked> Stop on budget</label>
-        <label><input id="useReference" type="checkbox" checked> Use Reference when available</label>
-        <label><input id="onlyUntranslated" type="checkbox" checked> Only untranslated</label>
-        <label class="wide">Style guide<textarea id="styleGuide" rows="3"></textarea></label>
-        <div class="actions"><button id="estimateBtn" class="primary">Estimate</button><button id="createJobBtn">Create Job</button></div>
+      <section class="translate-workspace">
+        <div class="translate-steps" id="translateForm">
+          <section class="panel form-grid"><h2>1. Chapter Selection</h2><label>Novel<select id="translateNovel">${state.novels.map((n) => `<option value="${n.id}" ${n.id === novelId ? "selected" : ""}>${escapeHtml(n.title)}</option>`).join("")}</select></label><label>Chapters<input id="translateChapters" value="${escapeAttr(params.get("chapter") || "")}" placeholder="26,53,60-70"></label><label><input id="allUntranslated" type="checkbox"> All untranslated</label><p class="muted wide" id="chapterPreview">Enter chapters or choose all untranslated.</p></section>
+          <section class="panel form-grid"><h2>2. Translation Profile</h2><label>Profile<select id="profile"><option>Default literary translation</option><option>Reference-guided polish</option></select></label><label class="wide">Style guide<textarea id="styleGuide" rows="3"></textarea></label><label class="wide">Glossary notes<textarea id="glossary" rows="3"></textarea></label></section>
+          <section class="panel form-grid"><h2>3. Model & Reference</h2><label>Model<select id="model">${models.map((model) => `<option value="${escapeAttr(model.id)}" ${model.id === (novel.model || "gpt-4o-mini") ? "selected" : ""}>${escapeHtml(model.display_name)} · ${escapeHtml(model.pricing?.note || "Pricing not configured")}</option>`).join("")}</select></label><label><input id="useReference" type="checkbox" checked> Use Reference when available</label></section>
+          <section class="panel form-grid"><h2>4. Budget & Safety</h2><label>Max total budget<input id="maxTotalBudget" type="number" step="0.01"></label><label>Max cost per chapter<input id="maxPerChapterBudget" type="number" step="0.001"></label><label>Retry count<input id="retryCount" type="number" value="1"></label><label>Batch size<input id="batchSize" type="number" value="25"></label><label><input id="stopOnBudget" type="checkbox" checked> Stop on budget</label><label><input id="onlyUntranslated" type="checkbox" checked> Only untranslated</label></section>
+        </div>
+        <aside class="estimate-panel"><h2>5. Estimate</h2><section id="estimateResult"><p class="muted">Run an estimate before creating a job. Estimates are approximate.</p></section><div class="actions"><button id="estimateBtn" class="primary">Estimate</button><button id="createJobBtn">Launch Job</button></div></aside>
       </section>
-      <section id="estimateResult"></section>
       <section class="table-card"><h2>Recent Jobs</h2>${renderJobsTable(jobs.jobs || [])}</section>`;
     document.querySelector("#translateNovel").addEventListener("change", (e) => { window.location.hash = `#/translate/${e.target.value}`; });
+    document.querySelector("#translateChapters").addEventListener("input", renderChapterPreview);
+    document.querySelector("#allUntranslated").addEventListener("change", renderChapterPreview);
     document.querySelector("#estimateBtn").addEventListener("click", estimateTranslation);
     document.querySelector("#createJobBtn").addEventListener("click", createTranslationJob);
+    renderChapterPreview();
     bindJobButtons();
   } catch (error) {
     setError(error.message);
@@ -596,18 +603,46 @@ function translatePayload() {
     use_reference: document.querySelector("#useReference").checked,
     only_untranslated: document.querySelector("#onlyUntranslated").checked,
     style_guide: document.querySelector("#styleGuide").value,
+    glossary: document.querySelector("#glossary")?.value || "",
   };
+}
+
+function renderChapterPreview() {
+  const target = document.querySelector("#chapterPreview");
+  if (!target) return;
+  if (document.querySelector("#allUntranslated")?.checked) {
+    target.textContent = "Preview: all chapters with readable Original text and missing AI translation.";
+    return;
+  }
+  const parsed = parseChapterInput(document.querySelector("#translateChapters")?.value || "");
+  target.textContent = parsed.length
+    ? `Preview: ${parsed.length} chapter${parsed.length === 1 ? "" : "s"} selected (${parsed.slice(0, 12).join(", ")}${parsed.length > 12 ? ", ..." : ""}).`
+    : "Enter chapters like 26,53,60-70.";
+}
+
+function parseChapterInput(value) {
+  const chapters = new Set();
+  String(value || "").split(",").map((item) => item.trim()).filter(Boolean).forEach((part) => {
+    if (/^\d+\s*-\s*\d+$/.test(part)) {
+      const [a, b] = part.split("-").map((item) => Number(item.trim()));
+      for (let i = Math.min(a, b); i <= Math.max(a, b); i += 1) chapters.add(i);
+    } else if (/^\d+$/.test(part)) {
+      chapters.add(Number(part));
+    }
+  });
+  return [...chapters].sort((a, b) => a - b);
 }
 
 async function estimateTranslation(event) {
   event.preventDefault();
   const estimate = await api("/api/translation/estimate", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(translatePayload())});
   state.lastEstimate = estimate;
-  document.querySelector("#estimateResult").innerHTML = `<section class="panel"><h2>Estimate</h2><div class="metric-grid">${metric("Selected", estimate.selected_count)}${metric("Eligible", estimate.eligible_count)}${metric("Skipped", estimate.skipped_count)}${metric("Input tokens", estimate.approx_input_tokens)}${metric("Output tokens", estimate.approx_output_tokens)}${metric("Approx cost", `$${Number(estimate.estimated_cost || 0).toFixed(4)}`)}</div><p class="muted">${escapeHtml(estimate.pricing_note)}</p></section>`;
+  document.querySelector("#estimateResult").innerHTML = `<div class="metric-grid">${metric("Selected", estimate.selected_count)}${metric("Eligible", estimate.eligible_count)}${metric("Skipped", estimate.skipped_count)}${metric("Input tokens", estimate.approx_input_tokens)}${metric("Output tokens", estimate.approx_output_tokens)}${metric("Approx cost", `$${Number(estimate.estimated_cost || 0).toFixed(4)}`)}</div><p class="muted">${escapeHtml(estimate.pricing_note)}</p>`;
 }
 
 async function createTranslationJob(event) {
   event.preventDefault();
+  if (!state.lastEstimate) return toast("Run an estimate before creating a job.");
   const created = await api("/api/translation/jobs", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(translatePayload())});
   alert(`Created job ${created.job.id.slice(0, 8)}`);
   openTranslate(created.job.novel_id);
@@ -634,6 +669,45 @@ function bindJobButtons() {
     await api(`/api/translation/jobs/${button.dataset.job}/${button.dataset.jobAction}`, {method: "POST"});
     openTranslate(state.currentNovelId);
   }));
+}
+
+async function openJobCenter() {
+  if (!canTranslate()) return openSettings("account");
+  setLoading("Loading jobs...");
+  try {
+    const [jobs, imports] = await Promise.all([
+      api(`/api/translation/jobs?novel_id=${encodeURIComponent(state.currentNovelId)}`),
+      state.admin ? api(`/api/import-jobs?novel_id=${encodeURIComponent(state.currentNovelId)}`) : Promise.resolve({jobs: []}),
+    ]);
+    const active = (jobs.jobs || []).filter((job) => ["queued", "running", "paused"].includes(job.status)).length;
+    app.innerHTML = `${pageHeader("Job Center", "Translation and import operations at a glance.", [["Active", active], ["Translation Jobs", (jobs.jobs || []).length], ["Imports", (imports.jobs || []).length]])}
+      <section class="table-card"><h2>Translation Jobs</h2>${renderJobsTable(jobs.jobs || [])}</section>
+      ${state.admin ? `<section class="table-card"><h2>Import Jobs</h2><table><tbody>${(imports.jobs || []).map((job) => `<tr><td>${job.id.slice(0, 8)}</td><td>${escapeHtml(job.target_mode)}</td><td>${escapeHtml(job.status)}</td><td>${escapeHtml(job.updated_at)}</td></tr>`).join("") || `<tr><td>No import jobs.</td></tr>`}</tbody></table></section>` : ""}`;
+    bindJobButtons();
+  } catch (error) {
+    setError(error.message);
+  }
+}
+
+async function openCompare(novelId, chapterNumber) {
+  if (!canTranslate()) return openSettings("account");
+  setLoading("Loading comparison...");
+  try {
+    const payload = await api(`/api/novels/${encodeURIComponent(novelId)}/compare/${chapterNumber}`);
+    app.innerHTML = `${pageHeader("Compare", "Inspect Original, Reference, and AI text side by side.", [["Chapter", chapterNumber]])}
+      <section class="compare-grid">
+        ${renderComparePanel("Original", payload.original)}
+        ${renderComparePanel("Reference", payload.reference)}
+        ${renderComparePanel("AI Translation", payload.ai)}
+      </section>
+      <div class="actions"><a class="button" href="#/reader/${novelId}/${chapterNumber}/ai">Open Reader</a><a class="button" href="#/chapters/${novelId}">Back to Chapters</a></div>`;
+  } catch (error) {
+    setError(error.message);
+  }
+}
+
+function renderComparePanel(label, payload) {
+  return `<article class="panel compare-panel"><h2>${escapeHtml(label)}</h2>${payload?.ok ? paragraphs(payload.text).map((line) => `<p>${escapeHtml(line)}</p>`).join("") : `<p class="empty-state">${escapeHtml(label)} not available.</p>`}</article>`;
 }
 
 async function openRecovery(novelId) {
@@ -983,7 +1057,7 @@ function applyPreferences() {
 function bindShellControls() {
   document.querySelector("#globalSearchBtn")?.addEventListener("click", openCommandPalette);
   document.querySelector("#personalizeBtn")?.addEventListener("click", () => { window.location.hash = "#/settings/appearance"; });
-  document.querySelector("#jobCenterBtn")?.addEventListener("click", () => { window.location.hash = state.admin ? `#/translate/${state.currentNovelId}` : "#/settings/account"; });
+  document.querySelector("#jobCenterBtn")?.addEventListener("click", () => { window.location.hash = canTranslate() ? "#/jobs" : "#/settings/account"; });
   commandInput?.addEventListener("input", renderCommandResults);
   commandDialog?.addEventListener("close", () => { if (commandInput) commandInput.value = ""; });
   document.addEventListener("keydown", (event) => {
@@ -1032,7 +1106,8 @@ function renderCommandResults() {
     ["Continue Reading", state.personal?.continue_reading ? `#/reader/${state.personal.continue_reading.novel_id}/${state.personal.continue_reading.chapter_number}/${state.personal.continue_reading.source}` : "#/library", Boolean(state.personal?.continue_reading)],
     ["Open Chapters", `#/chapters/${state.currentNovelId}`, true],
     ["Open Settings", "#/settings/appearance", true],
-    ["Open Translate", `#/translate/${state.currentNovelId}`, state.admin],
+    ["Open Translate", `#/translate/${state.currentNovelId}`, canTranslate()],
+    ["Open Job Center", "#/jobs", canTranslate()],
     ["Manage Novels", "#/novels", state.admin],
     ["Add Novel", "#/novels", state.admin],
     ["Open Recovery", `#/recovery/${state.currentNovelId}`, state.admin],

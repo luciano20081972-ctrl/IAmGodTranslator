@@ -692,3 +692,29 @@ Checkpoint 5 QA:
 - SPA asset version stayed at `10.2.0`.
 - No OpenAI call was made.
 - No translation was started.
+
+## v10.2.0 Checkpoint 6 - Premium Translation Workspace
+
+Completed:
+
+- Added a server-side `/api/models` registry that exposes enabled model IDs and approximate/unknown pricing metadata without secrets.
+- Added translator-role authorization for translation estimate/job/job-action APIs while keeping admin access.
+- Added side-by-side comparison API and UI for Original, Reference, and AI text.
+- Reworked Translate into staged sections: Chapter Selection, Translation Profile, Model & Reference, Budget & Safety, Estimate, and Launch.
+- Added parsed chapter preview for inputs such as `26,53,60-70`.
+- Added Translation Profile placeholders, Style Guide, Glossary notes, Reference toggle, budget controls, and sticky estimate panel.
+- Added Job Center route for translation jobs and admin import job visibility.
+- Required a valid estimate before job launch in the frontend.
+
+Checkpoint 6 QA:
+
+- Python syntax check passed for all app modules.
+- JavaScript syntax check passed.
+- `/api/models` returned configured model metadata.
+- Public translation estimate returned 401.
+- Admin estimate selected 2 chapters, found 1 eligible, and skipped 1 already translated chapter.
+- Translation job creation persisted a queued job with one item.
+- Mock `run-next` completed without OpenAI and wrote fixture AI text.
+- Reader loaded the fixture AI result.
+- Compare returned Original, Reference, and AI panels.
+- No real OpenAI call was made.
