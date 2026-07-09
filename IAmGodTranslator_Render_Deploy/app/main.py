@@ -1,17 +1,28 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import io
+import json
+import os
+import time
+import zipfile
 from pathlib import Path
+from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import Body, Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.db import Database
 from app.recovery import parse_uploads, recovery_request, reference_diagnostic
 
 
-VERSION = "10.0.6"
+VERSION = "10.1.0"
 ROOT = Path(__file__).resolve().parents[1]
+SESSION_COOKIE = "gt_admin_session"
+SESSION_TTL_SECONDS = 60 * 60 * 12
+
 app = FastAPI(title="GodTranslator", version=VERSION)
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 database = Database()
@@ -20,15 +31,7 @@ database = Database()
 @app.on_event("startup")
 def startup() -> None:
     database.initialize()
-
-
-@app.get("/api/health")
-def health() -> dict[str, object]:
-    try:
-        reachable = database.ping()
-    except Exception as exc:
-        return {"ok": False, "version": VERSION, "database": "unreachable", "error": exc.__class__.__name__}
-    return {"ok": True, "version": VERSION, "database": "reachable" if reachable else "unreachable"}
+    database.mark_interrupted_jobs()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -36,9 +39,99 @@ def index() -> HTMLResponse:
     return HTMLResponse((ROOT / "templates" / "index.html").read_text(encoding="utf-8"))
 
 
+@app.get("/api/health")
+def health() -> dict[str, object]:
+    try:
+        reachable = database.ping()
+    except Exception as exc:
+        return {"ok": False, "version": VERSION, "database": "unreachable", "schema": database.config.schema, "error": exc.__class__.__name__}
+    return {"ok": True, "version": VERSION, "database": "reachable" if reachable else "unreachable", "schema": database.config.schema}
+
+
+@app.post("/api/admin/login")
+def admin_login(request: Request, response: Response, payload: dict[str, Any] = Body(...)) -> dict[str, object]:
+    expected = os.getenv("ADMIN_PASSWORD") or ""
+    if not expected:
+        raise HTTPException(status_code=503, detail="admin_password_not_configured")
+    password = str(payload.get("password") or "")
+    if not hmac.compare_digest(password, expected):
+        raise HTTPException(status_code=401, detail="invalid_admin_password")
+    token = sign_session(int(time.time()))
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="lax",
+        max_age=SESSION_TTL_SECONDS,
+    )
+    return {"ok": True, "admin": True}
+
+
+@app.post("/api/admin/logout")
+def admin_logout(response: Response) -> dict[str, object]:
+    response.delete_cookie(SESSION_COOKIE)
+    return {"ok": True}
+
+
+@app.get("/api/admin/session")
+def admin_session(request: Request) -> dict[str, object]:
+    return {"ok": True, "admin": is_admin_request(request)}
+
+
+def require_admin(request: Request) -> None:
+    if not is_admin_request(request):
+        raise HTTPException(status_code=401, detail="admin_required")
+
+
+def is_admin_request(request: Request) -> bool:
+    token = request.cookies.get(SESSION_COOKIE)
+    if not token:
+        return False
+    try:
+        timestamp_text, signature = token.split(".", 1)
+        timestamp = int(timestamp_text)
+    except Exception:
+        return False
+    if time.time() - timestamp > SESSION_TTL_SECONDS:
+        return False
+    return hmac.compare_digest(signature, session_signature(timestamp))
+
+
+def sign_session(timestamp: int) -> str:
+    return f"{timestamp}.{session_signature(timestamp)}"
+
+
+def session_signature(timestamp: int) -> str:
+    secret = os.getenv("ADMIN_SESSION_SECRET") or os.getenv("ADMIN_PASSWORD") or "development-only"
+    return hmac.new(secret.encode("utf-8"), str(timestamp).encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 @app.get("/api/novels")
 def list_novels() -> dict[str, object]:
     return {"ok": True, "novels": database.novels()}
+
+
+@app.post("/api/novels")
+def create_novel(payload: dict[str, Any] = Body(...), _: None = Depends(require_admin)) -> dict[str, object]:
+    novel_id = slugify(payload.get("id") or payload.get("title") or "")
+    if not novel_id:
+        raise HTTPException(status_code=400, detail="novel_id_required")
+    return {"ok": True, "novel": database.save_novel_metadata(novel_id, payload)}
+
+
+@app.patch("/api/novels/{novel_id}")
+def update_novel(novel_id: str, payload: dict[str, Any] = Body(...), _: None = Depends(require_admin)) -> dict[str, object]:
+    current = database.novel(novel_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="novel_not_found")
+    merged = {**current, **payload}
+    return {"ok": True, "novel": database.save_novel_metadata(novel_id, merged)}
+
+
+@app.post("/api/novels/{novel_id}/archive")
+def archive_novel(novel_id: str, payload: dict[str, Any] = Body(default={}), _: None = Depends(require_admin)) -> dict[str, object]:
+    return {"ok": True, "novel": database.archive_novel(novel_id, bool(payload.get("archived", True)))}
 
 
 @app.get("/api/novels/{novel_id}")
@@ -51,8 +144,14 @@ def get_novel(novel_id: str) -> dict[str, object]:
 
 
 @app.get("/api/novels/{novel_id}/library")
-def library(novel_id: str, limit: int = Query(2000, ge=1, le=5000), offset: int = Query(0, ge=0)) -> dict[str, object]:
-    payload = database.library(novel_id, limit=limit, offset=offset)
+def library(
+    novel_id: str,
+    limit: int = Query(100, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
+    search: str = "",
+    view: str = "all",
+) -> dict[str, object]:
+    payload = database.library(novel_id, limit=limit, offset=offset, search=search, view=view)
     if payload["novel"] is None:
         raise HTTPException(status_code=404, detail="novel_not_found")
     return {"ok": True, **payload, "counts": database.library_counts(novel_id)}
@@ -63,6 +162,59 @@ def chapter_text(novel_id: str, chapter_number: int, mode: str) -> dict[str, obj
     if mode not in {"original", "reference", "ai"}:
         raise HTTPException(status_code=404, detail="chapter_mode_not_found")
     return database.chapter_text(novel_id, chapter_number, mode)
+
+
+@app.post("/api/translation/estimate")
+def translation_estimate(payload: dict[str, Any] = Body(...), _: None = Depends(require_admin)) -> dict[str, object]:
+    novel_id = payload.get("novel_id") or "i-am-god"
+    chapters = selected_chapters(novel_id, payload)
+    return database.estimate_translation(novel_id, chapters, payload)
+
+
+@app.post("/api/translation/jobs")
+def create_translation_job(payload: dict[str, Any] = Body(...), _: None = Depends(require_admin)) -> dict[str, object]:
+    novel_id = payload.get("novel_id") or "i-am-god"
+    chapters = selected_chapters(novel_id, payload)
+    return {"ok": True, "job": database.create_translation_job(novel_id, chapters, payload)}
+
+
+@app.get("/api/translation/jobs")
+def list_translation_jobs(novel_id: str | None = None, _: None = Depends(require_admin)) -> dict[str, object]:
+    return {"ok": True, "jobs": database.translation_jobs(novel_id=novel_id)}
+
+
+@app.get("/api/translation/jobs/{job_id}")
+def get_translation_job(job_id: str, _: None = Depends(require_admin)) -> dict[str, object]:
+    job = database.translation_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="translation_job_not_found")
+    return {"ok": True, "job": job}
+
+
+@app.post("/api/translation/jobs/{job_id}/pause")
+def pause_translation_job(job_id: str, _: None = Depends(require_admin)) -> dict[str, object]:
+    return {"ok": True, "job": database.set_job_status(job_id, "paused")}
+
+
+@app.post("/api/translation/jobs/{job_id}/resume")
+def resume_translation_job(job_id: str, _: None = Depends(require_admin)) -> dict[str, object]:
+    return {"ok": True, "job": database.set_job_status(job_id, "queued")}
+
+
+@app.post("/api/translation/jobs/{job_id}/stop")
+def stop_translation_job(job_id: str, _: None = Depends(require_admin)) -> dict[str, object]:
+    return {"ok": True, "job": database.set_job_status(job_id, "cancelled")}
+
+
+@app.post("/api/translation/jobs/{job_id}/retry-failed")
+def retry_failed(job_id: str, _: None = Depends(require_admin)) -> dict[str, object]:
+    return {"ok": True, "job": database.retry_failed_items(job_id)}
+
+
+@app.post("/api/translation/jobs/{job_id}/run-next")
+def run_next_translation(job_id: str, mock: bool = Query(False), _: None = Depends(require_admin)) -> dict[str, object]:
+    translator = fake_translator if mock else openai_translator
+    return {"ok": True, "job": database.run_next_translation_item(job_id, translator)}
 
 
 @app.get("/api/novels/{novel_id}/recovery/reference")
@@ -81,14 +233,11 @@ def download_recovery_request(
     if database.novel(novel_id) is None:
         raise HTTPException(status_code=404, detail="novel_not_found")
     payload = recovery_request(database, novel_id, source_url=source_url, chapter_url_template=chapter_url_template)
-    return JSONResponse(
-        payload,
-        headers={"Content-Disposition": f'attachment; filename="{novel_id}-reference-recovery-request.json"'},
-    )
+    return JSONResponse(payload, headers={"Content-Disposition": f'attachment; filename="{novel_id}-reference-recovery-request.json"'})
 
 
 @app.post("/api/novels/{novel_id}/recovery/preview")
-async def preview_reference_import(novel_id: str, files: list[UploadFile] = File(...)) -> dict[str, object]:
+async def preview_reference_import(novel_id: str, files: list[UploadFile] = File(...), _: None = Depends(require_admin)) -> dict[str, object]:
     if database.novel(novel_id) is None:
         raise HTTPException(status_code=404, detail="novel_not_found")
     payloads: list[tuple[str, bytes]] = []
@@ -98,18 +247,121 @@ async def preview_reference_import(novel_id: str, files: list[UploadFile] = File
 
 
 @app.get("/api/import-jobs/{job_id}")
-def get_import_job(job_id: str) -> dict[str, object]:
+def get_import_job(job_id: str, _: None = Depends(require_admin)) -> dict[str, object]:
     job = database.import_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="import_job_not_found")
     return {"ok": True, "job": job}
 
 
+@app.get("/api/import-jobs")
+def list_import_jobs(novel_id: str | None = None, _: None = Depends(require_admin)) -> dict[str, object]:
+    return {"ok": True, "jobs": database.import_jobs(novel_id=novel_id)}
+
+
 @app.post("/api/novels/{novel_id}/recovery/import/{job_id}")
-def apply_reference_import(novel_id: str, job_id: str) -> dict[str, object]:
+def apply_reference_import(novel_id: str, job_id: str, _: None = Depends(require_admin)) -> dict[str, object]:
     job = database.import_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="import_job_not_found")
     if job["novel_id"] != novel_id:
         raise HTTPException(status_code=400, detail="import_job_novel_mismatch")
     return database.apply_import_job(job_id)
+
+
+@app.get("/api/admin/overview")
+def admin_overview(_: None = Depends(require_admin)) -> dict[str, object]:
+    return {"ok": True, "overview": database.admin_overview()}
+
+
+@app.get("/api/admin/db-health")
+def admin_db_health(_: None = Depends(require_admin)) -> dict[str, object]:
+    inspection = database.inspect_schema()
+    return {"ok": True, "health": {"reachable": database.ping(), "schema": database.config.schema, **inspection}}
+
+
+@app.get("/api/admin/missing/{novel_id}")
+def admin_missing(novel_id: str, _: None = Depends(require_admin)) -> dict[str, object]:
+    return {"ok": True, "missing": database.missing_data(novel_id)}
+
+
+@app.get("/api/novels/{novel_id}/backup")
+def export_backup(novel_id: str, _: None = Depends(require_admin)) -> StreamingResponse:
+    payload = database.backup_payload(novel_id)
+    if payload["novel"] is None:
+        raise HTTPException(status_code=404, detail="novel_not_found")
+    memory = io.BytesIO()
+    with zipfile.ZipFile(memory, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps({"format": "godtranslator-v10-backup", "version": VERSION, "novel_id": novel_id}, ensure_ascii=False, indent=2))
+        zf.writestr(f"novels/{novel_id}/backup.json", json.dumps(payload, ensure_ascii=False, indent=2))
+    memory.seek(0)
+    return StreamingResponse(memory, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{novel_id}-v10-backup.zip"'})
+
+
+def selected_chapters(novel_id: str, payload: dict[str, Any]) -> list[int]:
+    if payload.get("all_untranslated"):
+        return database.all_untranslated_chapters(novel_id)
+    text = str(payload.get("chapters") or "").strip()
+    chapters: set[int] = set()
+    for part in [chunk.strip() for chunk in text.split(",") if chunk.strip()]:
+        if "-" in part:
+            left, right = part.split("-", 1)
+            start, end = int(left), int(right)
+            chapters.update(range(min(start, end), max(start, end) + 1))
+        else:
+            chapters.add(int(part))
+    return sorted(chapters)
+
+
+def fake_translator(original: str, reference: str | None, settings: dict[str, Any]) -> dict[str, Any]:
+    prefix = "Mock translation"
+    reference_note = "\n\n[Reference guidance available.]" if reference else ""
+    text = f"{prefix}\n\n{original.strip()}{reference_note}"
+    return {"text": text, "input_tokens": max(1, (len(original) + len(reference or "")) // 4), "output_tokens": max(1, len(text) // 5), "actual_cost": 0.0}
+
+
+def openai_translator(original: str, reference: str | None, settings: dict[str, Any]) -> dict[str, Any]:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not configured.")
+    from openai import OpenAI
+
+    model = settings.get("model") or os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
+    prompt = build_prompt(original, reference, settings)
+    client = OpenAI(api_key=api_key)
+    response = client.responses.create(model=model, input=prompt)
+    text = response.output_text
+    usage = getattr(response, "usage", None)
+    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    return {"text": text, "input_tokens": input_tokens, "output_tokens": output_tokens, "actual_cost": 0.0}
+
+
+def build_prompt(original: str, reference: str | None, settings: dict[str, Any]) -> str:
+    guidance = [
+        "Translate the Chinese source into natural professional English.",
+        "The Chinese original is the source of truth.",
+        "Preserve paragraphs and dialogue formatting.",
+        "Do not summarize, skip, or add events.",
+    ]
+    if reference:
+        guidance.append("Use the reference translation only as style guidance when it helps; never translate the reference instead of the original.")
+    if settings.get("style_guide"):
+        guidance.append(f"Style guide: {settings['style_guide']}")
+    if settings.get("glossary"):
+        guidance.append(f"Glossary: {settings['glossary']}")
+    prompt = "\n".join(guidance) + "\n\nChinese original:\n" + original
+    if reference:
+        prompt += "\n\nReference translation:\n" + reference
+    return prompt
+
+
+def slugify(value: str) -> str:
+    slug = re_sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug[:80]
+
+
+def re_sub(pattern: str, replacement: str, value: str) -> str:
+    import re
+
+    return re.sub(pattern, replacement, value)

@@ -1,8 +1,78 @@
 # GodTranslator v10 Development Progress
 
+## v10.1.0 Full App Restoration
+
+Branch: `v10.1.0-full-app-restoration`
+
+Target package: `GodTranslator_v10_1_0_Full_App_Restoration.zip`
+
+### v9/V10 Feature Inventory
+
+KEEP AND REBUILD:
+
+- Library, novel cards, multi-novel navigation, chapter library, reader, translation workspace, translation estimates, budget controls, persistent job status, admin dashboard, recovery center, backup/export entry points, authentication, and responsive navigation.
+
+KEEP WITH CHANGES:
+
+- Translation execution now writes directly to `godtranslator_v10.chapters.ai_text` and uses `translation_jobs` / `translation_job_items`.
+- Backup/export is generated from PostgreSQL instead of filesystem/Supabase Storage.
+- Covers are supported as URLs first through novel metadata.
+- Pricing is centralized server-side and labelled approximate.
+- Recovery keeps the v10.0.6 safe Reference import workflow.
+
+DROP AS LEGACY:
+
+- `chapter_index.json`, `counts.json`, startup hydration, startup remote sync, storage reader fallback, path guessing, rebuild-index/hydrate controls, local filesystem as live source, and old v9 NovelManager/storage architecture.
+
+### Completed
+
+- Added safe additive metadata/job migrations inside `godtranslator_v10`.
+- Restored a polished app shell with routes for Library, Novels, Chapters, Reader, Translate, Recovery, and Admin.
+- Added Novel CRUD/archive APIs protected by admin auth.
+- Added database-first translation estimate and persistent job APIs.
+- Added mock-safe translation item execution for QA and real run-next execution for explicit admin action.
+- Added budget stop and per-chapter budget skip guards.
+- Added restart safety: running jobs/items are paused/reset on startup instead of being automatically rerun.
+- Added database-first backup ZIP export.
+- Kept v10.0.6 recovery preview/import APIs.
+- Replaced prototype UI styling with dark charcoal/teal product styling.
+- Updated frontend cache query strings to `10.1.0`.
+
+### QA Results
+
+- Python syntax passed for `app/db.py`, `app/main.py`, and `app/recovery.py`.
+- JavaScript syntax passed for `static/app.js`.
+- `requirements.txt` is valid and not a placeholder.
+- Disposable SQLite/TestClient fixture QA passed:
+  - `/api/health` returned version `10.1.0`.
+  - Library, chapter list, and reader endpoints worked.
+  - Chapter 362-like fixture with Original present and Reference missing remained translation-eligible.
+  - Missing Original chapters were skipped.
+  - Admin APIs returned 401 while public.
+  - Wrong password was rejected and correct password created an HttpOnly session cookie.
+  - Create/edit/archive/unarchive novel worked.
+  - Translation estimate, job creation, mock item execution, AI write, reader AI reload, pause, resume, stop, and retry endpoint paths worked.
+  - Max total budget paused a job with `budget_reached`.
+  - Max per-chapter budget skipped an item with `max_per_chapter_budget_exceeded`.
+  - Admin overview, DB health, missing data, recovery diagnostic, and backup export worked.
+  - Backup ZIP contained `manifest.json` and `novels/i-am-god/backup.json` and did not include the fixture admin password or OpenAI key text.
+
+### Known Risks / Notes
+
+- Browser automation could not be completed in this local run because the in-app browser runtime failed with a Windows `EPERM` permission error while reading `C:\Users\lucia\AppData`.
+- No real PostgreSQL write QA was run from Codex in this pass; fixture QA used disposable SQLite to avoid touching production data.
+- No OpenAI call was made and no translation was started.
+- Production `main` was not merged or deployed during this pass.
+
+### Deploy Notes
+
+- Required Render variables remain `DATABASE_URL`, `DB_SCHEMA=godtranslator_v10`, `PYTHON_VERSION=3.12.7`, `ADMIN_PASSWORD`, `OPENAI_API_KEY`, and `OPENAI_MODEL=gpt-4o-mini`.
+- Use Supabase pooled Postgres for `DATABASE_URL`.
+- Deploy only after reviewing the feature branch and merging intentionally.
+
 ## Current Version Target
 
-GodTranslator_v10_0_2_Isolated_Postgres_Schema_Fix.zip
+GodTranslator_v10_1_0_Full_App_Restoration.zip
 
 ## v10.0.2 Isolated PostgreSQL Schema Fix
 

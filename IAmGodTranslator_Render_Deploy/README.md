@@ -1,26 +1,59 @@
-# GodTranslator v10.0.6 Targeted Reference Downloader
+# GodTranslator v10.1.0 Full App Restoration
 
-This is a new v10 foundation. It does not use the v9 live chapter-index, file-path, hydration, or Supabase Storage reader systems.
+GodTranslator v10.1.0 restores the full product shell on top of the v10 database-first foundation.
 
-Live novel data is stored in PostgreSQL tables:
+PostgreSQL remains the live source of truth:
 
-- `novels`
-- `chapters`
-- `translation_jobs`
-- `translation_job_items`
+- `godtranslator_v10.novels`
+- `godtranslator_v10.chapters`
+- `godtranslator_v10.translation_jobs`
+- `godtranslator_v10.translation_job_items`
+- `godtranslator_v10.import_jobs`
+- `godtranslator_v10.import_job_items`
 
-Reader endpoints use a single database query for chapter text.
+The app does not use v9 chapter indexes, counts files, hydration, startup restore, startup storage sync, path guessing, or Supabase Storage as the live reader source.
 
-The included frontend is a small database-backed reader:
+## Application
 
-- Library page
-- Chapter list
-- Reader page with Original / Reference / AI source switching
-- No translation controls
-- No Supabase Storage reads
-- No legacy chapter index or path guessing
+Routes:
 
-## Local smoke test
+- `#/library`
+- `#/novels`
+- `#/chapters/i-am-god`
+- `#/reader/i-am-god/1/ai`
+- `#/translate/i-am-god`
+- `#/recovery/i-am-god`
+- `#/admin`
+
+Restored workflows:
+
+- Polished multi-novel Library with covers, counts, progress, search, filters, and sorting.
+- Novel management for create, edit, archive, and unarchive.
+- Chapter Library with search, status filters, pagination, availability badges, Reader links, and Translate links.
+- Reader with AI / Reference / Original modes, previous/next, chapter selector, and font control.
+- Translate workspace with estimates, budget controls, persistent jobs, pause/resume/stop/retry, and explicit run-next execution.
+- Recovery workspace from v10.0.6 for safe Reference preview/import.
+- Admin dashboard with system overview, database health, missing data, translation jobs, import jobs, and database-first backup export.
+
+## Translation Safety
+
+Chinese `original_text` is always the translation source.
+
+`reference_text` is optional style guidance only. A chapter with Original text and no Reference text remains eligible for translation.
+
+OpenAI is called only when an authenticated admin explicitly runs a real translation item. Automated QA should use `POST /api/translation/jobs/{job_id}/run-next?mock=true`.
+
+## Admin Auth
+
+Set:
+
+```text
+ADMIN_PASSWORD
+```
+
+Admin sessions use a signed HttpOnly cookie. Cookies are marked Secure when the request is HTTPS and use SameSite=Lax.
+
+## Local Smoke Test
 
 ```powershell
 python tools/migrate_backup_to_postgres.py --input ..\i-am-god-v7-converted-backup.zip --novel-id i-am-god --title "I Am God" --database-url sqlite:///data/v10-local.db --apply
@@ -47,22 +80,22 @@ Required environment variables:
 DATABASE_URL
 DB_SCHEMA=godtranslator_v10
 PYTHON_VERSION=3.12.7
+ADMIN_PASSWORD
+OPENAI_API_KEY
+OPENAI_MODEL=gpt-4o-mini
 ```
 
-Use the Supabase pooled Postgres connection string for `DATABASE_URL`.
-`DB_SCHEMA` defaults to `godtranslator_v10`; v10 tables are isolated there and do not use legacy `public` tables.
+Use the Supabase pooled Postgres connection string for `DATABASE_URL`. `DB_SCHEMA` defaults to `godtranslator_v10`.
 
-OpenAI is not required for this milestone.
+## Recovery
 
-## Targeted Reference gap recovery
-
-Diagnose missing Reference chapters in the proven v10 range:
+Diagnose missing Reference chapters:
 
 ```powershell
 python tools/recover_missing_references.py --database-url "$env:DATABASE_URL" --novel-id i-am-god --start 1 --end 434 --diagnose
 ```
 
-Dry-run candidate files from a folder, ZIP, or individual `.txt` files:
+Dry-run candidate files:
 
 ```powershell
 python tools/recover_missing_references.py --database-url "$env:DATABASE_URL" --novel-id i-am-god --start 1 --end 434 --input "PATH_TO_REFERENCE_FILES" --dry-run
@@ -74,38 +107,5 @@ Apply only missing Reference fields:
 python tools/recover_missing_references.py --database-url "$env:DATABASE_URL" --novel-id i-am-god --start 1 --end 434 --input "PATH_TO_REFERENCE_FILES" --apply
 ```
 
-Existing non-empty Reference text is never overwritten by default. Overwrite behavior requires the explicit `--overwrite-existing` flag.
+Existing non-empty Reference text is never overwritten by default.
 
-## Targeted NovelFire downloader for the 22 Reference gaps
-
-The downloader only targets the verified missing chapters:
-
-`26, 53, 111, 118, 123, 124, 141, 151, 155, 156, 171, 203, 204, 263, 323, 336, 357, 362, 372, 384, 410, 416`
-
-Use either the exact NovelFire novel page:
-
-```powershell
-python tools/download_missing_novelfire_references.py --novel-url "NOVELFIRE_NOVEL_PAGE_URL" --output reference_gap_recovery_input
-```
-
-Or a direct chapter URL template:
-
-```powershell
-python tools/download_missing_novelfire_references.py --url-template "https://novelfire.net/.../chapter-{chapter}" --output reference_gap_recovery_input
-```
-
-The template supports `{chapter}`, `{chapter03}`, and `{chapter04}`.
-
-If direct fetch fails and local Playwright is available, use browser fallback without bypassing login, paywalls, or challenge pages:
-
-```powershell
-python tools/download_missing_novelfire_references.py --url-template "https://novelfire.net/.../chapter-{chapter}" --output reference_gap_recovery_input --browser-fallback
-```
-
-Validate downloaded files without importing:
-
-```powershell
-python tools/recover_missing_references.py --database-url "$env:DATABASE_URL" --novel-id i-am-god --start 1 --end 434 --input "reference_gap_recovery_input" --dry-run
-```
-
-Do not run `--apply` until the dry run shows exactly the 22 missing targets and no duplicates, empty files, or unexpected chapters.
