@@ -32,6 +32,33 @@ Safety:
 - No OpenAI calls.
 - No v9/public schema changes.
 
+### Checkpoint 2 - Design System And Application Shell
+
+Completed:
+
+- Bumped frontend cache strings to `10.2.0`.
+- Bumped FastAPI `/api/health` version to `10.2.0`.
+- Added a v10.2 application shell with global search/command palette trigger, job center trigger, personalization trigger, and account chip.
+- Made primary navigation authorization-aware: public users see Library/Chapters; admin-only routes appear after admin session is confirmed.
+- Added Settings routes:
+  - `#/settings/appearance`
+  - `#/settings/reader`
+  - `#/settings/account`
+- Added guest-safe local personalization for themes, accents, density, card size, motion, blur, reader font, line height, paragraph spacing, reading width, reader tone, and text alignment.
+- Added theme/accent CSS tokens and mobile bottom-navigation behavior.
+- Added command palette search for commands, novels, and loaded chapter metadata.
+- Added toast notifications for preference changes.
+
+QA:
+
+- Python syntax passed.
+- JavaScript syntax passed.
+- Shell scan confirmed v10.2 cache strings, `primaryNav`, command dialog, and settings styles.
+
+Notes:
+
+- Supabase Auth and database-backed user preferences are intentionally deferred to Checkpoint 3.
+
 ## v10.1.0 Full App Restoration
 
 Branch: `v10.1.0-full-app-restoration`

@@ -1,5 +1,9 @@
 const app = document.querySelector("#app");
 const nav = document.querySelector("#primaryNav");
+const commandDialog = document.querySelector("#commandDialog");
+const commandInput = document.querySelector("#commandInput");
+const commandResults = document.querySelector("#commandResults");
+const accountBtn = document.querySelector("#accountBtn");
 
 const state = {
   novels: [],
@@ -13,10 +17,13 @@ const state = {
   source: ["ai", "reference", "original"].includes(localStorage.getItem("gt-reader-source")) ? localStorage.getItem("gt-reader-source") : "ai",
   fontSize: Number(localStorage.getItem("gt-reader-font") || 19),
   admin: false,
+  role: "guest",
   lastEstimate: null,
+  preferences: loadPreferences(),
 };
 
 const sourceLabels = {ai: "AI", reference: "Reference", original: "Original"};
+const APP_VERSION = "10.2.0";
 const chapterViews = [
   ["all", "All"],
   ["translated", "Translated"],
@@ -58,16 +65,35 @@ function route() {
   if (parts[0] === "translate") return openTranslate(parts[1] || state.currentNovelId, params);
   if (parts[0] === "recovery") return openRecovery(parts[1] || state.currentNovelId);
   if (parts[0] === "novels") return openNovels();
+  if (parts[0] === "settings") return openSettings(parts[1] || "appearance");
   if (parts[0] === "admin") return openAdmin();
   return openLibrary();
 }
 
 function updateNav(active) {
   if (!nav) return;
+  renderNav();
   nav.querySelectorAll("a").forEach((link) => {
     const target = link.getAttribute("href").replace("#/", "").split("/")[0];
     link.classList.toggle("active", target === active || (active === "reader" && target === "chapters"));
   });
+}
+
+function renderNav() {
+  if (!nav) return;
+  const links = [
+    ["library", "Library", "#/library", true],
+    ["chapters", "Chapters", `#/chapters/${state.currentNovelId}`, true],
+    ["translate", "Translate", `#/translate/${state.currentNovelId}`, state.admin],
+    ["novels", "Novels", "#/novels", state.admin],
+    ["recovery", "Recovery", `#/recovery/${state.currentNovelId}`, state.admin],
+    ["admin", "Admin", "#/admin", state.admin],
+  ];
+  nav.innerHTML = links.filter(([, , , allowed]) => allowed).map(([key, label, href]) => `<a data-nav="${key}" href="${href}">${label}</a>`).join("");
+  if (accountBtn) {
+    accountBtn.textContent = state.admin ? "Admin" : "Guest";
+    accountBtn.href = state.admin ? "#/admin" : "#/settings/account";
+  }
 }
 
 function setLoading(label = "Loading...") {
@@ -82,9 +108,12 @@ async function refreshSession() {
   try {
     const payload = await api("/api/admin/session");
     state.admin = Boolean(payload.admin);
+    state.role = state.admin ? "admin" : "guest";
   } catch {
     state.admin = false;
+    state.role = "guest";
   }
+  renderNav();
 }
 
 async function loadNovels(force = false) {
@@ -461,7 +490,7 @@ async function openAdmin() {
       api(`/api/translation/jobs?novel_id=${state.currentNovelId}`),
     ]);
     app.innerHTML = `
-      ${pageHeader("Admin", "Operational view for database health, jobs, imports, missing data, and exports.", [["Version", "10.1.0"], ["Schema", overview.overview.schema], ["Chapters", overview.overview.chapters], ["Needs Translation", overview.overview.needs_translation]])}
+      ${pageHeader("Admin", "Operational view for database health, jobs, imports, missing data, and exports.", [["Version", APP_VERSION], ["Schema", overview.overview.schema], ["Chapters", overview.overview.chapters], ["Needs Translation", overview.overview.needs_translation]])}
       <section class="dashboard-grid">
         <div class="panel"><h2>Database Health</h2><pre>${escapeHtml(JSON.stringify(dbHealth.health, null, 2))}</pre></div>
         <div class="panel"><h2>Missing Data</h2><p class="muted">Reference range: ${escapeHtml(missing.missing.reference_target_range?.start ?? "all")} - ${escapeHtml(missing.missing.reference_target_range?.end ?? "all")}</p>${recoveryList("Missing Original", missing.missing.missing_original)}${recoveryList("Missing Reference", missing.missing.missing_reference)}${objectDetails("Translation errors", missing.missing.translation_errors)}</div>
@@ -475,6 +504,62 @@ async function openAdmin() {
   } catch (error) {
     setError(error.message);
   }
+}
+
+function openSettings(section = "appearance") {
+  const pref = state.preferences;
+  app.innerHTML = `
+    ${pageHeader("Settings", "Personalize GodTranslator for reading, focus, and everyday use.", [["Theme", pref.theme], ["Density", pref.density], ["Motion", pref.reduceMotion ? "Reduced" : "Standard"]])}
+    <section class="settings-layout">
+      <nav class="settings-nav">
+        <a class="${section === "appearance" ? "active" : ""}" href="#/settings/appearance">Appearance</a>
+        <a class="${section === "reader" ? "active" : ""}" href="#/settings/reader">Reader</a>
+        <a class="${section === "account" ? "active" : ""}" href="#/settings/account">Account</a>
+      </nav>
+      ${section === "reader" ? renderReaderSettings(pref) : section === "account" ? renderAccountSettings() : renderAppearanceSettings(pref)}
+    </section>`;
+  document.querySelectorAll("[data-pref]").forEach((field) => field.addEventListener("input", savePreferenceFromField));
+  document.querySelector("#resetPrefs")?.addEventListener("click", () => {
+    state.preferences = defaultPreferences();
+    localStorage.setItem("gt-preferences", JSON.stringify(state.preferences));
+    applyPreferences();
+    openSettings(section);
+    toast("Preferences reset.");
+  });
+}
+
+function renderAppearanceSettings(pref) {
+  return `<section class="panel form-grid">
+    <h2>Appearance</h2>
+    <label>Theme<select data-pref="theme">${["obsidian", "forest", "midnight", "warm-dark", "light"].map((item) => `<option value="${item}" ${pref.theme === item ? "selected" : ""}>${titleCase(item)}</option>`).join("")}</select></label>
+    <label>Accent<select data-pref="accent">${["green", "teal", "blue", "purple", "amber"].map((item) => `<option value="${item}" ${pref.accent === item ? "selected" : ""}>${titleCase(item)}</option>`).join("")}</select></label>
+    <label>Density<select data-pref="density">${["compact", "comfortable", "spacious"].map((item) => `<option value="${item}" ${pref.density === item ? "selected" : ""}>${titleCase(item)}</option>`).join("")}</select></label>
+    <label>Card size<select data-pref="cardSize">${["compact", "standard", "large"].map((item) => `<option value="${item}" ${pref.cardSize === item ? "selected" : ""}>${titleCase(item)}</option>`).join("")}</select></label>
+    <label><input data-pref="reduceMotion" type="checkbox" ${pref.reduceMotion ? "checked" : ""}> Reduce motion</label>
+    <label><input data-pref="interfaceBlur" type="checkbox" ${pref.interfaceBlur ? "checked" : ""}> Interface blur</label>
+    <div class="actions wide"><button id="resetPrefs" type="button">Reset to defaults</button></div>
+  </section>`;
+}
+
+function renderReaderSettings(pref) {
+  return `<section class="panel form-grid">
+    <h2>Reader</h2>
+    <label>Font family<select data-pref="readerFont">${["serif", "sans", "system"].map((item) => `<option value="${item}" ${pref.readerFont === item ? "selected" : ""}>${titleCase(item)}</option>`).join("")}</select></label>
+    <label>Line height<input data-pref="readerLineHeight" type="range" min="1.55" max="2.15" step="0.05" value="${pref.readerLineHeight}"></label>
+    <label>Paragraph spacing<input data-pref="paragraphSpacing" type="range" min="0.7" max="1.8" step="0.1" value="${pref.paragraphSpacing}"></label>
+    <label>Reading width<input data-pref="readingWidth" type="range" min="680" max="1080" step="20" value="${pref.readingWidth}"></label>
+    <label>Reader tone<select data-pref="readerTone">${["obsidian", "paper", "sepia", "midnight", "forest"].map((item) => `<option value="${item}" ${pref.readerTone === item ? "selected" : ""}>${titleCase(item)}</option>`).join("")}</select></label>
+    <label>Text align<select data-pref="textAlign">${["left", "justify"].map((item) => `<option value="${item}" ${pref.textAlign === item ? "selected" : ""}>${titleCase(item)}</option>`).join("")}</select></label>
+    <div class="actions wide"><button id="resetPrefs" type="button">Reset to defaults</button></div>
+  </section>`;
+}
+
+function renderAccountSettings() {
+  return `<section class="panel">
+    <h2>Account</h2>
+    <p class="muted">Guest reading is available. Supabase account features are introduced in the next checkpoint; until configured, personalization is saved safely in this browser.</p>
+    <div class="actions"><a class="button" href="#/admin">Admin Login</a><a class="button" href="#/library">Back to Library</a></div>
+  </section>`;
 }
 
 function renderAdminGate(title) {
@@ -564,8 +649,132 @@ function escapeAttr(value) {
   return escapeHtml(value).replace(/`/g, "&#096;");
 }
 
+function defaultPreferences() {
+  return {
+    theme: "obsidian",
+    accent: "green",
+    density: "comfortable",
+    cardSize: "standard",
+    reduceMotion: false,
+    interfaceBlur: true,
+    readerFont: "serif",
+    readerLineHeight: 1.8,
+    paragraphSpacing: 1.2,
+    readingWidth: 900,
+    readerTone: "obsidian",
+    textAlign: "left",
+  };
+}
+
+function loadPreferences() {
+  try {
+    return {...defaultPreferences(), ...JSON.parse(localStorage.getItem("gt-preferences") || "{}")};
+  } catch {
+    return defaultPreferences();
+  }
+}
+
+function savePreferenceFromField(event) {
+  const key = event.currentTarget.dataset.pref;
+  let value = event.currentTarget.type === "checkbox" ? event.currentTarget.checked : event.currentTarget.value;
+  if (["readerLineHeight", "paragraphSpacing", "readingWidth"].includes(key)) value = Number(value);
+  state.preferences[key] = value;
+  localStorage.setItem("gt-preferences", JSON.stringify(state.preferences));
+  applyPreferences();
+  toast("Preferences saved.");
+}
+
+function applyPreferences() {
+  const pref = state.preferences;
+  document.body.dataset.theme = pref.theme;
+  document.body.dataset.accent = pref.accent;
+  document.body.dataset.density = pref.density;
+  document.body.dataset.cardSize = pref.cardSize;
+  document.body.dataset.motion = pref.reduceMotion ? "reduced" : "standard";
+  document.body.dataset.blur = pref.interfaceBlur ? "on" : "off";
+  document.documentElement.style.setProperty("--reader-line-height", String(pref.readerLineHeight));
+  document.documentElement.style.setProperty("--reader-paragraph-spacing", `${pref.paragraphSpacing}em`);
+  document.documentElement.style.setProperty("--reader-width", `${pref.readingWidth}px`);
+  document.documentElement.style.setProperty("--reader-align", pref.textAlign);
+  document.body.dataset.readerFont = pref.readerFont;
+  document.body.dataset.readerTone = pref.readerTone;
+}
+
+function bindShellControls() {
+  document.querySelector("#globalSearchBtn")?.addEventListener("click", openCommandPalette);
+  document.querySelector("#personalizeBtn")?.addEventListener("click", () => { window.location.hash = "#/settings/appearance"; });
+  document.querySelector("#jobCenterBtn")?.addEventListener("click", () => { window.location.hash = state.admin ? `#/translate/${state.currentNovelId}` : "#/settings/account"; });
+  commandInput?.addEventListener("input", renderCommandResults);
+  commandDialog?.addEventListener("close", () => { if (commandInput) commandInput.value = ""; });
+  document.addEventListener("keydown", (event) => {
+    const target = event.target;
+    const typing = target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      openCommandPalette();
+    }
+    if (!typing && window.location.hash.startsWith("#/reader/")) {
+      if (event.key === "+") adjustReaderFont(1);
+      if (event.key === "-") adjustReaderFont(-1);
+    }
+  });
+}
+
+function openCommandPalette() {
+  if (!commandDialog || !commandInput) return;
+  renderCommandResults();
+  commandDialog.showModal();
+  commandInput.focus();
+}
+
+function renderCommandResults() {
+  if (!commandResults) return;
+  const query = (commandInput?.value || "").trim().toLowerCase();
+  const commands = [
+    ["Go to Library", "#/library", true],
+    ["Open Chapters", `#/chapters/${state.currentNovelId}`, true],
+    ["Open Settings", "#/settings/appearance", true],
+    ["Open Translate", `#/translate/${state.currentNovelId}`, state.admin],
+    ["Manage Novels", "#/novels", state.admin],
+    ["Open Recovery", `#/recovery/${state.currentNovelId}`, state.admin],
+    ["Open Admin", "#/admin", state.admin],
+  ];
+  const novelMatches = state.novels.map((novel) => [`Novel: ${novel.title}`, `#/chapters/${novel.id}`, true]);
+  const chapterMatches = state.chapters.slice(0, 500).map((chapter) => [`Chapter ${chapter.chapter_number}: ${chapter.title}`, `#/reader/${state.currentNovelId}/${chapter.chapter_number}/${state.source}`, true]);
+  const rows = [...commands, ...novelMatches, ...chapterMatches]
+    .filter(([, , allowed]) => allowed)
+    .filter(([label]) => !query || label.toLowerCase().includes(query))
+    .slice(0, 20);
+  commandResults.innerHTML = rows.map(([label, href]) => `<a href="${href}" data-command-result>${escapeHtml(label)}</a>`).join("") || `<p class="muted">No matches.</p>`;
+  commandResults.querySelectorAll("[data-command-result]").forEach((link) => link.addEventListener("click", () => commandDialog?.close()));
+}
+
+function adjustReaderFont(delta) {
+  state.fontSize = Math.max(16, Math.min(25, state.fontSize + delta));
+  localStorage.setItem("gt-reader-font", String(state.fontSize));
+  document.documentElement.style.setProperty("--reader-font", `${state.fontSize}px`);
+}
+
+function toast(message) {
+  const item = document.createElement("div");
+  item.className = "toast";
+  item.textContent = message;
+  document.body.appendChild(item);
+  requestAnimationFrame(() => item.classList.add("show"));
+  setTimeout(() => {
+    item.classList.remove("show");
+    setTimeout(() => item.remove(), 240);
+  }, 1800);
+}
+
+function titleCase(value) {
+  return String(value || "").replace(/-/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 window.addEventListener("hashchange", route);
 window.addEventListener("DOMContentLoaded", async () => {
+  applyPreferences();
+  bindShellControls();
   await refreshSession();
   await loadNovels().catch(() => {});
   route();

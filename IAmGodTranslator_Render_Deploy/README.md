@@ -1,6 +1,6 @@
-# GodTranslator v10.1.0 Full App Restoration
+# GodTranslator v10.2.0 Premium Product Evolution
 
-GodTranslator v10.1.0 restores the full product shell on top of the v10 database-first foundation.
+GodTranslator v10.2.0 evolves the restored v10 product shell into a premium, personalized novel-reading and translation application on top of the v10 database-first foundation.
 
 PostgreSQL remains the live source of truth:
 
@@ -24,6 +24,8 @@ Routes:
 - `#/translate/i-am-god`
 - `#/recovery/i-am-god`
 - `#/admin`
+- `#/settings/appearance`
+- `#/settings/reader`
 
 Restored workflows:
 
@@ -34,6 +36,7 @@ Restored workflows:
 - Translate workspace with estimates, budget controls, persistent jobs, pause/resume/stop/retry, and explicit run-next execution.
 - Recovery workspace from v10.0.6 for safe Reference preview/import.
 - Admin dashboard with system overview, database health, missing data, translation jobs, import jobs, and database-first backup export.
+- v10.2 shell with authorization-aware navigation, global search/command palette, job/account/settings controls, and local guest personalization.
 
 ## Translation Safety
 
@@ -108,4 +111,3 @@ python tools/recover_missing_references.py --database-url "$env:DATABASE_URL" --
 ```
 
 Existing non-empty Reference text is never overwritten by default.
-

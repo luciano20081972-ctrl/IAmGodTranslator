@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GodTranslator</title>
-  <link rel="stylesheet" href="/static/styles.css?v=10.1.0">
+  <link rel="stylesheet" href="/static/styles.css?v=10.2.0">
 </head>
 <body>
   <div class="shell">
@@ -16,21 +16,30 @@
           <small>Novel Library</small>
         </span>
       </a>
-      <nav class="top-nav" aria-label="Primary">
+      <button class="global-search-trigger" id="globalSearchBtn" type="button" aria-label="Open search">Search novels, chapters, actions</button>
+      <nav class="top-nav" id="primaryNav" aria-label="Primary">
         <a href="#/library">Library</a>
-        <a href="#/novels">Novels</a>
         <a href="#/chapters/i-am-god">Chapters</a>
-        <a href="#/translate/i-am-god">Translate</a>
-        <a href="#/recovery/i-am-god">Recovery</a>
-        <a href="#/admin">Admin</a>
       </nav>
+      <div class="shell-actions">
+        <button id="jobCenterBtn" type="button" title="Job center">Jobs</button>
+        <button id="personalizeBtn" type="button" title="Personalize">Theme</button>
+        <a class="account-chip" id="accountBtn" href="#/admin">Guest</a>
+      </div>
     </header>
 
     <main id="app" class="app-main" aria-live="polite">
       <section class="loading-card">Loading GodTranslator...</section>
     </main>
+
+    <dialog id="commandDialog" class="command-dialog">
+      <form method="dialog">
+        <input id="commandInput" type="search" placeholder="Search or type a command..." autocomplete="off">
+        <section id="commandResults" class="command-results"></section>
+      </form>
+    </dialog>
   </div>
 
-  <script src="/static/app.js?v=10.1.0"></script>
+  <script src="/static/app.js?v=10.2.0"></script>
 </body>
 </html>
