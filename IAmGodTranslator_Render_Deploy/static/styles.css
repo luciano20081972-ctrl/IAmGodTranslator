@@ -408,6 +408,39 @@ body[data-card-size="compact"] .novel-grid { grid-template-columns: repeat(auto-
   margin: 1rem 0;
 }
 
+.account-links,
+.continue-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.account-links {
+  flex-wrap: wrap;
+  margin: 1rem 0;
+}
+
+.continue-card {
+  margin: 1rem 0 1.2rem;
+  padding: 1.2rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-radius: 22px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, transparent), transparent 52%), rgba(21, 29, 26, 0.86);
+  box-shadow: var(--shadow);
+}
+
+.continue-card h2 {
+  margin: .15rem 0;
+}
+
+.ghost-btn {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text);
+  padding: .4rem .65rem;
+}
+
 .avatar {
   display: grid;
   place-items: center;

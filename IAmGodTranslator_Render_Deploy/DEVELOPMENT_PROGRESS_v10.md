@@ -647,3 +647,28 @@ Checkpoint 3 QA:
 - `/auth/callback` returned the SPA shell.
 - No OpenAI call was made.
 - No translation was started.
+
+## v10.2.0 Checkpoint 4 - Personalization and Private User Experience
+
+Completed:
+
+- Added database-backed personal progress, reading history, bookmarks, and favorites APIs.
+- Kept guest preferences in safe browser storage and authenticated preferences in the database.
+- Added Library Continue Reading for signed-in users.
+- Added History and Bookmarks routes.
+- Added favorite toggles and Library Favorites filtering for signed-in users.
+- Added reader progress sync and chapter bookmark actions.
+- Kept private data ownership server-side by deriving the user from validated Auth tokens only.
+- Hid public Translate/Recovery UI links from guests while preserving backend authorization.
+
+Checkpoint 4 QA:
+
+- Python syntax check passed for all app modules.
+- JavaScript syntax check passed.
+- Fixture authenticated user saved preferences, reading progress, one bookmark, and one favorite.
+- `/api/account/home` returned Continue Reading plus private history/bookmark/favorite data for the owner.
+- Anonymous `/api/account/home` returned 401.
+- Reading history clear succeeded for the authenticated owner.
+- Local SQLite fallback and Postgres-oriented UUID bookmark storage paths are both represented safely.
+- No OpenAI call was made.
+- No translation was started.

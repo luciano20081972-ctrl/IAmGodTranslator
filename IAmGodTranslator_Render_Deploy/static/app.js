@@ -20,6 +20,7 @@ const state = {
   role: "guest",
   authConfig: null,
   account: null,
+  personal: null,
   supabaseClient: null,
   lastEstimate: null,
   preferences: loadPreferences(),
@@ -69,6 +70,8 @@ function route() {
   if (parts[0] === "translate") return openTranslate(parts[1] || state.currentNovelId, params);
   if (parts[0] === "recovery") return openRecovery(parts[1] || state.currentNovelId);
   if (parts[0] === "novels") return openNovels();
+  if (parts[0] === "history") return openHistory();
+  if (parts[0] === "bookmarks") return openBookmarks();
   if (parts[0] === "settings") return openSettings(parts[1] || "appearance");
   if (["account", "login", "signup", "forgot-password", "reset-password"].includes(parts[0])) return openSettings("account", parts[0]);
   if (parts[0] === "admin") return openAdmin();
@@ -89,6 +92,8 @@ function renderNav() {
   const links = [
     ["library", "Library", "#/library", true],
     ["chapters", "Chapters", `#/chapters/${state.currentNovelId}`, true],
+    ["history", "History", "#/history", Boolean(state.account)],
+    ["bookmarks", "Bookmarks", "#/bookmarks", Boolean(state.account)],
     ["translate", "Translate", `#/translate/${state.currentNovelId}`, state.admin],
     ["novels", "Novels", "#/novels", state.admin],
     ["recovery", "Recovery", `#/recovery/${state.currentNovelId}`, state.admin],
@@ -138,6 +143,7 @@ async function refreshAccount() {
   try {
     const payload = await api("/api/account/me");
     state.account = payload.authenticated ? payload.user : null;
+    state.personal = null;
     if (payload.preferences && Object.keys(payload.preferences).length) {
       state.preferences = {...state.preferences, ...payload.preferences};
       localStorage.setItem("gt-preferences", JSON.stringify(state.preferences));
@@ -145,6 +151,18 @@ async function refreshAccount() {
     }
   } catch {
     state.account = null;
+  }
+}
+
+async function loadPersonalHome(force = false) {
+  if (!state.account) return null;
+  if (!force && state.personal) return state.personal;
+  try {
+    state.personal = await api("/api/account/home");
+    return state.personal;
+  } catch {
+    state.personal = null;
+    return null;
   }
 }
 
@@ -172,6 +190,7 @@ async function openLibrary() {
   setLoading("Opening library...");
   try {
     const novels = await loadNovels(true);
+    const personal = await loadPersonalHome(true);
     app.innerHTML = `
       ${pageHeader("Library", "A calm command center for reading and translation progress.", [
         ["Novels", novels.length],
@@ -180,9 +199,10 @@ async function openLibrary() {
         ["Reference", sum(novels, "reference_count")],
         ["AI", sum(novels, "ai_count")],
       ])}
+      ${renderContinueReading(personal?.continue_reading)}
       <section class="toolbar">
         <input class="search" id="librarySearch" type="search" placeholder="Search novels">
-        <select id="libraryFilter"><option value="active">Active</option><option value="all">All</option><option value="archived">Archived</option></select>
+        <select id="libraryFilter"><option value="active">Active</option><option value="all">All</option><option value="favorites">Favorites</option><option value="archived">Archived</option></select>
         <select id="librarySort"><option value="updated">Recently updated</option><option value="title">Title</option><option value="progress">Translation progress</option></select>
       </section>
       <section class="novel-grid" id="novelGrid"></section>
@@ -203,6 +223,7 @@ function renderLibraryCards() {
   let novels = state.novels.filter((novel) => {
     if (filter === "active" && novel.is_archived) return false;
     if (filter === "archived" && !novel.is_archived) return false;
+    if (filter === "favorites" && !favoriteIds().has(novel.id)) return false;
     if (!query) return true;
     return `${novel.title} ${novel.author || ""}`.toLowerCase().includes(query);
   });
@@ -212,17 +233,45 @@ function renderLibraryCards() {
     return String(b.updated_at || "").localeCompare(String(a.updated_at || ""));
   });
   grid.innerHTML = novels.map(renderNovelCard).join("") || `<div class="empty-state">No novels match this view.</div>`;
+  grid.querySelectorAll("[data-favorite]").forEach((button) => button.addEventListener("click", toggleFavorite));
+}
+
+function renderContinueReading(progress) {
+  if (!progress) {
+    return state.account ? `<section class="continue-card"><div><p class="eyebrow">Continue Reading</p><h2>No saved progress yet</h2><p class="muted">Open a chapter and GodTranslator will remember your place.</p></div></section>` : "";
+  }
+  return `<section class="continue-card">
+    <div><p class="eyebrow">Continue Reading</p><h2>${escapeHtml(progress.novel_title)}</h2><p>Chapter ${progress.chapter_number}: ${escapeHtml(progress.chapter_title)}</p><p class="muted">${sourceLabels[progress.source] || progress.source} · ${Math.round(progress.scroll_percent || 0)}%</p></div>
+    <a class="button primary" href="#/reader/${encodeURIComponent(progress.novel_id)}/${progress.chapter_number}/${progress.source}">Continue</a>
+  </section>`;
+}
+
+function favoriteIds() {
+  return new Set((state.personal?.favorites || []).map((item) => item.novel_id));
+}
+
+async function toggleFavorite(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (!state.account) return toast("Sign in to favorite novels.");
+  const novelId = event.currentTarget.dataset.favorite;
+  const next = !favoriteIds().has(novelId);
+  await api(`/api/account/favorites/${encodeURIComponent(novelId)}`, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({favorite: next})});
+  await loadPersonalHome(true);
+  renderLibraryCards();
+  toast(next ? "Favorite saved." : "Favorite removed.");
 }
 
 function renderNovelCard(novel) {
   const pct = progress(novel);
+  const favorite = favoriteIds().has(novel.id);
   return `
     <article class="novel-card">
       <a class="cover" href="#/chapters/${encodeURIComponent(novel.id)}">
         ${novel.cover_url ? `<img src="${escapeAttr(novel.cover_url)}" alt="">` : `<span>${escapeHtml(initials(novel.title || novel.id))}</span>`}
       </a>
       <div class="novel-card-body">
-        <div class="status-row"><span class="badge ok">${novel.is_archived ? "Archived" : "Active"}</span><span>${pct}% AI</span></div>
+        <div class="status-row"><span class="badge ok">${novel.is_archived ? "Archived" : "Active"}</span>${state.account ? `<button class="ghost-btn" data-favorite="${escapeAttr(novel.id)}">${favorite ? "Favorited" : "Favorite"}</button>` : ""}<span>${pct}% AI</span></div>
         <h2>${escapeHtml(novel.title || novel.id)}</h2>
         <p class="muted">${escapeHtml(novel.author || "Unknown author")}</p>
         <div class="mini-progress"><span style="width:${pct}%"></span></div>
@@ -236,7 +285,7 @@ function renderNovelCard(novel) {
         <div class="actions">
           <a class="button primary" href="#/chapters/${encodeURIComponent(novel.id)}">Open</a>
           <a class="button" href="#/reader/${encodeURIComponent(novel.id)}/1/${state.source}">Read</a>
-          <a class="button" href="#/translate/${encodeURIComponent(novel.id)}">Translate</a>
+          ${state.admin ? `<a class="button" href="#/translate/${encodeURIComponent(novel.id)}">Translate</a>` : ""}
         </div>
       </div>
     </article>`;
@@ -334,13 +383,12 @@ function renderChapters(payload) {
       <select id="chapterNovel">${state.novels.map((n) => `<option value="${n.id}" ${n.id === novel.id ? "selected" : ""}>${escapeHtml(n.title)}</option>`).join("")}</select>
       <input class="search" id="chapterSearch" type="search" value="${escapeAttr(state.chapterSearch)}" placeholder="Search chapter number or title">
       <select id="chapterView">${chapterViews.map(([value, label]) => `<option value="${value}" ${value === state.chapterView ? "selected" : ""}>${label}</option>`).join("")}</select>
-      <a class="button" href="#/translate/${novel.id}">Translate</a>
-      <a class="button" href="#/recovery/${novel.id}">Recovery</a>
+      ${state.admin ? `<a class="button" href="#/translate/${novel.id}">Translate</a><a class="button" href="#/recovery/${novel.id}">Recovery</a>` : ""}
     </section>
     <section class="table-card">
       <div class="table-meta">Showing ${state.chapterTotal ? state.chapterOffset + 1 : 0}-${Math.min(state.chapterOffset + state.pageSize, state.chapterTotal)} of ${state.chapterTotal} chapters</div>
       <table><thead><tr><th>Chapter</th><th>Original</th><th>Reference</th><th>AI</th><th>Status</th><th></th></tr></thead><tbody>
-        ${state.chapters.map((chapter) => `<tr><td><strong>Chapter ${chapter.chapter_number}</strong><br><span>${escapeHtml(chapter.title)}</span></td><td>${badge("Original", chapter.has_original)}</td><td>${badge("Reference", chapter.has_reference)}</td><td>${badge("AI", chapter.has_ai)}</td><td>${escapeHtml(chapter.translation_status || "")}</td><td class="row-actions"><a class="button" href="#/reader/${novel.id}/${chapter.chapter_number}/${state.source}">Read</a><a class="button" href="#/translate/${novel.id}?chapter=${chapter.chapter_number}">Translate</a></td></tr>`).join("") || `<tr><td colspan="6">No chapters match this view.</td></tr>`}
+        ${state.chapters.map((chapter) => `<tr><td><strong>Chapter ${chapter.chapter_number}</strong><br><span>${escapeHtml(chapter.title)}</span></td><td>${badge("Original", chapter.has_original)}</td><td>${badge("Reference", chapter.has_reference)}</td><td>${badge("AI", chapter.has_ai)}</td><td>${escapeHtml(chapter.translation_status || "")}</td><td class="row-actions"><a class="button" href="#/reader/${novel.id}/${chapter.chapter_number}/${state.source}">Read</a>${state.admin ? `<a class="button" href="#/translate/${novel.id}?chapter=${chapter.chapter_number}">Translate</a>` : ""}</td></tr>`).join("") || `<tr><td colspan="6">No chapters match this view.</td></tr>`}
       </tbody></table>
       <div class="pager"><button id="prevPage" ${state.chapterOffset <= 0 ? "disabled" : ""}>Previous</button><button id="nextPage" ${state.chapterOffset + state.pageSize >= state.chapterTotal ? "disabled" : ""}>Next</button></div>
     </section>`;
@@ -379,7 +427,7 @@ function renderReader(novelId, chapterNumber, source, payload) {
   app.innerHTML = `
     <section class="reader-panel">
       <div class="reader-nav"><a class="button" href="#/chapters/${novelId}">Back to Chapters</a><a class="button" href="#/library">Library</a><div class="spacer"></div><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous</button><select id="chapterPicker">${state.chapters.map((c) => `<option value="${c.chapter_number}" ${c.chapter_number === chapterNumber ? "selected" : ""}>Chapter ${c.chapter_number}</option>`).join("")}</select><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next</button></div>
-      <div class="reader-tabs">${["ai", "reference", "original"].map((item) => `<button data-source="${item}" class="${item === source ? "active" : ""}">${sourceLabels[item]}</button>`).join("")}<label>Font <input id="fontSize" type="range" min="16" max="25" value="${state.fontSize}"></label></div>
+      <div class="reader-tabs">${["ai", "reference", "original"].map((item) => `<button data-source="${item}" class="${item === source ? "active" : ""}">${sourceLabels[item]}</button>`).join("")}<button id="bookmarkChapter" type="button">Bookmark</button><label>Font <input id="fontSize" type="range" min="16" max="25" value="${state.fontSize}"></label></div>
       <header class="reader-heading"><span>${sourceLabels[source]}</span><h1>Chapter ${chapterNumber}</h1><p>${escapeHtml(payload.title || `Chapter ${chapterNumber}`)}</p></header>
       <article class="reader-text">${renderReaderText(payload, source)}</article>
       <div class="reader-bottom"><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous Chapter</button><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next Chapter</button></div>
@@ -388,11 +436,71 @@ function renderReader(novelId, chapterNumber, source, payload) {
   document.querySelector("#chapterPicker").addEventListener("change", (event) => { window.location.hash = `#/reader/${novelId}/${event.target.value}/${state.source}`; });
   document.querySelectorAll("[data-source]").forEach((button) => button.addEventListener("click", () => { window.location.hash = `#/reader/${novelId}/${chapterNumber}/${button.dataset.source}`; }));
   document.querySelector("#fontSize").addEventListener("input", (event) => { state.fontSize = Number(event.target.value); localStorage.setItem("gt-reader-font", String(state.fontSize)); document.documentElement.style.setProperty("--reader-font", `${state.fontSize}px`); });
+  document.querySelector("#bookmarkChapter").addEventListener("click", () => saveBookmark(novelId, chapterNumber));
+  saveProgressDebounced(novelId, chapterNumber, source, 0);
+  document.querySelector(".reader-text")?.addEventListener("scroll", debounce(() => saveProgressDebounced(novelId, chapterNumber, source, readerScrollPercent()), 900));
 }
 
 function renderReaderText(payload, source) {
   if (!payload.ok) return `<div class="empty-state">${escapeHtml(sourceLabels[source])} is not available for this chapter.</div>`;
   return paragraphs(payload.text).map((line) => `<p>${escapeHtml(line)}</p>`).join("");
+}
+
+async function saveBookmark(novelId, chapterNumber) {
+  if (!state.account) return toast("Sign in to save bookmarks.");
+  const note = prompt("Bookmark note (optional)") || "";
+  await api("/api/account/bookmarks", {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({novel_id: novelId, chapter_number: chapterNumber, note})});
+  await loadPersonalHome(true);
+  toast("Bookmark saved.");
+}
+
+const saveProgressDebounced = debounce(async (novelId, chapterNumber, source, scrollPercent) => {
+  if (!state.account) return;
+  try {
+    await api("/api/account/progress", {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({novel_id: novelId, chapter_number: chapterNumber, source, scroll_percent: scrollPercent})});
+    state.personal = null;
+  } catch {
+    // Reading should never be interrupted by private progress sync failure.
+  }
+}, 700);
+
+function readerScrollPercent() {
+  const total = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
+  return Math.max(0, Math.min(100, window.scrollY / total * 100));
+}
+
+async function openHistory() {
+  if (!state.account) return openSettings("account");
+  setLoading("Loading history...");
+  try {
+    const payload = await api("/api/account/history");
+    app.innerHTML = `${pageHeader("Reading History", "Your recent GodTranslator reading sessions.", [["Items", payload.history.length]])}
+      <section class="table-card"><table><thead><tr><th>Novel</th><th>Chapter</th><th>Source</th><th>Progress</th><th></th></tr></thead><tbody>
+      ${payload.history.map((item) => `<tr><td>${escapeHtml(item.novel_title)}</td><td>Chapter ${item.chapter_number}<br><span>${escapeHtml(item.chapter_title)}</span></td><td>${escapeHtml(sourceLabels[item.source] || item.source)}</td><td>${Math.round(item.progress_percent || 0)}%</td><td><a class="button" href="#/reader/${item.novel_id}/${item.chapter_number}/${item.source}">Continue</a></td></tr>`).join("") || `<tr><td colspan="5">No reading history yet.</td></tr>`}
+      </tbody></table><div class="actions"><button id="clearHistory" type="button">Clear History</button></div></section>`;
+    document.querySelector("#clearHistory")?.addEventListener("click", async () => { await api("/api/account/history", {method: "DELETE"}); openHistory(); });
+  } catch (error) {
+    setError(error.message);
+  }
+}
+
+async function openBookmarks() {
+  if (!state.account) return openSettings("account");
+  setLoading("Loading bookmarks...");
+  try {
+    const payload = await api("/api/account/bookmarks");
+    app.innerHTML = `${pageHeader("Bookmarks", "Saved chapters and personal notes.", [["Items", payload.bookmarks.length]])}
+      <section class="table-card"><table><thead><tr><th>Novel</th><th>Chapter</th><th>Note</th><th></th></tr></thead><tbody>
+      ${payload.bookmarks.map((item) => `<tr><td>${escapeHtml(item.novel_title)}</td><td>Chapter ${item.chapter_number}<br><span>${escapeHtml(item.chapter_title)}</span></td><td>${escapeHtml(item.note || "")}</td><td class="row-actions"><a class="button" href="#/reader/${item.novel_id}/${item.chapter_number}/${state.source}">Read</a><button data-delete-bookmark="${item.novel_id}:${item.chapter_number}">Remove</button></td></tr>`).join("") || `<tr><td colspan="4">No bookmarks yet.</td></tr>`}
+      </tbody></table></section>`;
+    document.querySelectorAll("[data-delete-bookmark]").forEach((button) => button.addEventListener("click", async () => {
+      const [novelId, chapter] = button.dataset.deleteBookmark.split(":");
+      await api(`/api/account/bookmarks/${encodeURIComponent(novelId)}/${chapter}`, {method: "DELETE"});
+      openBookmarks();
+    }));
+  } catch (error) {
+    setError(error.message);
+  }
 }
 
 async function openTranslate(novelId, params = new URLSearchParams()) {
@@ -605,7 +713,13 @@ function renderAccountSettings(intent = "") {
         <div class="avatar">${escapeHtml(initials(state.account.display_name || state.account.email || "U"))}</div>
         <div><strong>${escapeHtml(state.account.display_name || state.account.email || "Signed in")}</strong><p class="muted">${escapeHtml(state.account.email || "")}</p><span class="badge ok">${escapeHtml(state.account.role || "user")}</span></div>
       </div>
-      <div class="actions"><button id="signOutBtn" type="button">Sign Out</button><a class="button" href="#/settings/appearance">Personalization</a><a class="button" href="#/admin">Admin Login</a></div>
+      <div class="account-links">
+        <a class="button" href="#/library">Continue Reading</a>
+        <a class="button" href="#/bookmarks">Bookmarks</a>
+        <a class="button" href="#/history">History</a>
+        <a class="button" href="#/settings/appearance">Personalization</a>
+      </div>
+      <div class="actions"><button id="signOutBtn" type="button">Sign Out</button><a class="button" href="#/admin">Admin Login</a></div>
     </section>`;
   }
   const configured = Boolean(state.authConfig?.configured && state.supabaseClient);
@@ -801,6 +915,7 @@ async function signInWithGoogle() {
 async function signOut() {
   if (state.supabaseClient) await state.supabaseClient.auth.signOut();
   state.account = null;
+  state.personal = null;
   state.admin = false;
   state.role = "guest";
   renderNav();

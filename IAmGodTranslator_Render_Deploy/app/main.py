@@ -137,9 +137,91 @@ def save_account_preferences(request: Request, payload: dict[str, Any] = Body(..
     return {"ok": True, "preferences": saved}
 
 
+@app.get("/api/account/home")
+def account_home(request: Request) -> dict[str, object]:
+    user = require_user(request)
+    return {
+        "ok": True,
+        "continue_reading": database.reading_progress(user.user_id),
+        "history": database.reading_history(user.user_id, limit=10),
+        "bookmarks": database.bookmarks(user.user_id),
+        "favorites": database.favorites(user.user_id),
+    }
+
+
+@app.put("/api/account/progress")
+def save_reading_progress(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, object]:
+    user = require_user(request)
+    progress = database.save_reading_progress(
+        user.user_id,
+        str(payload.get("novel_id") or ""),
+        int(payload.get("chapter_number") or 0),
+        str(payload.get("source") or "ai"),
+        float(payload.get("scroll_percent") or 0),
+    )
+    return {"ok": True, "progress": progress}
+
+
+@app.get("/api/account/history")
+def account_history(request: Request) -> dict[str, object]:
+    user = require_user(request)
+    return {"ok": True, "history": database.reading_history(user.user_id, limit=100)}
+
+
+@app.delete("/api/account/history")
+def clear_account_history(request: Request) -> dict[str, object]:
+    user = require_user(request)
+    database.clear_reading_history(user.user_id)
+    return {"ok": True}
+
+
+@app.get("/api/account/bookmarks")
+def account_bookmarks(request: Request) -> dict[str, object]:
+    user = require_user(request)
+    return {"ok": True, "bookmarks": database.bookmarks(user.user_id)}
+
+
+@app.put("/api/account/bookmarks")
+def save_account_bookmark(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, object]:
+    user = require_user(request)
+    bookmark = database.save_bookmark(
+        user.user_id,
+        str(payload.get("novel_id") or ""),
+        int(payload.get("chapter_number") or 0),
+        str(payload.get("note") or ""),
+    )
+    return {"ok": True, "bookmark": bookmark}
+
+
+@app.delete("/api/account/bookmarks/{novel_id}/{chapter_number}")
+def delete_account_bookmark(novel_id: str, chapter_number: int, request: Request) -> dict[str, object]:
+    user = require_user(request)
+    database.delete_bookmark(user.user_id, novel_id, chapter_number)
+    return {"ok": True}
+
+
+@app.get("/api/account/favorites")
+def account_favorites(request: Request) -> dict[str, object]:
+    user = require_user(request)
+    return {"ok": True, "favorites": database.favorites(user.user_id)}
+
+
+@app.put("/api/account/favorites/{novel_id}")
+def set_account_favorite(novel_id: str, request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, object]:
+    user = require_user(request)
+    return {"ok": True, "favorite": database.set_favorite(user.user_id, novel_id, bool(payload.get("favorite", True)))}
+
+
 def require_admin(request: Request) -> None:
     if not is_admin_request(request):
         raise HTTPException(status_code=401, detail="admin_required")
+
+
+def require_user(request: Request) -> RequestUser:
+    user = current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="account_required")
+    return user
 
 
 def is_admin_request(request: Request) -> bool:

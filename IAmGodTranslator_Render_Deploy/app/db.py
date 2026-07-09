@@ -1155,6 +1155,151 @@ class Database:
             )
         return self.user_preferences(user_id)
 
+    def save_reading_progress(self, user_id: str, novel_id: str, chapter_number: int, source: str, scroll_percent: float = 0) -> dict[str, Any]:
+        source = source if source in {"ai", "reference", "original"} else "ai"
+        scroll = max(0.0, min(100.0, float(scroll_percent or 0)))
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO {self.table('reading_progress')} (user_id, novel_id, chapter_number, source, scroll_percent, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, novel_id) DO UPDATE SET
+                    chapter_number = excluded.chapter_number,
+                    source = excluded.source,
+                    scroll_percent = excluded.scroll_percent,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, novel_id, int(chapter_number), source, scroll, now),
+            )
+            conn.execute(
+                f"""
+                INSERT INTO {self.table('reading_history')} (user_id, novel_id, chapter_number, source, progress_percent, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (user_id, novel_id, int(chapter_number), source, scroll, now),
+            )
+        return self.reading_progress(user_id, novel_id) or {}
+
+    def reading_progress(self, user_id: str, novel_id: str | None = None) -> dict[str, Any] | None:
+        where = ["p.user_id = ?"]
+        params: list[Any] = [user_id]
+        if novel_id:
+            where.append("p.novel_id = ?")
+            params.append(novel_id)
+        with self.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT p.*, n.title AS novel_title, n.cover_url, c.title AS chapter_title
+                FROM {self.table('reading_progress')} p
+                JOIN {self.table('novels')} n ON n.id = p.novel_id
+                LEFT JOIN {self.table('chapters')} c ON c.novel_id = p.novel_id AND c.chapter_number = p.chapter_number
+                WHERE {" AND ".join(where)}
+                ORDER BY p.updated_at DESC
+                LIMIT 1
+                """,
+                tuple(params),
+            ).fetchone()
+        return personal_progress_row(row) if row else None
+
+    def reading_history(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT h.*, n.title AS novel_title, c.title AS chapter_title
+                FROM {self.table('reading_history')} h
+                JOIN {self.table('novels')} n ON n.id = h.novel_id
+                LEFT JOIN {self.table('chapters')} c ON c.novel_id = h.novel_id AND c.chapter_number = h.chapter_number
+                WHERE h.user_id = ?
+                ORDER BY h.created_at DESC
+                LIMIT ?
+                """,
+                (user_id, int(limit)),
+            ).fetchall()
+        return [personal_history_row(row) for row in rows]
+
+    def clear_reading_history(self, user_id: str) -> None:
+        with self.connect() as conn:
+            conn.execute(f"DELETE FROM {self.table('reading_history')} WHERE user_id = ?", (user_id,))
+
+    def bookmarks(self, user_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT b.*, n.title AS novel_title, c.title AS chapter_title
+                FROM {self.table('bookmarks')} b
+                JOIN {self.table('novels')} n ON n.id = b.novel_id
+                LEFT JOIN {self.table('chapters')} c ON c.novel_id = b.novel_id AND c.chapter_number = b.chapter_number
+                WHERE b.user_id = ?
+                ORDER BY b.updated_at DESC
+                """,
+                (user_id,),
+            ).fetchall()
+        return [personal_bookmark_row(row) for row in rows]
+
+    def save_bookmark(self, user_id: str, novel_id: str, chapter_number: int, note: str | None = None) -> dict[str, Any]:
+        now = utc_now()
+        with self.connect() as conn:
+            if self.config.backend == "postgres":
+                conn.execute(
+                    f"""
+                    INSERT INTO {self.table('bookmarks')} (id, user_id, novel_id, chapter_number, note, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, novel_id, chapter_number) DO UPDATE SET
+                        note = excluded.note,
+                        updated_at = excluded.updated_at
+                    """,
+                    (str(uuid.uuid4()), user_id, novel_id, int(chapter_number), note or "", now, now),
+                )
+            else:
+                conn.execute(
+                    f"""
+                    INSERT INTO {self.table('bookmarks')} (user_id, novel_id, chapter_number, note, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, novel_id, chapter_number) DO UPDATE SET
+                        note = excluded.note,
+                        updated_at = excluded.updated_at
+                    """,
+                    (user_id, novel_id, int(chapter_number), note or "", now, now),
+                )
+        return next((item for item in self.bookmarks(user_id) if item["novel_id"] == novel_id and item["chapter_number"] == int(chapter_number)), {})
+
+    def delete_bookmark(self, user_id: str, novel_id: str, chapter_number: int) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                f"DELETE FROM {self.table('bookmarks')} WHERE user_id = ? AND novel_id = ? AND chapter_number = ?",
+                (user_id, novel_id, int(chapter_number)),
+            )
+
+    def favorites(self, user_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT f.user_id, f.novel_id, f.created_at, n.title, n.author, n.cover_url, n.status
+                FROM {self.table('favorites')} f
+                JOIN {self.table('novels')} n ON n.id = f.novel_id
+                WHERE f.user_id = ?
+                ORDER BY f.created_at DESC
+                """,
+                (user_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_favorite(self, user_id: str, novel_id: str, favorite: bool = True) -> dict[str, Any]:
+        with self.connect() as conn:
+            if favorite:
+                conn.execute(
+                    f"""
+                    INSERT INTO {self.table('favorites')} (user_id, novel_id, created_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(user_id, novel_id) DO NOTHING
+                    """,
+                    (user_id, novel_id, utc_now()),
+                )
+            else:
+                conn.execute(f"DELETE FROM {self.table('favorites')} WHERE user_id = ? AND novel_id = ?", (user_id, novel_id))
+        return {"novel_id": novel_id, "favorite": favorite}
+
     def missing_data(self, novel_id: str) -> dict[str, Any]:
         reference_start, reference_end = self.reference_range(novel_id)
         with self.connect() as conn:
@@ -1352,6 +1497,47 @@ def public_novel_row(row: Any) -> dict[str, Any]:
     payload.pop("metadata_json", None)
     payload["remaining_count"] = max(0, int(payload.get("original_count") or 0) - int(payload.get("ai_count") or 0))
     return payload
+
+
+def personal_progress_row(row: Any) -> dict[str, Any]:
+    chapter_number = int(row["chapter_number"])
+    return {
+        "novel_id": row["novel_id"],
+        "novel_title": row["novel_title"],
+        "cover_url": row["cover_url"],
+        "chapter_number": chapter_number,
+        "chapter_title": display_chapter_title(chapter_number, row["chapter_title"]),
+        "source": row["source"],
+        "scroll_percent": float(row["scroll_percent"] or 0),
+        "updated_at": row["updated_at"],
+    }
+
+
+def personal_history_row(row: Any) -> dict[str, Any]:
+    chapter_number = int(row["chapter_number"])
+    return {
+        "novel_id": row["novel_id"],
+        "novel_title": row["novel_title"],
+        "chapter_number": chapter_number,
+        "chapter_title": display_chapter_title(chapter_number, row["chapter_title"]),
+        "source": row["source"],
+        "progress_percent": float(row["progress_percent"] or 0),
+        "created_at": row["created_at"],
+    }
+
+
+def personal_bookmark_row(row: Any) -> dict[str, Any]:
+    chapter_number = int(row["chapter_number"])
+    return {
+        "id": str(row["id"]),
+        "novel_id": row["novel_id"],
+        "novel_title": row["novel_title"],
+        "chapter_number": chapter_number,
+        "chapter_title": display_chapter_title(chapter_number, row["chapter_title"]),
+        "note": row["note"] or "",
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
 
 
 def optional_int(value: Any) -> int | None:
