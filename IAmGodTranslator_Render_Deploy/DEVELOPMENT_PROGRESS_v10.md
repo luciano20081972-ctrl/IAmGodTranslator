@@ -672,3 +672,23 @@ Checkpoint 4 QA:
 - Local SQLite fallback and Postgres-oriented UUID bookmark storage paths are both represented safely.
 - No OpenAI call was made.
 - No translation was started.
+
+## v10.2.0 Checkpoint 5 - Premium Library, Novel, and Reader Experience
+
+Completed:
+
+- Added a real `#/novel/{novel_id}` detail page with cover hero, summary, progress, stats, Continue Reading, Chapters, and authorized Translate/Edit actions.
+- Updated novel cards to open the novel detail workspace and use favorite-aware actions.
+- Added Continue Reading and Add Novel commands to the command palette with permission-aware visibility.
+- Added Reader Zen mode, Reader Settings shortcut, Bookmark button, Back to Novel, and keyboard shortcuts for previous/next chapter, Zen mode, bookmark, and font size.
+- Added responsive visual styling for novel hero, recent chapter links, Continue Reading, and Zen mode.
+- Kept public users away from visible Translate/Recovery actions while preserving server-side authorization.
+
+Checkpoint 5 QA:
+
+- Python syntax check passed for all app modules.
+- JavaScript syntax check passed.
+- Fixture smoke test passed for `/api/health`, `/api/novels`, `/api/novels/i-am-god`, `/api/novels/i-am-god/library`, and AI Reader chapter loading.
+- SPA asset version stayed at `10.2.0`.
+- No OpenAI call was made.
+- No translation was started.

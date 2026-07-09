@@ -16,6 +16,7 @@ const state = {
   pageSize: 50,
   source: ["ai", "reference", "original"].includes(localStorage.getItem("gt-reader-source")) ? localStorage.getItem("gt-reader-source") : "ai",
   fontSize: Number(localStorage.getItem("gt-reader-font") || 19),
+  zen: false,
   admin: false,
   role: "guest",
   authConfig: null,
@@ -66,6 +67,7 @@ function route() {
   const params = new URLSearchParams(query);
   updateNav(parts[0] || "library");
   if (parts[0] === "reader" && parts[1] && parts[2]) return openReader(parts[1], Number(parts[2]), parts[3] || state.source);
+  if (parts[0] === "novel" && parts[1]) return openNovelDetail(parts[1]);
   if (parts[0] === "chapters" && parts[1]) return openChapters(parts[1]);
   if (parts[0] === "translate") return openTranslate(parts[1] || state.currentNovelId, params);
   if (parts[0] === "recovery") return openRecovery(parts[1] || state.currentNovelId);
@@ -267,7 +269,7 @@ function renderNovelCard(novel) {
   const favorite = favoriteIds().has(novel.id);
   return `
     <article class="novel-card">
-      <a class="cover" href="#/chapters/${encodeURIComponent(novel.id)}">
+      <a class="cover" href="#/novel/${encodeURIComponent(novel.id)}">
         ${novel.cover_url ? `<img src="${escapeAttr(novel.cover_url)}" alt="">` : `<span>${escapeHtml(initials(novel.title || novel.id))}</span>`}
       </a>
       <div class="novel-card-body">
@@ -283,12 +285,49 @@ function renderNovelCard(novel) {
           ${metric("Remaining", novel.remaining_count)}
         </div>
         <div class="actions">
-          <a class="button primary" href="#/chapters/${encodeURIComponent(novel.id)}">Open</a>
+          <a class="button primary" href="#/novel/${encodeURIComponent(novel.id)}">Open</a>
           <a class="button" href="#/reader/${encodeURIComponent(novel.id)}/1/${state.source}">Read</a>
           ${state.admin ? `<a class="button" href="#/translate/${encodeURIComponent(novel.id)}">Translate</a>` : ""}
         </div>
       </div>
     </article>`;
+}
+
+async function openNovelDetail(novelId) {
+  setLoading("Opening novel...");
+  try {
+    state.currentNovelId = novelId;
+    localStorage.setItem("gt-current-novel", novelId);
+    await loadNovels();
+    const detail = await api(`/api/novels/${encodeURIComponent(novelId)}`);
+    const library = await api(`/api/novels/${encodeURIComponent(novelId)}/library?limit=8`);
+    const novel = detail.novel || state.novels.find((item) => item.id === novelId) || {};
+    const pct = progress(novel);
+    const personal = await loadPersonalHome(true);
+    const current = personal?.continue_reading?.novel_id === novelId ? personal.continue_reading : null;
+    app.innerHTML = `
+      <section class="novel-hero">
+        <div class="hero-cover">${novel.cover_url ? `<img src="${escapeAttr(novel.cover_url)}" alt="">` : `<span>${escapeHtml(initials(novel.title || novel.id))}</span>`}</div>
+        <div class="hero-copy">
+          <p class="eyebrow">${escapeHtml(novel.status || "Active")}</p>
+          <h1>${escapeHtml(novel.title || novel.id)}</h1>
+          <p>${escapeHtml(novel.summary || "A database-first GodTranslator novel workspace.")}</p>
+          <div class="mini-progress"><span style="width:${pct}%"></span></div>
+          <div class="metric-grid">${metric("Chapters", novel.chapter_count)}${metric("Original", novel.original_count)}${metric("Reference", novel.reference_count)}${metric("AI", novel.ai_count)}${metric("Remaining", novel.remaining_count)}</div>
+          <div class="actions">
+            <a class="button primary" href="${current ? `#/reader/${current.novel_id}/${current.chapter_number}/${current.source}` : `#/reader/${novel.id}/1/${state.source}`}">Continue Reading</a>
+            <a class="button" href="#/chapters/${novel.id}">Chapters</a>
+            ${state.admin ? `<a class="button" href="#/translate/${novel.id}">Translate</a><a class="button" href="#/novels">Edit</a>` : ""}
+          </div>
+        </div>
+      </section>
+      <section class="split-panels">
+        <div class="panel"><h2>Overview</h2><p class="muted">${escapeHtml(novel.author || "Unknown author")}</p><p>AI progress is ${pct}% based on readable Original and AI chapter text.</p></div>
+        <div class="panel"><h2>Recent Chapters</h2>${(library.chapters || []).map((chapter) => `<a class="chapter-link" href="#/reader/${novel.id}/${chapter.chapter_number}/${state.source}"><strong>Chapter ${chapter.chapter_number}</strong><span>${escapeHtml(chapter.title)}</span></a>`).join("") || `<p class="empty-state">No chapters found.</p>`}</div>
+      </section>`;
+  } catch (error) {
+    setError(error.message);
+  }
 }
 
 async function openNovels() {
@@ -424,10 +463,11 @@ function renderReader(novelId, chapterNumber, source, payload) {
   const previous = neighborChapter(chapterNumber, -1);
   const next = neighborChapter(chapterNumber, 1);
   document.documentElement.style.setProperty("--reader-font", `${state.fontSize}px`);
+  document.body.dataset.zen = state.zen ? "on" : "off";
   app.innerHTML = `
-    <section class="reader-panel">
-      <div class="reader-nav"><a class="button" href="#/chapters/${novelId}">Back to Chapters</a><a class="button" href="#/library">Library</a><div class="spacer"></div><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous</button><select id="chapterPicker">${state.chapters.map((c) => `<option value="${c.chapter_number}" ${c.chapter_number === chapterNumber ? "selected" : ""}>Chapter ${c.chapter_number}</option>`).join("")}</select><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next</button></div>
-      <div class="reader-tabs">${["ai", "reference", "original"].map((item) => `<button data-source="${item}" class="${item === source ? "active" : ""}">${sourceLabels[item]}</button>`).join("")}<button id="bookmarkChapter" type="button">Bookmark</button><label>Font <input id="fontSize" type="range" min="16" max="25" value="${state.fontSize}"></label></div>
+    <section class="reader-panel ${state.zen ? "zen" : ""}">
+      <div class="reader-nav"><a class="button" href="#/chapters/${novelId}">Back to Chapters</a><a class="button" href="#/novel/${novelId}">Novel</a><a class="button" href="#/library">Library</a><div class="spacer"></div><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous</button><select id="chapterPicker">${state.chapters.map((c) => `<option value="${c.chapter_number}" ${c.chapter_number === chapterNumber ? "selected" : ""}>Chapter ${c.chapter_number}</option>`).join("")}</select><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next</button></div>
+      <div class="reader-tabs">${["ai", "reference", "original"].map((item) => `<button data-source="${item}" class="${item === source ? "active" : ""}">${sourceLabels[item]}</button>`).join("")}<button id="bookmarkChapter" type="button">Bookmark</button><button id="zenToggle" type="button">${state.zen ? "Exit Zen" : "Zen"}</button><a class="button" href="#/settings/reader">Reader Settings</a><label>Font <input id="fontSize" type="range" min="16" max="25" value="${state.fontSize}"></label></div>
       <header class="reader-heading"><span>${sourceLabels[source]}</span><h1>Chapter ${chapterNumber}</h1><p>${escapeHtml(payload.title || `Chapter ${chapterNumber}`)}</p></header>
       <article class="reader-text">${renderReaderText(payload, source)}</article>
       <div class="reader-bottom"><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous Chapter</button><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next Chapter</button></div>
@@ -437,6 +477,7 @@ function renderReader(novelId, chapterNumber, source, payload) {
   document.querySelectorAll("[data-source]").forEach((button) => button.addEventListener("click", () => { window.location.hash = `#/reader/${novelId}/${chapterNumber}/${button.dataset.source}`; }));
   document.querySelector("#fontSize").addEventListener("input", (event) => { state.fontSize = Number(event.target.value); localStorage.setItem("gt-reader-font", String(state.fontSize)); document.documentElement.style.setProperty("--reader-font", `${state.fontSize}px`); });
   document.querySelector("#bookmarkChapter").addEventListener("click", () => saveBookmark(novelId, chapterNumber));
+  document.querySelector("#zenToggle").addEventListener("click", () => { state.zen = !state.zen; renderReader(novelId, chapterNumber, source, payload); });
   saveProgressDebounced(novelId, chapterNumber, source, 0);
   document.querySelector(".reader-text")?.addEventListener("scroll", debounce(() => saveProgressDebounced(novelId, chapterNumber, source, readerScrollPercent()), 900));
 }
@@ -953,8 +994,25 @@ function bindShellControls() {
       openCommandPalette();
     }
     if (!typing && window.location.hash.startsWith("#/reader/")) {
+      const parts = window.location.hash.replace(/^#\/?/, "").split("/");
+      const novelId = parts[1];
+      const chapter = Number(parts[2]);
       if (event.key === "+") adjustReaderFont(1);
       if (event.key === "-") adjustReaderFont(-1);
+      if (event.key === "ArrowLeft") {
+        const previous = neighborChapter(chapter, -1);
+        if (previous) window.location.hash = `#/reader/${novelId}/${previous}/${state.source}`;
+      }
+      if (event.key === "ArrowRight") {
+        const next = neighborChapter(chapter, 1);
+        if (next) window.location.hash = `#/reader/${novelId}/${next}/${state.source}`;
+      }
+      if (event.key.toLowerCase() === "f") {
+        state.zen = !state.zen;
+        document.body.dataset.zen = state.zen ? "on" : "off";
+        document.querySelector(".reader-panel")?.classList.toggle("zen", state.zen);
+      }
+      if (event.key.toLowerCase() === "b") saveBookmark(novelId, chapter);
     }
   });
 }
@@ -971,10 +1029,12 @@ function renderCommandResults() {
   const query = (commandInput?.value || "").trim().toLowerCase();
   const commands = [
     ["Go to Library", "#/library", true],
+    ["Continue Reading", state.personal?.continue_reading ? `#/reader/${state.personal.continue_reading.novel_id}/${state.personal.continue_reading.chapter_number}/${state.personal.continue_reading.source}` : "#/library", Boolean(state.personal?.continue_reading)],
     ["Open Chapters", `#/chapters/${state.currentNovelId}`, true],
     ["Open Settings", "#/settings/appearance", true],
     ["Open Translate", `#/translate/${state.currentNovelId}`, state.admin],
     ["Manage Novels", "#/novels", state.admin],
+    ["Add Novel", "#/novels", state.admin],
     ["Open Recovery", `#/recovery/${state.currentNovelId}`, state.admin],
     ["Open Admin", "#/admin", state.admin],
   ];
