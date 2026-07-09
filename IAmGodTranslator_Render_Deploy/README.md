@@ -37,6 +37,7 @@ Restored workflows:
 - Recovery workspace from v10.0.6 for safe Reference preview/import.
 - Admin dashboard with system overview, database health, missing data, translation jobs, import jobs, and database-first backup export.
 - v10.2 shell with authorization-aware navigation, global search/command palette, job/account/settings controls, and local guest personalization.
+- Supabase Auth foundation for email/password, Google OAuth, account profile discovery, and database-backed preferences when configured.
 
 ## Translation Safety
 
@@ -84,11 +85,29 @@ DATABASE_URL
 DB_SCHEMA=godtranslator_v10
 PYTHON_VERSION=3.12.7
 ADMIN_PASSWORD
+ADMIN_EMAILS
+AUTH_ENABLED=true
+SUPABASE_URL
+SUPABASE_PUBLISHABLE_KEY
+SUPABASE_AUTH_REDIRECT_URL
 OPENAI_API_KEY
 OPENAI_MODEL=gpt-4o-mini
 ```
 
 Use the Supabase pooled Postgres connection string for `DATABASE_URL`. `DB_SCHEMA` defaults to `godtranslator_v10`.
+
+## Supabase Auth
+
+Public reading works for guests. If Supabase Auth variables are missing, the app shows that account features are not configured and continues to run.
+
+Configure Supabase Auth with:
+
+- Email/password enabled.
+- Google provider enabled when using Continue with Google.
+- Local redirect URL: `http://127.0.0.1:8001/auth/callback`
+- Production redirect URL: `https://iamgodtranslator.onrender.com/auth/callback`
+
+Only publishable Supabase config is sent to the browser. Do not expose `DATABASE_URL`, service-role keys, Google OAuth secret, `ADMIN_PASSWORD`, or `ADMIN_EMAILS`.
 
 ## Recovery
 

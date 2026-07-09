@@ -18,6 +18,9 @@ const state = {
   fontSize: Number(localStorage.getItem("gt-reader-font") || 19),
   admin: false,
   role: "guest",
+  authConfig: null,
+  account: null,
+  supabaseClient: null,
   lastEstimate: null,
   preferences: loadPreferences(),
 };
@@ -34,9 +37,10 @@ const chapterViews = [
 ];
 
 async function api(path, options = {}) {
+  const token = await getAccessToken();
   const response = await fetch(path, {
     credentials: "same-origin",
-    headers: {"Accept": "application/json", ...(options.headers || {})},
+    headers: {"Accept": "application/json", ...(token ? {"Authorization": `Bearer ${token}`} : {}), ...(options.headers || {})},
     ...options,
   });
   const text = await response.text();
@@ -66,6 +70,7 @@ function route() {
   if (parts[0] === "recovery") return openRecovery(parts[1] || state.currentNovelId);
   if (parts[0] === "novels") return openNovels();
   if (parts[0] === "settings") return openSettings(parts[1] || "appearance");
+  if (["account", "login", "signup", "forgot-password", "reset-password"].includes(parts[0])) return openSettings("account", parts[0]);
   if (parts[0] === "admin") return openAdmin();
   return openLibrary();
 }
@@ -91,8 +96,8 @@ function renderNav() {
   ];
   nav.innerHTML = links.filter(([, , , allowed]) => allowed).map(([key, label, href]) => `<a data-nav="${key}" href="${href}">${label}</a>`).join("");
   if (accountBtn) {
-    accountBtn.textContent = state.admin ? "Admin" : "Guest";
-    accountBtn.href = state.admin ? "#/admin" : "#/settings/account";
+    accountBtn.textContent = state.account?.display_name || state.account?.email || (state.admin ? "Admin" : "Guest");
+    accountBtn.href = "#/account";
   }
 }
 
@@ -108,12 +113,49 @@ async function refreshSession() {
   try {
     const payload = await api("/api/admin/session");
     state.admin = Boolean(payload.admin);
-    state.role = state.admin ? "admin" : "guest";
+    state.role = payload.role || (state.admin ? "admin" : "guest");
   } catch {
     state.admin = false;
     state.role = "guest";
   }
   renderNav();
+}
+
+async function loadAuth() {
+  try {
+    state.authConfig = await api("/api/auth/config");
+    if (state.authConfig.configured && window.supabase?.createClient) {
+      state.supabaseClient = window.supabase.createClient(state.authConfig.supabase_url, state.authConfig.supabase_publishable_key);
+      state.supabaseClient.auth.onAuthStateChange(() => refreshAccount());
+    }
+    await refreshAccount();
+  } catch {
+    state.authConfig = {configured: false};
+  }
+}
+
+async function refreshAccount() {
+  try {
+    const payload = await api("/api/account/me");
+    state.account = payload.authenticated ? payload.user : null;
+    if (payload.preferences && Object.keys(payload.preferences).length) {
+      state.preferences = {...state.preferences, ...payload.preferences};
+      localStorage.setItem("gt-preferences", JSON.stringify(state.preferences));
+      applyPreferences();
+    }
+  } catch {
+    state.account = null;
+  }
+}
+
+async function getAccessToken() {
+  if (!state.supabaseClient) return null;
+  try {
+    const {data} = await state.supabaseClient.auth.getSession();
+    return data?.session?.access_token || null;
+  } catch {
+    return null;
+  }
 }
 
 async function loadNovels(force = false) {
@@ -506,7 +548,7 @@ async function openAdmin() {
   }
 }
 
-function openSettings(section = "appearance") {
+function openSettings(section = "appearance", intent = "") {
   const pref = state.preferences;
   app.innerHTML = `
     ${pageHeader("Settings", "Personalize GodTranslator for reading, focus, and everyday use.", [["Theme", pref.theme], ["Density", pref.density], ["Motion", pref.reduceMotion ? "Reduced" : "Standard"]])}
@@ -516,9 +558,10 @@ function openSettings(section = "appearance") {
         <a class="${section === "reader" ? "active" : ""}" href="#/settings/reader">Reader</a>
         <a class="${section === "account" ? "active" : ""}" href="#/settings/account">Account</a>
       </nav>
-      ${section === "reader" ? renderReaderSettings(pref) : section === "account" ? renderAccountSettings() : renderAppearanceSettings(pref)}
+      ${section === "reader" ? renderReaderSettings(pref) : section === "account" ? renderAccountSettings(intent) : renderAppearanceSettings(pref)}
     </section>`;
   document.querySelectorAll("[data-pref]").forEach((field) => field.addEventListener("input", savePreferenceFromField));
+  if (section === "account") bindAccountControls();
   document.querySelector("#resetPrefs")?.addEventListener("click", () => {
     state.preferences = defaultPreferences();
     localStorage.setItem("gt-preferences", JSON.stringify(state.preferences));
@@ -554,11 +597,33 @@ function renderReaderSettings(pref) {
   </section>`;
 }
 
-function renderAccountSettings() {
-  return `<section class="panel">
-    <h2>Account</h2>
-    <p class="muted">Guest reading is available. Supabase account features are introduced in the next checkpoint; until configured, personalization is saved safely in this browser.</p>
-    <div class="actions"><a class="button" href="#/admin">Admin Login</a><a class="button" href="#/library">Back to Library</a></div>
+function renderAccountSettings(intent = "") {
+  if (state.account) {
+    return `<section class="panel account-panel">
+      <h2>Account</h2>
+      <div class="account-card">
+        <div class="avatar">${escapeHtml(initials(state.account.display_name || state.account.email || "U"))}</div>
+        <div><strong>${escapeHtml(state.account.display_name || state.account.email || "Signed in")}</strong><p class="muted">${escapeHtml(state.account.email || "")}</p><span class="badge ok">${escapeHtml(state.account.role || "user")}</span></div>
+      </div>
+      <div class="actions"><button id="signOutBtn" type="button">Sign Out</button><a class="button" href="#/settings/appearance">Personalization</a><a class="button" href="#/admin">Admin Login</a></div>
+    </section>`;
+  }
+  const configured = Boolean(state.authConfig?.configured && state.supabaseClient);
+  const title = intent === "signup" ? "Create Account" : intent === "forgot-password" || intent === "reset-password" ? "Reset Password" : "Sign In";
+  return `<section class="panel account-panel">
+    <h2>${title}</h2>
+    ${configured ? "" : `<p class="empty-state">Account features are not configured. Public reading and local personalization still work.</p>`}
+    <form id="authForm" class="form-grid">
+      <label>Email<input id="authEmail" type="email" autocomplete="email" ${configured ? "" : "disabled"}></label>
+      <label>Password<input id="authPassword" type="password" autocomplete="current-password" ${configured ? "" : "disabled"}></label>
+      <div class="actions wide">
+        <button class="primary" id="signInBtn" type="button" ${configured ? "" : "disabled"}>Sign In</button>
+        <button id="signUpBtn" type="button" ${configured ? "" : "disabled"}>Create Account</button>
+        <button id="forgotBtn" type="button" ${configured ? "" : "disabled"}>Forgot Password</button>
+        <button id="googleBtn" type="button" ${configured ? "" : "disabled"}>Continue with Google</button>
+      </div>
+    </form>
+    <div class="actions"><a class="button" href="#/admin">Emergency Admin Login</a><a class="button" href="#/library">Back to Library</a></div>
   </section>`;
 }
 
@@ -681,7 +746,66 @@ function savePreferenceFromField(event) {
   state.preferences[key] = value;
   localStorage.setItem("gt-preferences", JSON.stringify(state.preferences));
   applyPreferences();
+  saveRemotePreferences();
   toast("Preferences saved.");
+}
+
+async function saveRemotePreferences() {
+  if (!state.account) return;
+  try {
+    await api("/api/account/preferences", {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({preferences: state.preferences})});
+  } catch {
+    // Local preferences remain valid if the account write fails.
+  }
+}
+
+function bindAccountControls() {
+  document.querySelector("#signInBtn")?.addEventListener("click", () => authEmailPassword("signIn"));
+  document.querySelector("#signUpBtn")?.addEventListener("click", () => authEmailPassword("signUp"));
+  document.querySelector("#forgotBtn")?.addEventListener("click", resetPassword);
+  document.querySelector("#googleBtn")?.addEventListener("click", signInWithGoogle);
+  document.querySelector("#signOutBtn")?.addEventListener("click", signOut);
+}
+
+async function authEmailPassword(mode) {
+  if (!state.supabaseClient) return toast("Account features are not configured.");
+  const email = document.querySelector("#authEmail")?.value;
+  const password = document.querySelector("#authPassword")?.value;
+  if (!email || !password) return toast("Enter email and password.");
+  const result = mode === "signUp"
+    ? await state.supabaseClient.auth.signUp({email, password})
+    : await state.supabaseClient.auth.signInWithPassword({email, password});
+  if (result.error) return toast(result.error.message);
+  await refreshAccount();
+  await refreshSession();
+  openSettings("account");
+  toast(mode === "signUp" ? "Check your email to confirm your account." : "Signed in.");
+}
+
+async function resetPassword() {
+  if (!state.supabaseClient) return toast("Account features are not configured.");
+  const email = document.querySelector("#authEmail")?.value;
+  if (!email) return toast("Enter your email first.");
+  const redirectTo = new URL("#/settings/account", window.location.href).toString();
+  const result = await state.supabaseClient.auth.resetPasswordForEmail(email, {redirectTo});
+  toast(result.error ? result.error.message : "Password reset email sent.");
+}
+
+async function signInWithGoogle() {
+  if (!state.supabaseClient) return toast("Google login is not configured yet.");
+  const redirectTo = state.authConfig?.redirect_url?.startsWith("http") ? state.authConfig.redirect_url : new URL("/auth/callback", window.location.origin).toString();
+  const result = await state.supabaseClient.auth.signInWithOAuth({provider: "google", options: {redirectTo}});
+  if (result.error) toast(result.error.message);
+}
+
+async function signOut() {
+  if (state.supabaseClient) await state.supabaseClient.auth.signOut();
+  state.account = null;
+  state.admin = false;
+  state.role = "guest";
+  renderNav();
+  openSettings("account");
+  toast("Signed out.");
 }
 
 function applyPreferences() {
@@ -775,6 +899,7 @@ window.addEventListener("hashchange", route);
 window.addEventListener("DOMContentLoaded", async () => {
   applyPreferences();
   bindShellControls();
+  await loadAuth();
   await refreshSession();
   await loadNovels().catch(() => {});
   route();

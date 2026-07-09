@@ -618,3 +618,32 @@ QA results:
 - No database write was performed.
 - No OpenAI call was made.
 - No translation was started.
+
+## v10.2.0 Checkpoint 3 - Account and Supabase Auth Foundation
+
+Completed:
+
+- Classified the interrupted Checkpoint 3 work and preserved the existing partial changes.
+- Added additive account tables for profiles, preferences, reading progress/history, bookmarks, favorites, and translation profile foundations in the isolated v10 schema.
+- Added `/api/auth/config` with public Supabase Auth configuration only.
+- Added `/api/account/me` and `/api/account/preferences` with server-side authenticated-user resolution.
+- Added `/auth/callback` so Supabase email/password reset and Google OAuth redirects can return to the app shell.
+- Added Supabase email/password, Google OAuth, password reset, persistent session, and sign-out controls in the Account page.
+- Added polished account route aliases for `#/account`, `#/login`, `#/signup`, `#/forgot-password`, and `#/reset-password`.
+- Kept public reading available when Auth is not configured.
+- Kept `ADMIN_PASSWORD` as an emergency admin fallback and added server-side `ADMIN_EMAILS` role bootstrap.
+
+Checkpoint 3 QA:
+
+- Python syntax check passed for all app modules.
+- JavaScript syntax check passed.
+- FastAPI fixture startup passed.
+- Missing Supabase Auth config returned a guest-safe state and did not crash.
+- `/api/auth/config` did not expose `DATABASE_URL`, service-role keys, admin password, or token values.
+- Guest `/api/account/me` returned guest and anonymous preference save returned 401.
+- Mock Supabase bearer token path created a server-side profile, saved preferences, and honored `ADMIN_EMAILS`.
+- Bad bearer token fell back to guest.
+- Admin password fallback login and session still worked.
+- `/auth/callback` returned the SPA shell.
+- No OpenAI call was made.
+- No translation was started.

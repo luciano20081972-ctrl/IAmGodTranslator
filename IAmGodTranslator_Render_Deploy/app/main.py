@@ -6,7 +6,10 @@ import io
 import json
 import os
 import time
+import urllib.error
+import urllib.request
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +31,15 @@ app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 database = Database()
 
 
+@dataclass(frozen=True)
+class RequestUser:
+    user_id: str
+    email: str | None
+    role: str
+    display_name: str | None = None
+    avatar_url: str | None = None
+
+
 @app.on_event("startup")
 def startup() -> None:
     database.initialize()
@@ -37,6 +49,11 @@ def startup() -> None:
 @app.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
     return HTMLResponse((ROOT / "templates" / "index.html").read_text(encoding="utf-8"))
+
+
+@app.get("/auth/callback", response_class=HTMLResponse)
+def auth_callback() -> HTMLResponse:
+    return index()
 
 
 @app.get("/api/health")
@@ -76,7 +93,48 @@ def admin_logout(response: Response) -> dict[str, object]:
 
 @app.get("/api/admin/session")
 def admin_session(request: Request) -> dict[str, object]:
-    return {"ok": True, "admin": is_admin_request(request)}
+    user = current_user(request)
+    return {"ok": True, "admin": bool(user and user.role == "admin"), "role": user.role if user else "guest"}
+
+
+@app.get("/api/auth/config")
+def auth_config() -> dict[str, object]:
+    url = os.getenv("SUPABASE_URL") or ""
+    key = os.getenv("SUPABASE_PUBLISHABLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or ""
+    enabled = (os.getenv("AUTH_ENABLED") or "true").lower() not in {"0", "false", "no"}
+    configured = bool(enabled and url and key)
+    return {
+        "ok": True,
+        "configured": configured,
+        "supabase_url": url if configured else "",
+        "supabase_publishable_key": key if configured else "",
+        "redirect_url": os.getenv("SUPABASE_AUTH_REDIRECT_URL") or "/auth/callback",
+        "providers": {"email": configured, "google": configured},
+    }
+
+
+@app.get("/api/account/me")
+def account_me(request: Request) -> dict[str, object]:
+    user = current_user(request)
+    if not user:
+        return {"ok": True, "authenticated": False, "role": "guest", "auth": auth_config()}
+    profile = database.ensure_user_profile(user.user_id, user.email, user.role, user.display_name, user.avatar_url)
+    return {
+        "ok": True,
+        "authenticated": True,
+        "user": sanitize_profile(profile),
+        "preferences": database.user_preferences(user.user_id),
+    }
+
+
+@app.put("/api/account/preferences")
+def save_account_preferences(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, object]:
+    user = current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="account_required")
+    preferences = payload.get("preferences") if isinstance(payload.get("preferences"), dict) else payload
+    saved = database.save_user_preferences(user.user_id, preferences)
+    return {"ok": True, "preferences": saved}
 
 
 def require_admin(request: Request) -> None:
@@ -85,6 +143,9 @@ def require_admin(request: Request) -> None:
 
 
 def is_admin_request(request: Request) -> bool:
+    user = current_user(request)
+    if user and user.role == "admin":
+        return True
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
         return False
@@ -105,6 +166,97 @@ def sign_session(timestamp: int) -> str:
 def session_signature(timestamp: int) -> str:
     secret = os.getenv("ADMIN_SESSION_SECRET") or os.getenv("ADMIN_PASSWORD") or "development-only"
     return hmac.new(secret.encode("utf-8"), str(timestamp).encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def current_user(request: Request) -> RequestUser | None:
+    token = bearer_token(request)
+    if token:
+        supabase_user = validate_supabase_token(token)
+        if supabase_user:
+            email = supabase_user.get("email")
+            role = role_for_email(email)
+            profile = database.ensure_user_profile(
+                str(supabase_user["id"]),
+                email,
+                role,
+                supabase_user.get("user_metadata", {}).get("name") or supabase_user.get("user_metadata", {}).get("full_name"),
+                supabase_user.get("user_metadata", {}).get("avatar_url"),
+            )
+            return RequestUser(
+                user_id=str(profile["user_id"]),
+                email=profile.get("email"),
+                role=role_for_profile(profile, email),
+                display_name=profile.get("display_name"),
+                avatar_url=profile.get("avatar_url"),
+            )
+    if valid_admin_cookie(request):
+        return RequestUser(user_id="admin-password", email=None, role="admin", display_name="Admin")
+    return None
+
+
+def bearer_token(request: Request) -> str | None:
+    header = request.headers.get("authorization") or request.headers.get("Authorization") or ""
+    if not header.lower().startswith("bearer "):
+        return None
+    return header.split(" ", 1)[1].strip() or None
+
+
+def validate_supabase_token(token: str) -> dict[str, Any] | None:
+    url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+    key = os.getenv("SUPABASE_PUBLISHABLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or ""
+    if not url or not key:
+        return None
+    request = urllib.request.Request(
+        f"{url}/auth/v1/user",
+        headers={"apikey": key, "Authorization": f"Bearer {token}", "Accept": "application/json"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
+        return None
+
+
+def valid_admin_cookie(request: Request) -> bool:
+    token = request.cookies.get(SESSION_COOKIE)
+    if not token:
+        return False
+    try:
+        timestamp_text, signature = token.split(".", 1)
+        timestamp = int(timestamp_text)
+    except Exception:
+        return False
+    if time.time() - timestamp > SESSION_TTL_SECONDS:
+        return False
+    return hmac.compare_digest(signature, session_signature(timestamp))
+
+
+def role_for_email(email: str | None) -> str:
+    admin_emails = {item.strip().lower() for item in (os.getenv("ADMIN_EMAILS") or "").split(",") if item.strip()}
+    if email and email.lower() in admin_emails:
+        return "admin"
+    return "user"
+
+
+def role_for_profile(profile: dict[str, Any], email: str | None) -> str:
+    if role_for_email(email) == "admin":
+        return "admin"
+    role = str(profile.get("role") or "user").lower()
+    return role if role in {"user", "translator", "admin"} else "user"
+
+
+def sanitize_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "user_id": profile.get("user_id"),
+        "email": profile.get("email"),
+        "display_name": profile.get("display_name"),
+        "avatar_url": profile.get("avatar_url"),
+        "preferred_language": profile.get("preferred_language"),
+        "role": profile.get("role") or "user",
+        "created_at": profile.get("created_at"),
+        "updated_at": profile.get("updated_at"),
+    }
 
 
 @app.get("/api/novels")

@@ -110,6 +110,13 @@ class Database:
         translation_job_items = self.table("translation_job_items")
         import_jobs = self.table("import_jobs")
         import_job_items = self.table("import_job_items")
+        user_profiles = self.table("user_profiles")
+        user_preferences = self.table("user_preferences")
+        reading_progress = self.table("reading_progress")
+        reading_history = self.table("reading_history")
+        bookmarks = self.table("bookmarks")
+        favorites = self.table("favorites")
+        translation_profiles = self.table("translation_profiles")
         chapters_novel_chapter = self.index("chapters_novel_chapter")
         chapters_missing_ai = self.index("chapters_missing_ai")
         if self.config.backend == "postgres":
@@ -223,6 +230,73 @@ class Database:
             created_at {ts_type} NOT NULL,
             updated_at {ts_type} NOT NULL,
             UNIQUE (job_id, chapter_number)
+        );
+
+        CREATE TABLE IF NOT EXISTS {user_profiles} (
+            user_id TEXT PRIMARY KEY,
+            email TEXT,
+            display_name TEXT,
+            avatar_url TEXT,
+            preferred_language TEXT,
+            role TEXT NOT NULL DEFAULT 'user',
+            created_at {ts_type} NOT NULL,
+            updated_at {ts_type} NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS {user_preferences} (
+            user_id TEXT PRIMARY KEY,
+            preferences_json TEXT NOT NULL,
+            created_at {ts_type} NOT NULL,
+            updated_at {ts_type} NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS {reading_progress} (
+            user_id TEXT NOT NULL,
+            novel_id TEXT NOT NULL REFERENCES {novels}(id) ON DELETE CASCADE,
+            chapter_number INTEGER NOT NULL,
+            source TEXT NOT NULL DEFAULT 'ai',
+            scroll_percent {numeric_type} NOT NULL DEFAULT 0,
+            updated_at {ts_type} NOT NULL,
+            PRIMARY KEY (user_id, novel_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS {reading_history} (
+            id {id_type},
+            user_id TEXT NOT NULL,
+            novel_id TEXT NOT NULL REFERENCES {novels}(id) ON DELETE CASCADE,
+            chapter_number INTEGER NOT NULL,
+            source TEXT NOT NULL DEFAULT 'ai',
+            progress_percent {numeric_type} NOT NULL DEFAULT 0,
+            created_at {ts_type} NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS {bookmarks} (
+            id {id_type},
+            user_id TEXT NOT NULL,
+            novel_id TEXT NOT NULL REFERENCES {novels}(id) ON DELETE CASCADE,
+            chapter_number INTEGER NOT NULL,
+            note TEXT,
+            created_at {ts_type} NOT NULL,
+            updated_at {ts_type} NOT NULL,
+            UNIQUE (user_id, novel_id, chapter_number)
+        );
+
+        CREATE TABLE IF NOT EXISTS {favorites} (
+            user_id TEXT NOT NULL,
+            novel_id TEXT NOT NULL REFERENCES {novels}(id) ON DELETE CASCADE,
+            created_at {ts_type} NOT NULL,
+            PRIMARY KEY (user_id, novel_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS {translation_profiles} (
+            id {uuid_type},
+            user_id TEXT,
+            name TEXT NOT NULL,
+            settings_json TEXT NOT NULL,
+            is_shared INTEGER NOT NULL DEFAULT 0,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            created_at {ts_type} NOT NULL,
+            updated_at {ts_type} NOT NULL
         );
         """
 
@@ -1027,6 +1101,59 @@ class Database:
                 f"UPDATE {self.table('translation_job_items')} SET status = 'pending', error = 'interrupted_after_restart', updated_at = ? WHERE status = 'running'",
                 (utc_now(),),
             )
+
+    def user_profile(self, user_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(f"SELECT * FROM {self.table('user_profiles')} WHERE user_id = ?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+    def ensure_user_profile(self, user_id: str, email: str | None, role: str = "user", display_name: str | None = None, avatar_url: str | None = None) -> dict[str, Any]:
+        existing = self.user_profile(user_id)
+        role_to_save = existing.get("role") if existing else role
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO {self.table('user_profiles')} (
+                    user_id, email, display_name, avatar_url, preferred_language, role, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    email = excluded.email,
+                    display_name = COALESCE(excluded.display_name, display_name),
+                    avatar_url = COALESCE(excluded.avatar_url, avatar_url),
+                    role = excluded.role,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, email, display_name, avatar_url, role_to_save, now, now),
+            )
+        return self.user_profile(user_id) or {}
+
+    def user_preferences(self, user_id: str) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute(f"SELECT preferences_json FROM {self.table('user_preferences')} WHERE user_id = ?", (user_id,)).fetchone()
+        if not row:
+            return {}
+        try:
+            return json.loads(row["preferences_json"] or "{}")
+        except Exception:
+            return {}
+
+    def save_user_preferences(self, user_id: str, preferences: dict[str, Any]) -> dict[str, Any]:
+        now = utc_now()
+        payload = json.dumps(preferences, ensure_ascii=False)
+        with self.connect() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO {self.table('user_preferences')} (user_id, preferences_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    preferences_json = excluded.preferences_json,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, payload, now, now),
+            )
+        return self.user_preferences(user_id)
 
     def missing_data(self, novel_id: str) -> dict[str, Any]:
         reference_start, reference_end = self.reference_range(novel_id)
