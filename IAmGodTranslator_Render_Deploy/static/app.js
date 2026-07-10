@@ -6,20 +6,20 @@ const commandResults = document.querySelector("#commandResults");
 const accountBtn = document.querySelector("#accountBtn");
 
 const CACHE_TTL_MS = 45_000;
-let activeRouteKey = window.location.hash || "#/library";
+let activeRouteKey = window.location.hash || "#/home";
 let connectionInterrupted = false;
 let readerScrollHandler = null;
 
 const state = {
   novels: [],
-  currentNovelId: localStorage.getItem("gt-current-novel") || "i-am-god",
+  currentNovelId: localStorage.getItem("gt-current-novel") || "",
   chapters: [],
   chapterTotal: 0,
   chapterView: "all",
   chapterSearch: "",
   chapterOffset: 0,
   pageSize: 50,
-  source: ["ai", "reference", "original"].includes(localStorage.getItem("gt-reader-source")) ? localStorage.getItem("gt-reader-source") : "ai",
+  source: ["ai", "original"].includes(localStorage.getItem("gt-reader-source")) ? localStorage.getItem("gt-reader-source") : "ai",
   fontSize: Number(localStorage.getItem("gt-reader-font") || 19),
   zen: false,
   admin: false,
@@ -111,24 +111,27 @@ function invalidateCache(prefix = "") {
 }
 
 function route() {
-  const [path, query = ""] = (window.location.hash || "#/library").replace(/^#\/?/, "").split("?");
+  const [path, query = ""] = (window.location.hash || "#/home").replace(/^#\/?/, "").split("?");
   const parts = path.split("/").filter(Boolean);
   const params = new URLSearchParams(query);
-  updateNav(parts[0] || "library");
+  updateNav(parts[0] || "home");
+  if (!parts.length || parts[0] === "home") return openHome();
+  if (parts[0] === "continue") return openContinueReading();
   if (parts[0] === "reader" && parts[1] && parts[2]) return openReader(parts[1], Number(parts[2]), parts[3] || state.source);
   if (parts[0] === "novel" && parts[1]) return openNovelDetail(parts[1]);
   if (parts[0] === "compare" && parts[1] && parts[2]) return openCompare(parts[1], Number(parts[2]));
+  if (parts[0] === "activity") return openActivityCenter(parts[1] || "");
   if (parts[0] === "jobs") return openJobCenter(parts[1] || "");
   if (parts[0] === "chapters" && parts[1]) return openChapters(parts[1]);
   if (parts[0] === "translate") return openTranslate(parts[1] || state.currentNovelId, params);
   if (parts[0] === "recovery") return openRecovery(parts[1] || state.currentNovelId);
-  if (parts[0] === "novels") return openNovels();
+  if (parts[0] === "novels") return openNovels(parts[1] || "");
   if (parts[0] === "history") return openHistory();
   if (parts[0] === "bookmarks") return openBookmarks();
   if (parts[0] === "settings") return openSettings(parts[1] || "appearance");
   if (["account", "login", "signup", "forgot-password", "reset-password"].includes(parts[0])) return openSettings("account", parts[0]);
   if (parts[0] === "admin") return openAdmin(parts[1] || localStorage.getItem("gt-last-admin-tab") || "overview");
-  return openLibrary();
+  return openHome();
 }
 
 function updateNav(active) {
@@ -142,20 +145,24 @@ function updateNav(active) {
 
 function renderNav() {
   if (!nav) return;
+  const continueHref = continueReadingHref();
   const links = [
+    ["home", "Home", "#/home", true],
     ["library", "Library", "#/library", true],
-    ["chapters", "Chapters", `#/chapters/${state.currentNovelId}`, true],
-    ["history", "History", "#/history", Boolean(state.account)],
-    ["bookmarks", "Bookmarks", "#/bookmarks", Boolean(state.account)],
+    ["continue", "Continue Reading", continueHref, true],
+    ["activity", activityLabel(), "#/activity", canTranslate()],
     ["translate", "Translate", `#/translate/${state.currentNovelId}`, canTranslate()],
-    ["novels", "Novels", "#/novels", state.admin],
-    ["recovery", "Recovery", `#/recovery/${state.currentNovelId}`, state.admin],
     ["admin", "Admin", "#/admin", state.admin],
   ];
   nav.innerHTML = links.filter(([, , , allowed]) => allowed).map(([key, label, href]) => `<a data-nav="${key}" href="${href}">${label}</a>`).join("");
   if (accountBtn) {
-    accountBtn.textContent = state.account?.display_name || state.account?.email || (state.admin ? "Admin" : "Guest");
+    accountBtn.textContent = state.account?.display_name || state.account?.email || (state.admin ? "Admin Mode" : "Guest");
     accountBtn.href = "#/account";
+  }
+  const jobButton = document.querySelector("#jobCenterBtn");
+  if (jobButton) {
+    jobButton.textContent = canTranslate() ? "Activity" : "Activity";
+    jobButton.dataset.relevant = canTranslate() ? "true" : "false";
   }
 }
 
@@ -167,7 +174,7 @@ function setLoading(label = "Loading...") {
   app.innerHTML = `<section class="state-card"><div class="spinner"></div><p>${escapeHtml(label)}</p></section>`;
 }
 
-function setError(message, action = `<a class="button" href="#/library">Back to Library</a>`) {
+function setError(message, action = `<a class="button" href="#/home">Back Home</a>`) {
   app.innerHTML = `<section class="state-card error"><h2>Something needs attention</h2><p>${escapeHtml(message)}</p><div class="actions">${action}</div></section>`;
 }
 
@@ -239,8 +246,125 @@ async function loadNovels(force = false) {
   state.novels = payload.novels || [];
   if (!state.novels.some((novel) => novel.id === state.currentNovelId) && state.novels[0]) {
     state.currentNovelId = state.novels[0].id;
+    localStorage.setItem("gt-current-novel", state.currentNovelId);
   }
   return state.novels;
+}
+
+async function openHome() {
+  setLoading("Opening home...");
+  try {
+    const novels = await loadNovels(true);
+    const personal = await loadPersonalHome(true);
+    const activeNovels = novels.filter((novel) => !novel.is_archived);
+    const continueItem = normalizedContinueReading(personal?.continue_reading || latestLocalReading());
+    const spotlight = activeNovels[0] || novels[0] || null;
+    const recentRead = (personal?.history?.length ? personal.history : state.recent.chapters || []).slice(0, 5);
+    const updates = [...activeNovels].sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || ""))).slice(0, 6);
+    app.innerHTML = `
+      <section class="home-hero">
+        <div>
+          <p class="eyebrow">GodTranslator</p>
+          <h1>Read, continue, and manage translated novels.</h1>
+          <p>${activeNovels.length === 1 ? "Your catalog has one active novel ready for focused reading." : `${activeNovels.length} active novels are available across the catalog.`}</p>
+          <div class="actions">
+            <a class="button primary" href="${escapeAttr(continueReadingHref(continueItem))}">${continueItem ? "Continue Reading" : "Open Library"}</a>
+            ${spotlight ? `<a class="button" href="#/novel/${encodeURIComponent(spotlight.id)}">Open ${escapeHtml(spotlight.title || "Novel")}</a>` : ""}
+            <a class="button" href="#/settings/appearance">Personalize</a>
+          </div>
+        </div>
+        <div class="home-snapshot">
+          ${metric("Novels", activeNovels.length)}
+          ${metric("Chapters", sum(activeNovels, "chapter_count"))}
+          ${metric("AI", sum(activeNovels, "ai_count"))}
+          ${metric("Needs Translation", sum(activeNovels, "remaining_count"))}
+        </div>
+      </section>
+      ${renderContinueReading(continueItem)}
+      <section class="home-grid">
+        ${renderLibrarySpotlight(spotlight)}
+        ${renderRecentlyRead(recentRead)}
+        ${renderRecentUpdates(updates)}
+        <section class="panel next-action"><h2>Next Action</h2>${renderNextAction(continueItem, spotlight)}</section>
+      </section>`;
+    bindCopyLinks(app);
+    restoreScrollPosition();
+  } catch (error) {
+    setError(error.message);
+  }
+}
+
+function renderLibrarySpotlight(novel) {
+  if (!novel) return `<section class="panel"><h2>Library Spotlight</h2><p class="empty-state">Add a novel from Admin to begin building the catalog.</p></section>`;
+  const pct = progress(novel);
+  return `<section class="panel spotlight-card">
+    <h2>Library Spotlight</h2>
+    <div class="spotlight-row">
+      <a class="mini-cover" href="#/novel/${encodeURIComponent(novel.id)}">${novel.cover_url ? `<img src="${escapeAttr(novel.cover_url)}" alt="">` : `<span>${escapeHtml(initials(novel.title || novel.id))}</span>`}</a>
+      <div><h3>${escapeHtml(novel.title || novel.id)}</h3>${novel.author ? `<p class="muted">${escapeHtml(novel.author)}</p>` : ""}<div class="mini-progress"><span style="width:${pct}%"></span></div><p class="muted">${novel.ai_count || 0} AI chapters from ${novel.original_count || 0} readable originals.</p><div class="actions"><a class="button primary" href="#/novel/${encodeURIComponent(novel.id)}">Open Novel</a><a class="button" href="#/reader/${encodeURIComponent(novel.id)}/1/${safeReaderSource()}">Start Reading</a></div></div>
+    </div>
+  </section>`;
+}
+
+function renderRecentlyRead(items) {
+  return `<section class="panel"><h2>Recently Read</h2><div class="stack-list">${items.map((item) => {
+    const normalized = normalizedContinueReading(item);
+    return normalized ? `<a class="list-row" href="${escapeAttr(continueReadingHref(normalized))}"><strong>${escapeHtml(normalized.novel_title)}</strong><span>Chapter ${normalized.chapter_number} · ${escapeHtml(sourceLabels[normalized.source] || normalized.source)}</span></a>` : "";
+  }).join("") || `<p class="empty-state">Open a chapter to build a recent reading trail.</p>`}</div></section>`;
+}
+
+function renderRecentUpdates(novels) {
+  return `<section class="panel"><h2>Recent Updates</h2><div class="stack-list">${novels.map((novel) => `<a class="list-row" href="#/novel/${encodeURIComponent(novel.id)}"><strong>${escapeHtml(novel.title || novel.id)}</strong><span>${novel.ai_count || 0} AI / ${novel.original_count || 0} Original · ${timeAgo(novel.updated_at)}</span></a>`).join("") || `<p class="empty-state">No catalog updates yet.</p>`}</div></section>`;
+}
+
+function renderNextAction(continueItem, spotlight) {
+  if (continueItem) return `<p class="muted">Resume the latest saved or local reading position.</p><a class="button primary" href="${escapeAttr(continueReadingHref(continueItem))}">Continue Chapter ${continueItem.chapter_number}</a>`;
+  if (spotlight) return `<p class="muted">Start with the first chapter, then GodTranslator will remember where you left off.</p><a class="button primary" href="#/reader/${encodeURIComponent(spotlight.id)}/1/${safeReaderSource()}">Start Reading</a>`;
+  return `<p class="muted">No novels are available yet.</p>${state.admin ? `<a class="button primary" href="#/admin/novels">Add Novel</a>` : `<a class="button" href="#/library">Open Library</a>`}`;
+}
+
+function normalizedContinueReading(item) {
+  if (!item) return null;
+  const novelId = item.novel_id || item.id;
+  const chapterNumber = Number(item.chapter_number);
+  if (!novelId || !chapterNumber) return null;
+  const novel = state.novels.find((entry) => entry.id === novelId) || {};
+  return {
+    novel_id: novelId,
+    novel_title: item.novel_title || item.title || novel.title || novelId,
+    chapter_number: chapterNumber,
+    chapter_title: item.chapter_title || item.label || `Chapter ${chapterNumber}`,
+    source: safeReaderSource(item.source),
+    scroll_percent: Number(item.scroll_percent || item.progress_percent || 0),
+  };
+}
+
+function latestLocalReading() {
+  return (state.recent.chapters || [])[0] || null;
+}
+
+function continueReadingHref(item = normalizedContinueReading(state.personal?.continue_reading || latestLocalReading())) {
+  const progress = normalizedContinueReading(item);
+  if (!progress) return "#/library";
+  return `#/reader/${encodeURIComponent(progress.novel_id)}/${progress.chapter_number}/${safeReaderSource(progress.source)}`;
+}
+
+function openContinueReading() {
+  const href = continueReadingHref();
+  window.location.hash = href === "#/library" ? href : href;
+}
+
+function activityLabel() {
+  return "Activity";
+}
+
+function safeReaderSource(source = state.source) {
+  if (source === "reference" && state.admin) return "reference";
+  return source === "original" ? "original" : "ai";
+}
+
+function readerSourceOptions() {
+  return state.admin ? ["ai", "original", "reference"] : ["ai", "original"];
 }
 
 async function openLibrary() {
@@ -249,13 +373,7 @@ async function openLibrary() {
     const novels = await loadNovels(true);
     const personal = await loadPersonalHome(true);
     app.innerHTML = `
-      ${pageHeader("Library", "A calm command center for reading and translation progress.", [
-        ["Novels", novels.length],
-        ["Chapters", sum(novels, "chapter_count")],
-        ["Original", sum(novels, "original_count")],
-        ["Reference", sum(novels, "reference_count")],
-        ["AI", sum(novels, "ai_count")],
-      ])}
+      ${pageHeader("Library", "Catalog, reading progress, and AI translation availability.", libraryStats(novels))}
       ${renderContinueReading(personal?.continue_reading)}
       <section class="toolbar">
         <input class="search" id="librarySearch" type="search" value="${escapeAttr(state.libraryView.search)}" placeholder="Search novels">
@@ -306,6 +424,7 @@ function renderLibraryCards() {
 }
 
 function renderContinueReading(progress) {
+  progress = normalizedContinueReading(progress);
   if (!progress) {
     return state.account ? `<section class="continue-card"><div><p class="eyebrow">Continue Reading</p><h2>No saved progress yet</h2><p class="muted">Open a chapter and GodTranslator will remember your place.</p></div></section>` : "";
   }
@@ -353,31 +472,44 @@ async function toggleFavorite(event) {
 function renderNovelCard(novel) {
   const pct = progress(novel);
   const favorite = favoriteIds().has(novel.id);
+  const chapterCount = Number(novel.chapter_count || 0);
+  const readLabel = chapterCount ? "Read" : "Open";
   return `
     <article class="novel-card">
       <a class="cover" href="#/novel/${encodeURIComponent(novel.id)}">
-        ${novel.cover_url ? `<img src="${escapeAttr(novel.cover_url)}" alt="">` : `<span>${escapeHtml(initials(novel.title || novel.id))}</span>`}
+        ${novel.cover_url ? `<img src="${escapeAttr(novel.cover_url)}" alt="">` : `<span class="cover-fallback">${escapeHtml(initials(novel.title || novel.id))}</span>`}
       </a>
       <div class="novel-card-body">
         <div class="status-row"><span class="badge ok">${novel.is_archived ? "Archived" : "Active"}</span>${state.account ? `<button class="ghost-btn" data-favorite="${escapeAttr(novel.id)}">${favorite ? "Favorited" : "Favorite"}</button>` : ""}<span>${pct}% AI</span></div>
         <h2>${escapeHtml(novel.title || novel.id)}</h2>
-        <p class="muted">${escapeHtml(novel.author || "Unknown author")}</p>
+        ${novel.author ? `<p class="muted">${escapeHtml(novel.author)}</p>` : ""}
         <div class="mini-progress"><span style="width:${pct}%"></span></div>
         <div class="metric-grid">
           ${metric("Chapters", novel.chapter_count)}
           ${metric("Original", novel.original_count)}
-          ${metric("Reference", novel.reference_count)}
+          ${state.admin ? metric("Reference", novel.reference_count) : ""}
           ${metric("AI", novel.ai_count)}
           ${metric("Remaining", novel.remaining_count)}
         </div>
         <div class="actions">
           <a class="button primary" href="#/novel/${encodeURIComponent(novel.id)}">Open</a>
-          <a class="button" href="#/reader/${encodeURIComponent(novel.id)}/1/${state.source}">Read</a>
+          <a class="button" href="#/reader/${encodeURIComponent(novel.id)}/1/${safeReaderSource()}">${readLabel}</a>
           ${canTranslate() ? `<a class="button" href="#/translate/${encodeURIComponent(novel.id)}">Translate</a>` : ""}
           <details class="more-menu"><summary>More</summary><button type="button" data-copy-link="#/novel/${encodeURIComponent(novel.id)}">Copy Link</button>${state.admin ? `<a class="button" href="#/novels">Admin Edit</a>` : ""}</details>
         </div>
       </div>
     </article>`;
+}
+
+function libraryStats(novels) {
+  const stats = [
+    ["Novels", novels.length],
+    ["Chapters", sum(novels, "chapter_count")],
+    ["Original", sum(novels, "original_count")],
+    ["AI", sum(novels, "ai_count")],
+  ];
+  if (state.admin) stats.splice(3, 0, ["Reference", sum(novels, "reference_count")]);
+  return stats;
 }
 
 async function openNovelDetail(novelId) {
@@ -402,6 +534,13 @@ async function openNovelDetail(novelId) {
     const pct = progress(novel);
     const personal = await loadPersonalHome(true);
     const current = personal?.continue_reading?.novel_id === novelId ? personal.continue_reading : null;
+    const stats = [
+      metric("Chapters", novel.chapter_count),
+      metric("Original", novel.original_count),
+      state.admin ? metric("Reference", novel.reference_count) : "",
+      metric("AI", novel.ai_count),
+      metric("Remaining", novel.remaining_count),
+    ].join("");
     rememberRecent("novels", {id: novelId, label: novel.title || novelId, href: `#/novel/${encodeURIComponent(novelId)}`, at: new Date().toISOString()});
     app.innerHTML = `
       <section class="novel-hero">
@@ -409,20 +548,22 @@ async function openNovelDetail(novelId) {
         <div class="hero-copy">
           <p class="eyebrow">${escapeHtml(novel.status || "Active")}</p>
           <h1>${escapeHtml(novel.title || novel.id)}</h1>
+          ${novel.author ? `<p class="muted">${escapeHtml(novel.author)}</p>` : ""}
           <p>${escapeHtml(novel.summary || "A database-first GodTranslator novel workspace.")}</p>
           <div class="mini-progress"><span style="width:${pct}%"></span></div>
-          <div class="metric-grid">${metric("Chapters", novel.chapter_count)}${metric("Original", novel.original_count)}${metric("Reference", novel.reference_count)}${metric("AI", novel.ai_count)}${metric("Remaining", novel.remaining_count)}</div>
+          <div class="metric-grid">${stats}</div>
           <div class="actions">
-            <a class="button primary" href="${current ? `#/reader/${current.novel_id}/${current.chapter_number}/${current.source}` : `#/reader/${novel.id}/1/${state.source}`}">Continue Reading</a>
+            <a class="button primary" href="${current ? `#/reader/${current.novel_id}/${current.chapter_number}/${safeReaderSource(current.source)}` : `#/reader/${novel.id}/1/${safeReaderSource()}`}">Continue Reading</a>
+            <a class="button" href="#/reader/${novel.id}/1/${safeReaderSource()}">Start Reading</a>
             <a class="button" href="#/chapters/${novel.id}">Chapters</a>
             <button type="button" data-copy-link="#/novel/${encodeURIComponent(novel.id)}">Copy Link</button>
-            ${canTranslate() ? `<a class="button" href="#/translate/${novel.id}">Translate</a>` : ""}${state.admin ? `<a class="button" href="#/novels">Edit</a>` : ""}
           </div>
         </div>
       </section>
+      <nav class="section-tabs"><a class="active" href="#/novel/${encodeURIComponent(novel.id)}">Overview</a><a href="#/chapters/${encodeURIComponent(novel.id)}">Chapters</a>${canTranslate() ? `<a href="#/translate/${encodeURIComponent(novel.id)}">Translation</a>` : ""}${state.admin ? `<a href="#/admin/novels">Admin Tools</a>` : ""}</nav>
       <section class="split-panels">
-        <div class="panel"><h2>Overview</h2><p class="muted">${escapeHtml(novel.author || "Unknown author")}</p><p>AI progress is ${pct}% based on readable Original and AI chapter text.</p></div>
-        <div class="panel"><h2>Recent Chapters</h2>${(library.chapters || []).map((chapter) => `<a class="chapter-link" href="#/reader/${novel.id}/${chapter.chapter_number}/${state.source}"><strong>Chapter ${chapter.chapter_number}</strong><span>${escapeHtml(chapter.title)}</span></a>`).join("") || `<p class="empty-state">No chapters found.</p>`}</div>
+        <div class="panel"><h2>Overview</h2><p>AI progress is ${pct}% based on readable Original and AI chapter text.</p>${Array.isArray(novel.metadata?.tags) && novel.metadata.tags.length ? `<p class="tag-row">${novel.metadata.tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</p>` : ""}</div>
+        <div class="panel"><h2>Recent Chapters</h2>${(library.chapters || []).map((chapter) => `<a class="chapter-link" href="#/reader/${novel.id}/${chapter.chapter_number}/${safeReaderSource()}"><strong>Chapter ${chapter.chapter_number}</strong><span>${escapeHtml(chapter.title)}</span></a>`).join("") || `<p class="empty-state">No chapters found.</p>`}</div>
       </section>`;
     bindCopyLinks(app);
     restoreScrollPosition();
@@ -431,19 +572,14 @@ async function openNovelDetail(novelId) {
   }
 }
 
-async function openNovels() {
+async function openNovels(mode = "") {
   setLoading("Loading novels...");
   try {
     await refreshSession();
     const novels = await loadNovels(true);
     app.innerHTML = `
       ${pageHeader("Novels", "Manage titles, metadata, covers, and archive status.", [["Total", novels.length], ["Active", novels.filter((n) => !n.is_archived).length], ["Archived", novels.filter((n) => n.is_archived).length]])}
-      ${state.admin ? renderNovelForm() : adminNotice()}
-      <section class="table-card">
-        <table><thead><tr><th>Novel</th><th>Status</th><th>Counts</th><th>Actions</th></tr></thead><tbody>
-          ${novels.map((novel) => `<tr><td><strong>${escapeHtml(novel.title)}</strong><br><span>${escapeHtml(novel.id)}</span></td><td>${novel.is_archived ? "Archived" : "Active"}</td><td>${novel.chapter_count || 0} chapters / ${novel.ai_count || 0} AI</td><td class="row-actions"><a class="button" href="#/chapters/${novel.id}">Chapters</a>${state.admin ? `<button data-archive="${novel.id}" data-value="${novel.is_archived ? "false" : "true"}">${novel.is_archived ? "Unarchive" : "Archive"}</button>` : ""}</td></tr>`).join("")}
-        </tbody></table>
-      </section>`;
+      ${state.admin ? renderNovelManagement(novels, mode) : adminNotice()}`;
     document.querySelector("#novelForm")?.addEventListener("submit", saveNovelForm);
     document.querySelector("#novelForm")?.addEventListener("input", () => {
       writeStored("gt-novel-form-draft", Object.fromEntries(new FormData(document.querySelector("#novelForm")).entries()));
@@ -451,10 +587,24 @@ async function openNovels() {
     });
     document.querySelector("#discardNovelDraft")?.addEventListener("click", () => { localStorage.removeItem("gt-novel-form-draft"); openNovels(); });
     document.querySelectorAll("[data-archive]").forEach((button) => button.addEventListener("click", archiveNovel));
+    bindCopyLinks(app);
     restoreScrollPosition();
   } catch (error) {
     setError(error.message);
   }
+}
+
+function renderNovelManagement(novels, mode = "") {
+  const showForm = mode === "add";
+  return `<section class="management-header"><div><h2>Novel Management</h2><p class="muted">Catalog-first administration for covers, status, translation progress, and metadata.</p></div><div class="actions"><a class="button primary" href="#/novels/add">Add Novel</a><a class="button" href="#/library">Open Public Library</a></div></section>
+    ${showForm ? renderNovelForm() : ""}
+    <section class="management-grid">${novels.map((novel) => {
+      const pct = progress(novel);
+      return `<article class="management-card">
+        <div class="mini-cover">${novel.cover_url ? `<img src="${escapeAttr(novel.cover_url)}" alt="">` : `<span>${escapeHtml(initials(novel.title || novel.id))}</span>`}</div>
+        <div><h3>${escapeHtml(novel.title || novel.id)}</h3>${novel.author ? `<p class="muted">${escapeHtml(novel.author)}</p>` : ""}<p><span class="badge ${novel.is_archived ? "missing" : "ok"}">${novel.is_archived ? "Archived" : "Active"}</span></p><div class="mini-progress"><span style="width:${pct}%"></span></div><p class="muted">${novel.chapter_count || 0} chapters · ${novel.ai_count || 0} AI · ${pct}% translated · updated ${timeAgo(novel.updated_at)}</p><div class="actions"><a class="button" href="#/novel/${encodeURIComponent(novel.id)}">Open</a><a class="button" href="#/novels/add">Edit</a><button data-archive="${novel.id}" data-value="${novel.is_archived ? "false" : "true"}">${novel.is_archived ? "Unarchive" : "Archive"}</button><a class="button" href="#/admin/novels">Admin Tools</a></div></div>
+      </article>`;
+    }).join("") || `<p class="empty-state">No novels exist yet.</p>`}</section>`;
 }
 
 function renderNovelForm() {
@@ -470,7 +620,7 @@ function renderNovelForm() {
     <label>Source URL<input name="source_url" value="${escapeAttr(draft.source_url || "")}"></label>
     <label>Reference Source URL<input name="reference_source_url" value="${escapeAttr(draft.reference_source_url || "")}"></label>
     <label>Reference target start<input name="reference_target_start" type="number" min="1" placeholder="1" value="${escapeAttr(draft.reference_target_start || "")}"></label>
-    <label>Reference target end<input name="reference_target_end" type="number" min="1" placeholder="434" value="${escapeAttr(draft.reference_target_end || "")}"></label>
+    <label>Reference target end<input name="reference_target_end" type="number" min="1" placeholder="Last chapter" value="${escapeAttr(draft.reference_target_end || "")}"></label>
     <label>Default model<input name="model" value="${escapeAttr(draft.model || "gpt-4o-mini")}"></label>
     <label class="wide">Summary<textarea name="summary" rows="3">${escapeHtml(draft.summary || "")}</textarea></label>
     <div class="actions wide"><button id="discardNovelDraft" type="button" ${Object.keys(draft).length ? "" : "disabled"}>Discard Draft</button></div>
@@ -502,6 +652,7 @@ async function archiveNovel(event) {
 
 async function openChapters(novelId) {
   restoreChapterState(novelId);
+  if (!state.admin && state.chapterView === "missing-reference") state.chapterView = "all";
   state.currentNovelId = novelId;
   localStorage.setItem("gt-current-novel", novelId);
   setLoading("Loading chapters...");
@@ -524,25 +675,27 @@ async function loadChapters(novelId) {
 function renderChapters(payload) {
   const novel = payload.novel;
   const counts = payload.counts || {};
+  const showReference = state.admin;
+  const stats = [
+    ["Chapters", counts.total_chapter_rows],
+    ["Original", counts.original_readable],
+    ...(showReference ? [["Reference", counts.reference_readable]] : []),
+    ["AI", counts.ai_readable],
+    ["Needs Translation", counts.needs_translation],
+  ];
   rememberRecent("novels", {id: novel.id, label: novel.title || novel.id, href: `#/chapters/${encodeURIComponent(novel.id)}`, at: new Date().toISOString()});
   app.innerHTML = `
-    ${pageHeader(novel.title || novel.id, "Browse chapter availability, translation state, and reader entry points.", [
-      ["Chapters", counts.total_chapter_rows],
-      ["Original", counts.original_readable],
-      ["Reference", counts.reference_readable],
-      ["AI", counts.ai_readable],
-      ["Needs Translation", counts.needs_translation],
-    ])}
+    ${pageHeader(novel.title || novel.id, "Browse chapters and reader entry points.", stats)}
     <section class="toolbar">
       <select id="chapterNovel">${state.novels.map((n) => `<option value="${n.id}" ${n.id === novel.id ? "selected" : ""}>${escapeHtml(n.title)}</option>`).join("")}</select>
       <input class="search" id="chapterSearch" type="search" value="${escapeAttr(state.chapterSearch)}" placeholder="Search chapter number or title">
-      <select id="chapterView">${chapterViews.map(([value, label]) => `<option value="${value}" ${value === state.chapterView ? "selected" : ""}>${label}</option>`).join("")}</select>
-      ${canTranslate() ? `<a class="button" href="#/translate/${novel.id}">Translate</a>` : ""}${state.admin ? `<a class="button" href="#/recovery/${novel.id}">Recovery</a>` : ""}
+      <select id="chapterView">${visibleChapterViews().map(([value, label]) => `<option value="${value}" ${value === state.chapterView ? "selected" : ""}>${label}</option>`).join("")}</select>
+      ${canTranslate() ? `<a class="button" href="#/translate/${novel.id}">Translate</a>` : ""}${state.admin ? `<a class="button" href="#/admin/recovery">Novel Recovery</a>` : ""}
     </section>
     <section class="table-card">
       <div class="table-meta">Showing ${state.chapterTotal ? state.chapterOffset + 1 : 0}-${Math.min(state.chapterOffset + state.pageSize, state.chapterTotal)} of ${state.chapterTotal} chapters</div>
-      <table class="responsive-table"><thead><tr><th>Chapter</th><th>Original</th><th>Reference</th><th>AI</th><th>Status</th><th></th></tr></thead><tbody>
-        ${state.chapters.map((chapter) => `<tr><td data-label="Chapter"><strong>Chapter ${chapter.chapter_number}</strong><br><span>${escapeHtml(chapter.title)}</span></td><td data-label="Original">${badge("Original", chapter.has_original)}</td><td data-label="Reference">${badge("Reference", chapter.has_reference)}</td><td data-label="AI">${badge("AI", chapter.has_ai)}</td><td data-label="Status">${escapeHtml(chapter.translation_status || "")}</td><td data-label="Actions" class="row-actions"><a class="button" href="#/reader/${novel.id}/${chapter.chapter_number}/${state.source}">Read</a><button type="button" data-copy-link="#/reader/${novel.id}/${chapter.chapter_number}/${state.source}">Copy Link</button>${canTranslate() ? `<a class="button" href="#/translate/${novel.id}?chapter=${chapter.chapter_number}">Translate</a><a class="button" href="#/compare/${novel.id}/${chapter.chapter_number}">Compare</a>` : ""}</td></tr>`).join("") || `<tr><td colspan="6">No chapters match this view.</td></tr>`}
+      <table class="responsive-table"><thead><tr><th>Chapter</th><th>Original</th>${showReference ? "<th>Reference</th>" : ""}<th>AI</th><th>Status</th><th></th></tr></thead><tbody>
+        ${state.chapters.map((chapter) => `<tr><td data-label="Chapter"><strong>Chapter ${chapter.chapter_number}</strong><br><span>${escapeHtml(chapter.title)}</span></td><td data-label="Original">${badge("Original", chapter.has_original)}</td>${showReference ? `<td data-label="Reference">${badge("Reference", chapter.has_reference)}</td>` : ""}<td data-label="AI">${badge("AI", chapter.has_ai)}</td><td data-label="Status">${escapeHtml(chapter.translation_status || "")}</td><td data-label="Actions" class="row-actions"><a class="button" href="#/reader/${novel.id}/${chapter.chapter_number}/${safeReaderSource()}">Read</a><button type="button" data-copy-link="#/reader/${novel.id}/${chapter.chapter_number}/${safeReaderSource()}">Copy Link</button>${canTranslate() ? `<a class="button" href="#/translate/${novel.id}?chapter=${chapter.chapter_number}">Translate</a><a class="button" href="#/compare/${novel.id}/${chapter.chapter_number}">Compare</a>` : ""}</td></tr>`).join("") || `<tr><td colspan="${showReference ? 6 : 5}">No chapters match this view.</td></tr>`}
       </tbody></table>
       <div class="pager"><button id="prevPage" ${state.chapterOffset <= 0 ? "disabled" : ""}>Previous</button><button id="nextPage" ${state.chapterOffset + state.pageSize >= state.chapterTotal ? "disabled" : ""}>Next</button></div>
     </section>`;
@@ -553,6 +706,10 @@ function renderChapters(payload) {
   document.querySelector("#nextPage").addEventListener("click", () => { state.chapterOffset += state.pageSize; persistChapterState(novel.id); openChapters(novel.id); });
   bindCopyLinks(app);
   restoreScrollPosition();
+}
+
+function visibleChapterViews() {
+  return state.admin ? chapterViews : chapterViews.filter(([value]) => value !== "missing-reference");
 }
 
 async function openReader(novelId, chapterNumber, requestedSource) {
@@ -566,7 +723,8 @@ async function openReader(novelId, chapterNumber, requestedSource) {
       await cachedApi(`/api/novels/${novelId}/library?limit=5000`, 120_000).then((payload) => { state.chapters = payload.chapters || []; });
     }
     const chapter = state.chapters.find((item) => item.chapter_number === chapterNumber);
-    const source = ["ai", "reference", "original"].includes(requestedSource) ? requestedSource : preferredSource(chapter);
+    const requested = ["ai", "reference", "original"].includes(requestedSource) ? requestedSource : preferredSource(chapter);
+    const source = readerSourceOptions().includes(requested) ? requested : safeReaderSource(preferredSource(chapter));
     state.source = source;
     localStorage.setItem("gt-reader-source", source);
     const payload = await cachedApi(chapterTextPath(novelId, chapterNumber, source), 120_000);
@@ -580,23 +738,30 @@ async function openReader(novelId, chapterNumber, requestedSource) {
 function renderReader(novelId, chapterNumber, source, payload) {
   const previous = neighborChapter(chapterNumber, -1);
   const next = neighborChapter(chapterNumber, 1);
+  const novel = state.novels.find((item) => item.id === novelId) || {};
+  const options = readerSourceOptions();
   rememberRecent("chapters", {novel_id: novelId, chapter_number: chapterNumber, source, label: `Chapter ${chapterNumber}`, href: `#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}`, at: new Date().toISOString()});
   document.documentElement.style.setProperty("--reader-font", `${state.fontSize}px`);
   document.body.dataset.zen = state.zen ? "on" : "off";
   app.innerHTML = `
     <section class="reader-panel ${state.zen ? "zen" : ""}">
-      <div class="reader-nav"><a class="button" href="#/chapters/${novelId}">Back to Chapters</a><a class="button" href="#/novel/${novelId}">Novel</a><a class="button" href="#/library">Library</a><div class="spacer"></div><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous</button><select id="chapterPicker">${state.chapters.map((c) => `<option value="${c.chapter_number}" ${c.chapter_number === chapterNumber ? "selected" : ""}>Chapter ${c.chapter_number}</option>`).join("")}</select><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next</button></div>
-      <div class="reader-tabs">${["ai", "reference", "original"].map((item) => `<button data-source="${item}" class="${item === source ? "active" : ""}">${sourceLabels[item]}</button>`).join("")}<button id="bookmarkChapter" type="button">Bookmark</button><button type="button" data-copy-link="#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}">Copy Link</button><button id="zenToggle" type="button">${state.zen ? "Exit Zen" : "Zen"}</button><a class="button" href="#/settings/reader">Reader Settings</a><label>Font <input id="fontSize" type="range" min="16" max="25" value="${state.fontSize}"></label></div>
-      <header class="reader-heading"><span>${sourceLabels[source]}</span><h1>Chapter ${chapterNumber}</h1><p>${escapeHtml(payload.title || `Chapter ${chapterNumber}`)}</p></header>
+      <div class="reader-nav"><a class="button" href="#/novel/${novelId}">Back to Novel</a><button id="openChapterDrawer" type="button">Chapter List</button><div class="spacer"></div><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous</button><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next</button><button id="bookmarkChapter" type="button">Bookmark</button><button id="zenToggle" type="button">${state.zen ? "Exit Focus" : "Focus"}</button></div>
+      <div class="reader-tabs"><div class="segmented">${options.map((item) => `<button data-source="${item}" class="${item === source ? "active" : ""}">${sourceLabels[item]}</button>`).join("")}</div><label>Text size<input id="fontSize" type="range" min="16" max="25" value="${state.fontSize}"></label><a class="button" href="#/settings/reader">Reader Settings</a><button type="button" data-copy-link="#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}">Copy Link</button></div>
+      ${renderChapterDrawer(novelId, chapterNumber, source)}
+      <header class="reader-heading"><span>${escapeHtml(novel.title || sourceLabels[source])} · ${sourceLabels[source]}</span><h1>Chapter ${chapterNumber}</h1><p>${escapeHtml(payload.title || `Chapter ${chapterNumber}`)}</p></header>
       <article class="reader-text">${renderReaderText(payload, source)}</article>
-      <div class="reader-bottom"><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous Chapter</button><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next Chapter</button></div>
+      <div class="reader-bottom"><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous</button><button id="bottomChapterDrawer" type="button">Chapter List</button><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next</button><button id="backToTop" type="button">Back to Top</button></div>
     </section>`;
   document.querySelectorAll("[data-go]").forEach((button) => button.addEventListener("click", () => { if (button.dataset.go) window.location.hash = `#/reader/${novelId}/${button.dataset.go}/${state.source}`; }));
-  document.querySelector("#chapterPicker").addEventListener("change", (event) => { window.location.hash = `#/reader/${novelId}/${event.target.value}/${state.source}`; });
   document.querySelectorAll("[data-source]").forEach((button) => button.addEventListener("click", () => { window.location.hash = `#/reader/${novelId}/${chapterNumber}/${button.dataset.source}`; }));
   document.querySelector("#fontSize").addEventListener("input", (event) => { state.fontSize = Number(event.target.value); localStorage.setItem("gt-reader-font", String(state.fontSize)); document.documentElement.style.setProperty("--reader-font", `${state.fontSize}px`); });
   document.querySelector("#bookmarkChapter").addEventListener("click", () => saveBookmark(novelId, chapterNumber));
   document.querySelector("#zenToggle").addEventListener("click", () => { state.zen = !state.zen; renderReader(novelId, chapterNumber, source, payload); });
+  document.querySelector("#chapterSearch")?.addEventListener("input", filterChapterDrawer);
+  document.querySelector("#openChapterDrawer")?.addEventListener("click", openChapterDrawer);
+  document.querySelector("#bottomChapterDrawer")?.addEventListener("click", openChapterDrawer);
+  document.querySelector("#backToTop")?.addEventListener("click", () => window.scrollTo({top: 0, behavior: state.preferences.reduceMotion ? "auto" : "smooth"}));
+  document.querySelector(".chapter-drawer .current")?.scrollIntoView({block: "center"});
   bindCopyLinks(app);
   bindReaderProgress(novelId, chapterNumber, source);
   restoreReaderScroll(novelId, chapterNumber, source);
@@ -604,7 +769,40 @@ function renderReader(novelId, chapterNumber, source, payload) {
 
 function renderReaderText(payload, source) {
   if (!payload.ok) return `<div class="empty-state">${escapeHtml(sourceLabels[source])} is not available for this chapter.</div>`;
-  return paragraphs(payload.text).map((line) => `<p>${escapeHtml(line)}</p>`).join("");
+  const lines = paragraphs(payload.text);
+  if (lines.length && isDuplicateChapterHeading(lines[0], payload)) lines.shift();
+  return lines.map((line) => `<p>${escapeHtml(line.replace(/^#{1,6}\s*/, ""))}</p>`).join("");
+}
+
+function renderChapterDrawer(novelId, chapterNumber, source) {
+  return `<details class="chapter-drawer" id="chapterDrawer">
+    <summary>Chapter List</summary>
+    <input id="chapterSearch" type="search" placeholder="Search chapters">
+    <div class="chapter-drawer-list">${state.chapters.map((chapter) => `<a class="${chapter.chapter_number === chapterNumber ? "current" : ""}" href="#/reader/${novelId}/${chapter.chapter_number}/${source}" data-chapter-row><strong>Chapter ${chapter.chapter_number}</strong><span>${escapeHtml(chapter.title || "")}</span><small>${chapter.has_ai ? "AI" : chapter.has_original ? "Original" : "Missing"}</small></a>`).join("")}</div>
+  </details>`;
+}
+
+function filterChapterDrawer(event) {
+  const query = event.target.value.trim().toLowerCase();
+  document.querySelectorAll("[data-chapter-row]").forEach((row) => {
+    row.hidden = query && !row.textContent.toLowerCase().includes(query);
+  });
+}
+
+function openChapterDrawer() {
+  const drawer = document.querySelector("#chapterDrawer");
+  if (!drawer) return;
+  drawer.open = true;
+  drawer.scrollIntoView({block: "start", behavior: state.preferences.reduceMotion ? "auto" : "smooth"});
+  document.querySelector("#chapterSearch")?.focus();
+}
+
+function isDuplicateChapterHeading(line, payload) {
+  const stripped = String(line || "").replace(/^#{1,6}\s*/, "").trim();
+  const normalizedLine = stripped.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const normalizedTitle = String(payload.title || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const chapterPrefix = `chapter ${payload.chapter_number || ""}`.trim();
+  return /^#{1,6}\s*/.test(line) && (normalizedLine === normalizedTitle || (chapterPrefix && normalizedLine.startsWith(chapterPrefix)));
 }
 
 async function saveBookmark(novelId, chapterNumber) {
@@ -825,7 +1023,9 @@ async function estimateTranslation(event) {
   if (!validateTranslateForm()) return toast("Fix the highlighted fields first.");
   const estimate = await api("/api/translation/estimate", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(translatePayload())});
   state.lastEstimate = estimate;
-  document.querySelector("#estimateResult").innerHTML = `<div class="metric-grid">${metric("Selected", estimate.selected_count)}${metric("Eligible", estimate.eligible_count)}${metric("Speed mode", titleCase(estimate.speed_preset || "balanced"))}${metric("Expected workers", estimate.expected_workers || 1)}${metric("Approx duration", durationEstimateText(estimate.duration_estimate))}${metric("Approx cost", `$${Number(estimate.estimated_cost || 0).toFixed(4)}`)}</div><p class="muted">${escapeHtml(estimate.pricing_note)} ${estimate.auto_optimize_speed ? "Speed is being optimized automatically." : ""}</p>`;
+  const missingOriginal = Math.max(0, Number(estimate.selected_count || 0) - Number(estimate.original_readable || 0));
+  const referenceMissing = Math.max(0, Number(estimate.selected_count || 0) - Number(estimate.reference_available || 0));
+  document.querySelector("#estimateResult").innerHTML = `<div class="metric-grid">${metric("Selected", estimate.selected_count)}${metric("Eligible", estimate.eligible_count)}${metric("Already translated", estimate.ai_existing || 0)}${metric("Missing Original", missingOriginal)}${metric("Reference available", estimate.reference_available || 0)}${metric("Reference missing", referenceMissing)}${metric("Speed mode", titleCase(estimate.speed_preset || "balanced"))}${metric("Expected workers", estimate.expected_workers || 1)}${metric("Approx time", durationEstimateText(estimate.duration_estimate))}${metric("Approx cost", `$${Number(estimate.estimated_cost || 0).toFixed(4)}`)}${metric("Budget margin", budgetMarginText(estimate))}</div><p class="muted">${escapeHtml(estimate.pricing_note)} ${estimate.auto_optimize_speed ? "Speed is being optimized automatically." : ""}</p>`;
 }
 
 async function createTranslationJob(event) {
@@ -840,7 +1040,12 @@ async function createTranslationJob(event) {
 }
 
 function renderJobsTable(jobs, focusedJobId = "") {
-  return `<table class="responsive-table"><thead><tr><th>Job</th><th>Status</th><th>Progress</th><th>Activity</th><th>Budget</th><th>Actions</th></tr></thead><tbody>${jobs.map((job) => `<tr class="${focusedJobId === job.id ? "selected-row" : ""}"><td data-label="Job"><a href="#/jobs/${job.id}">${job.id.slice(0, 8)}</a><br><span>${escapeHtml(job.model || "")}</span></td><td data-label="Status">${statusBadge(job.status)}<br><span>${timeAgo(job.updated_at)}</span></td><td data-label="Progress">${job.completed_items || 0}/${job.total_items || 0}<br><span>failed ${job.failed_items || 0}</span></td><td data-label="Activity">${jobActivityText(job)}</td><td data-label="Budget">$${Number(job.actual_cost || 0).toFixed(4)} / $${Number(job.estimated_cost || 0).toFixed(4)}</td><td data-label="Actions" class="row-actions">${jobActions(job)}<button type="button" data-copy-link="#/jobs/${job.id}">Copy Link</button></td></tr>`).join("") || `<tr><td colspan="6">No translation jobs yet.</td></tr>`}</tbody></table>`;
+  return `<table class="responsive-table job-table"><thead><tr><th>Novel</th><th>Status</th><th>Progress</th><th>Current</th><th>Remaining</th><th>Failed</th><th>Workers</th><th>Speed</th><th>ETA</th><th>Budget</th><th>Last activity</th><th>Actions</th></tr></thead><tbody>${jobs.map((job) => {
+    const throughput = jobThroughput(job);
+    const remaining = Math.max(0, Number(job.total_items || 0) - Number(job.completed_items || 0) - Number(job.failed_items || 0));
+    const skipped = Math.max(0, Number(job.total_items || 0) - Number(job.completed_items || 0) - Number(job.failed_items || 0) - remaining);
+    return `<tr class="${focusedJobId === job.id ? "selected-row" : ""}"><td data-label="Novel"><a href="#/jobs/${job.id}">${escapeHtml(job.novel_id || job.id.slice(0, 8))}</a><br><span>${escapeHtml(job.model || "")}</span></td><td data-label="Status">${statusBadge(job.status)}<br><span>${escapeHtml(job.priority || "normal")}</span></td><td data-label="Progress">${job.completed_items || 0}/${job.total_items || 0}</td><td data-label="Current">${job.activity?.current_chapter ? `Chapter ${job.activity.current_chapter}` : "Idle"}</td><td data-label="Remaining">${remaining}</td><td data-label="Failed">${job.failed_items || 0}<br><span>skipped ${skipped}</span></td><td data-label="Workers">${job.activity?.active_workers || 0}</td><td data-label="Speed">${throughput.summary}</td><td data-label="ETA">${throughput.remaining}</td><td data-label="Budget">$${Number(job.actual_cost || 0).toFixed(4)} / $${Number(job.estimated_cost || 0).toFixed(4)}</td><td data-label="Last activity">${timeAgo(job.updated_at)}</td><td data-label="Actions" class="row-actions">${jobActions(job)}<button type="button" data-copy-link="#/jobs/${job.id}">Copy Link</button></td></tr>`;
+  }).join("") || `<tr><td colspan="12">No translation jobs yet.</td></tr>`}</tbody></table>`;
 }
 
 function jobActions(job) {
@@ -882,6 +1087,36 @@ async function openJobCenter(focusedJobId = "") {
     bindCopyLinks(app);
     document.querySelector("#refreshJobs")?.addEventListener("click", () => openJobCenter(focusedJobId));
     restoreScrollPosition();
+  } catch (error) {
+    setError(error.message);
+  }
+}
+
+async function openActivityCenter(focusedJobId = "") {
+  setLoading("Loading activity...");
+  try {
+    if (!canTranslate()) {
+      const personal = await loadPersonalHome(true);
+      app.innerHTML = `${pageHeader("Activity", "Your reading activity.", [["Recent", personal?.history?.length || state.recent.chapters.length || 0]])}
+        <section class="dashboard-grid">${renderRecentlyRead((personal?.history?.length ? personal.history : state.recent.chapters || []).slice(0, 8))}<section class="panel"><h2>Needs Attention</h2><p class="empty-state">No account-visible operational items need attention.</p></section><section class="panel"><h2>Recently Completed</h2><p class="empty-state">Completed operational activity is only shown to authorized roles.</p></section></section>`;
+      return;
+    }
+    const [jobs, imports] = await Promise.all([
+      api("/api/translation/jobs"),
+      state.admin ? api("/api/import-jobs") : Promise.resolve({jobs: []}),
+    ]);
+    const list = jobs.jobs || [];
+    const active = list.filter((job) => ["queued", "running", "paused"].includes(job.status));
+    const attention = list.filter((job) => job.status === "failed" || job.error || Number(job.failed_items || 0) > 0);
+    const completed = list.filter((job) => ["completed", "cancelled"].includes(job.status)).slice(0, 10);
+    app.innerHTML = `${pageHeader("Activity Center", "Operational activity across translation and import work.", [["Active", active.length], ["Needs Attention", attention.length], ["Completed", completed.length]])}
+      ${focusedJobId ? "" : ""}
+      <section class="table-card"><h2>Active</h2>${renderJobsTable(active, focusedJobId)}</section>
+      <section class="table-card"><h2>Needs Attention</h2>${renderJobsTable(attention, focusedJobId)}</section>
+      <section class="table-card"><h2>Recently Completed</h2>${renderJobsTable(completed, focusedJobId)}</section>
+      ${state.admin ? `<section class="table-card"><h2>Import Activity</h2><table><tbody>${(imports.jobs || []).map((job) => `<tr><td>${job.id.slice(0, 8)}</td><td>${escapeHtml(job.target_mode)}</td><td>${escapeHtml(job.status)}</td><td>${timeAgo(job.updated_at)}</td></tr>`).join("") || `<tr><td>No import activity.</td></tr>`}</tbody></table></section>` : ""}`;
+    bindJobButtons();
+    bindCopyLinks(app);
   } catch (error) {
     setError(error.message);
   }
@@ -946,54 +1181,134 @@ async function openAdmin(tab = "overview") {
   await refreshSession();
   if (!state.admin) return renderAdminGate("Admin");
   try {
+    await loadNovels(true);
     rememberRecent("admin", {label: titleCase(tab), href: `#/admin/${tab}`, at: new Date().toISOString()});
     localStorage.setItem("gt-last-admin-tab", tab);
-    const [overview, dbHealth, missing, imports, jobs] = await Promise.all([
+    const [overview, dbHealth, missing, imports, jobs, backupManifest, users] = await Promise.all([
       api("/api/admin/overview"),
       api("/api/admin/db-health"),
       api(`/api/admin/missing/${state.currentNovelId}`),
       api(`/api/import-jobs?novel_id=${state.currentNovelId}`),
       api(`/api/translation/jobs?novel_id=${state.currentNovelId}`),
+      api("/api/admin/backups/manifest"),
+      api("/api/admin/users"),
     ]);
-    const tabs = [["overview", "Overview"], ["database", "Database"], ["jobs", "Translation Jobs"], ["imports", "Import Jobs"], ["missing", "Missing Data"], ["backups", "Backups"], ["diagnostics", "Diagnostics"]];
+    const tabs = [["overview", "Overview"], ["novels", "Novels"], ["translation", "Translation"], ["jobs", "Jobs"], ["backups", "Backups & Recovery"], ["recovery", "Novel Recovery"], ["database", "Database"], ["users", "Users & Roles"], ["diagnostics", "Diagnostics"]];
     app.innerHTML = `
-      ${pageHeader("Admin", "Operational view for database health, jobs, imports, missing data, and exports.", [["Version", APP_VERSION], ["Schema", overview.overview.schema], ["Chapters", overview.overview.chapters], ["Needs Translation", overview.overview.needs_translation]])}
-      <nav class="admin-tabs">${tabs.map(([key, label]) => `<a class="${tab === key ? "active" : ""}" href="#/admin/${key}">${label}</a>`).join("")}</nav>
-      ${renderAdminTab(tab, overview, dbHealth, missing, imports, jobs)}
-      <div class="actions"><button id="logoutBtn">Logout</button><a class="button" href="#/recovery/${state.currentNovelId}">Open Recovery</a></div>`;
+      ${pageHeader("Admin", "Operational workspace for novels, translation, backups, recovery, users, and diagnostics.", [["Version", APP_VERSION], ["Schema", overview.overview.schema], ["Chapters", overview.overview.chapters], ["Needs Translation", overview.overview.needs_translation]])}
+      <section class="admin-workspace">
+        <nav class="admin-tabs">${tabs.map(([key, label]) => `<a class="${tab === key ? "active" : ""}" href="#/admin/${key}">${label}</a>`).join("")}</nav>
+        <div class="admin-content">${renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupManifest, users)}</div>
+      </section>
+      <div class="actions"><button id="logoutBtn">Exit Admin Mode</button></div>`;
     bindJobButtons();
     bindCopyLinks(app);
-    document.querySelector("#logoutBtn").addEventListener("click", async () => { await api("/api/admin/logout", {method: "POST"}); state.admin = false; openAdmin(); });
+    bindAdminWorkspace();
+    document.querySelector("#logoutBtn").addEventListener("click", exitAdminMode);
     restoreScrollPosition();
   } catch (error) {
     setError(error.message);
   }
 }
 
-function renderAdminTab(tab, overview, dbHealth, missing, imports, jobs) {
+function renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupManifest, users) {
   const data = overview.overview || {};
+  if (tab === "novels") return renderNovelManagement(state.novels, "");
+  if (tab === "translation") return `<section class="dashboard-grid"><div class="panel"><h2>Translation Workspace</h2><p class="muted">Configure jobs in the dedicated workspace while Admin keeps operational context here.</p><div class="actions"><a class="button primary" href="#/translate/${state.currentNovelId}">Open Translate</a><a class="button" href="#/admin/jobs">Open Jobs</a></div></div><div class="panel">${metric("Needs Translation", data.needs_translation)}${metric("AI Translations", data.ai)}${metric("Active Jobs", (jobs.jobs || []).filter((job) => ["queued", "running", "paused"].includes(job.status)).length)}</div></section>`;
   if (tab === "database") {
-    return `<section class="dashboard-grid"><div class="panel">${metric("Database", dbHealth.health?.ok === false ? "Unhealthy" : "Connected")}${metric("Schema", data.schema)}${metric("Expected Tables", "Healthy")}${metric("Chapters", data.chapters)}</div><div class="panel"><h2>Technical Details</h2><details><summary>Show details</summary><pre>${escapeHtml(JSON.stringify(dbHealth.health, null, 2))}</pre></details></div></section>`;
+    return `<section class="dashboard-grid"><div class="panel">${metric("Database", dbHealth.health?.reachable ? "Healthy" : "Needs Attention")}${metric("Schema", data.schema)}${metric("Expected Tables", dbHealth.health?.v10_chapters_table_exists ? "Healthy" : "Needs Attention")}${metric("Chapters", data.chapters)}</div><div class="panel"><h2>Technical Details</h2><details><summary>Show details</summary><pre>${escapeHtml(JSON.stringify(dbHealth.health, null, 2))}</pre></details></div></section>`;
   }
-  if (tab === "jobs") return `<section class="table-card"><h2>Translation Jobs</h2>${renderJobsTable(jobs.jobs || [])}</section>`;
-  if (tab === "imports") return `<section class="table-card"><h2>Import Jobs</h2><table><thead><tr><th>Job</th><th>Mode</th><th>Status</th><th>Updated</th></tr></thead><tbody>${(imports.jobs || []).map((job) => `<tr><td>${job.id.slice(0, 8)}</td><td>${escapeHtml(job.target_mode)}</td><td>${escapeHtml(job.status)}</td><td>${escapeHtml(job.updated_at)}</td></tr>`).join("") || `<tr><td colspan="4">No import jobs.</td></tr>`}</tbody></table></section>`;
-  if (tab === "missing") return `<section class="dashboard-grid"><div class="panel"><h2>Missing Data</h2><p class="muted">Reference range: ${escapeHtml(missing.missing.reference_target_range?.start ?? "all")} - ${escapeHtml(missing.missing.reference_target_range?.end ?? "all")}</p>${recoveryList("Missing Original", missing.missing.missing_original)}${recoveryList("Missing Reference", missing.missing.missing_reference)}</div><div class="panel"><h2>Recovery</h2><p>Expected I Am God missing Reference is Chapter 362 only after the target range fix.</p><a class="button" href="#/recovery/${state.currentNovelId}">Open Recovery</a></div></section>`;
-  if (tab === "backups") return `<section class="dashboard-grid"><div class="panel"><h2>Backup & Export</h2><p class="muted">Exports a versioned ZIP from PostgreSQL. Secrets, database URLs, passwords, and Auth tokens are never included.</p><a class="button primary" href="/api/novels/${state.currentNovelId}/backup">Export Novel Backup</a></div><div class="panel"><h2>Contents</h2><p>Novel metadata, chapters, translation jobs, and import metadata from the v10 database source of truth.</p></div></section>`;
+  if (tab === "jobs") return `<section class="table-card"><h2>Job Center</h2>${renderJobsTable(jobs.jobs || [])}</section><section class="table-card"><h2>Import Jobs</h2><table><thead><tr><th>Job</th><th>Mode</th><th>Status</th><th>Updated</th></tr></thead><tbody>${(imports.jobs || []).map((job) => `<tr><td>${job.id.slice(0, 8)}</td><td>${escapeHtml(job.target_mode)}</td><td>${escapeHtml(job.status)}</td><td>${escapeHtml(job.updated_at)}</td></tr>`).join("") || `<tr><td colspan="4">No import jobs.</td></tr>`}</tbody></table></section>`;
+  if (tab === "backups") return renderBackupsRecovery(backupManifest.manifest);
+  if (tab === "recovery") return renderNovelRecoveryAdmin(missing.missing);
+  if (tab === "users") return `<section class="table-card"><h2>Users & Roles</h2><table class="responsive-table"><thead><tr><th>User</th><th>Role</th><th>Updated</th></tr></thead><tbody>${(users.users || []).map((user) => `<tr><td data-label="User"><strong>${escapeHtml(user.display_name || user.email || user.user_id)}</strong><br><span>${escapeHtml(user.email || user.user_id)}</span></td><td data-label="Role">${escapeHtml(user.role || "user")}</td><td data-label="Updated">${timeAgo(user.updated_at)}</td></tr>`).join("") || `<tr><td colspan="3">No application profiles yet.</td></tr>`}</tbody></table></section>`;
   if (tab === "diagnostics") return `<section class="dashboard-grid"><div class="panel">${metric("Version", APP_VERSION)}${metric("DB", dbHealth.health?.ok === false ? "Unhealthy" : "Healthy")}${metric("Schema", data.schema)}${metric("Auth", state.authConfig?.configured ? "Configured" : "Missing")}${metric("OpenAI", "Configured/Missing hidden")}</div><div class="panel"><h2>Details</h2><details><summary>Show sanitized JSON</summary><pre>${escapeHtml(JSON.stringify({overview: data, db: dbHealth.health}, null, 2))}</pre></details></div></section>`;
-  return `<section class="dashboard-grid"><div class="panel">${metric("Application", "GodTranslator")}${metric("Database", dbHealth.health?.ok === false ? "Unhealthy" : "Connected")}${metric("Novels", data.novels)}${metric("Chapters", data.chapters)}</div><div class="panel">${metric("Original", data.original)}${metric("Reference", data.reference)}${metric("AI", data.ai)}${metric("Needs Translation", data.needs_translation)}</div><div class="panel">${metric("Active Jobs", (jobs.jobs || []).filter((job) => ["queued", "running", "paused"].includes(job.status)).length)}${metric("Recent Errors", (jobs.jobs || []).filter((job) => job.error).length)}<a class="button" href="#/admin/jobs">Open Jobs</a></div></section>`;
+  return renderAdminOverview(data, dbHealth, jobs, imports, backupManifest.manifest);
+}
+
+function renderAdminOverview(data, dbHealth, jobs, imports, manifest) {
+  const activeJobs = (jobs.jobs || []).filter((job) => ["queued", "running", "paused"].includes(job.status));
+  const failedJobs = (jobs.jobs || []).filter((job) => job.status === "failed" || job.error);
+  const backupStatus = manifest?.sha256 ? "Protected" : "Needs Attention";
+  return `<section class="dashboard-grid">
+    <div class="panel status-panel"><h2>System Health</h2>${metric("Application", "Healthy")}${metric("Database", dbHealth.health?.reachable ? "Healthy" : "Needs Attention")}${metric("Version", APP_VERSION)}${metric("Schema", data.schema)}</div>
+    <div class="panel">${metric("Novels", data.novels)}${metric("Chapters", data.chapters)}${metric("AI Translations", data.ai)}${metric("Needs Translation", data.needs_translation)}</div>
+    <div class="panel">${metric("Active Jobs", activeJobs.length ? "Running" : 0)}${metric("Failed Jobs", failedJobs.length ? "Failed" : 0)}${metric("Imports", (imports.jobs || []).length)}${metric("Backup", backupStatus)}</div>
+    <div class="panel quick-actions"><h2>Quick Actions</h2><div class="actions"><button id="createBackupBtn" type="button">Create Backup</button><a class="button" href="#/translate/${state.currentNovelId}">Translate</a><a class="button" href="#/admin/novels">Add Novel</a><a class="button" href="#/admin/recovery">Missing Data</a><a class="button" href="#/admin/backups">Recovery</a><a class="button" href="#/admin/jobs">Failed Jobs</a></div></div>
+  </section><section id="backupActionResult"></section>`;
+}
+
+function renderBackupsRecovery(manifest) {
+  return `<section class="dashboard-grid">
+    <div class="panel"><h2>Overview</h2>${metric("Format", manifest?.format_version || "unknown")}${metric("Version", manifest?.app_version || APP_VERSION)}${metric("Schema", manifest?.schema || "")}${metric("Backup State", manifest?.sha256 ? "Protected" : "Needs Attention")}</div>
+    <div class="panel"><h2>Create Backup</h2><p class="muted">Full-platform backups include v10 application tables and exclude secrets, API keys, tokens, cookies, and auth password material.</p><div class="actions"><button id="createBackupBtn" class="primary" type="button">Create Backup</button><a class="button" href="/api/admin/backups/download">Download Local Copy</a></div></div>
+    <div class="panel"><h2>Backup History</h2><table><tbody><tr><td>${escapeHtml(manifest?.created_at || "Current manifest")}</td><td>${escapeHtml(manifest?.format_version || "")}</td><td>${manifest?.table_counts?.novels || 0} novels / ${manifest?.chapter_source_counts?.chapters || 0} chapters</td><td>${formatBytes(manifest?.size_bytes || 0)}</td><td>Manifest</td></tr></tbody></table></div>
+    <div class="panel"><h2>Restore</h2><p class="muted">Default restore mode adds missing data only. Restore preview reports exact add, skip, overwrite, and invalid counts before any apply step.</p><label>Mode<select id="restoreMode"><option value="add-missing">Add missing data only</option><option value="skip-existing">Skip existing data</option><option value="overwrite">Overwrite existing data</option></select></label><label>Backup JSON<input id="restoreFile" type="file" accept=".json,application/json"></label><div class="actions"><button id="restorePreviewBtn" type="button">Restore Preview</button></div></div>
+  </section><section id="backupActionResult"></section><section id="restorePreviewResult"></section>`;
+}
+
+function renderNovelRecoveryAdmin(missing) {
+  return `<section class="dashboard-grid">
+    <div class="panel"><h2>Novel Recovery</h2><label>Novel<select id="adminRecoveryNovel">${state.novels.map((novel) => `<option value="${novel.id}" ${novel.id === state.currentNovelId ? "selected" : ""}>${escapeHtml(novel.title || novel.id)}</option>`).join("")}</select></label><div class="metric-grid">${metric("Original Missing", missing.missing_original?.length || 0)}${metric("Reference Missing", missing.missing_reference?.length || 0)}${metric("Reference Range", `${missing.reference_target_range?.start ?? "all"}-${missing.reference_target_range?.end ?? "all"}`)}</div></div>
+    <div class="panel"><h2>Exact Missing Chapters</h2>${recoveryList("Missing Original", missing.missing_original)}${recoveryList("Missing Reference", missing.missing_reference)}<div class="actions"><a class="button" href="/api/novels/${state.currentNovelId}/recovery/request">Download Recovery Request</a><a class="button" href="#/recovery/${state.currentNovelId}">Upload Recovery Pack</a></div></div>
+  </section>`;
+}
+
+function bindAdminWorkspace() {
+  document.querySelector("#adminRecoveryNovel")?.addEventListener("change", (event) => {
+    state.currentNovelId = event.target.value;
+    localStorage.setItem("gt-current-novel", state.currentNovelId);
+    openAdmin("recovery");
+  });
+  document.querySelectorAll("#createBackupBtn").forEach((button) => button.addEventListener("click", createBackupFromAdmin));
+  document.querySelector("#restorePreviewBtn")?.addEventListener("click", restorePreviewFromFile);
+}
+
+async function createBackupFromAdmin() {
+  const target = document.querySelector("#backupActionResult");
+  if (target) target.innerHTML = `<section class="state-card"><div class="spinner"></div><p>Creating backup manifest...</p></section>`;
+  try {
+    const payload = await api("/api/admin/backups/create", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({store: true})});
+    if (target) target.innerHTML = `<section class="panel"><h2>Backup Created</h2><div class="metric-grid">${metric("Status", payload.storage?.status || "created")}${metric("Size", formatBytes(payload.manifest?.size_bytes || 0))}${metric("Checksum", String(payload.manifest?.sha256 || "").slice(0, 12))}</div></section>`;
+  } catch (error) {
+    if (target) target.innerHTML = `<section class="state-card error"><p>${escapeHtml(error.message)}</p></section>`;
+  }
+}
+
+async function restorePreviewFromFile() {
+  const file = document.querySelector("#restoreFile")?.files?.[0];
+  const target = document.querySelector("#restorePreviewResult");
+  if (!file || !target) return toast("Choose a backup JSON file first.");
+  try {
+    const backup = JSON.parse(await file.text());
+    const mode = document.querySelector("#restoreMode")?.value || "add-missing";
+    const preview = await api("/api/admin/backups/restore-preview", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({backup, mode})});
+    target.innerHTML = `<section class="panel"><h2>Restore Preview</h2><div class="metric-grid">${metric("Compatible", preview.compatible ? "Healthy" : "Needs Attention")}${metric("Mode", preview.mode)}${metric("Will overwrite chapter text", preview.will_overwrite_chapter_text ? "Yes" : "No")}</div>${Object.entries(preview.changes || {}).map(([table, change]) => `<details><summary>${escapeHtml(table)}: add ${change.add}, skip ${change.skip_existing}, overwrite ${change.overwrite}, invalid ${change.invalid}</summary><pre>${escapeHtml(JSON.stringify(change.examples || [], null, 2))}</pre></details>`).join("")}</section>`;
+  } catch (error) {
+    target.innerHTML = `<section class="state-card error"><p>${escapeHtml(error.message)}</p></section>`;
+  }
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function openSettings(section = "appearance", intent = "") {
   const pref = state.preferences;
   app.innerHTML = `
-    ${pageHeader("Settings", "Personalize GodTranslator for reading, focus, and everyday use.", [["Theme", pref.theme], ["Density", pref.density], ["Motion", pref.reduceMotion ? "Reduced" : "Standard"]])}
+    ${pageHeader("Personalization Studio", "Tune GodTranslator for reading, catalog browsing, and accessibility.", [["Theme", titleCase(pref.theme)], ["Density", titleCase(pref.density)], ["Motion", pref.reduceMotion ? "Reduced" : "Standard"]])}
     <section class="settings-layout">
       <nav class="settings-nav">
         <a class="${section === "appearance" ? "active" : ""}" href="#/settings/appearance">Appearance</a>
+        <a class="${section === "library" ? "active" : ""}" href="#/settings/library">Library</a>
         <a class="${section === "reader" ? "active" : ""}" href="#/settings/reader">Reader</a>
+        <a class="${section === "accessibility" ? "active" : ""}" href="#/settings/accessibility">Accessibility</a>
         <a class="${section === "account" ? "active" : ""}" href="#/settings/account">Account</a>
       </nav>
-      ${section === "reader" ? renderReaderSettings(pref) : section === "account" ? renderAccountSettings(intent) : renderAppearanceSettings(pref)}
+      ${section === "reader" ? renderReaderSettings(pref) : section === "library" ? renderLibrarySettings(pref) : section === "accessibility" ? renderAccessibilitySettings(pref) : section === "account" ? renderAccountSettings(intent) : renderAppearanceSettings(pref)}
     </section>`;
   document.querySelectorAll("[data-pref]").forEach((field) => field.addEventListener("input", savePreferenceFromField));
   if (section === "account") bindAccountControls();
@@ -1007,29 +1322,62 @@ function openSettings(section = "appearance", intent = "") {
 }
 
 function renderAppearanceSettings(pref) {
-  return `<section class="panel form-grid">
-    <h2>Appearance</h2>
-    <label>Theme<select data-pref="theme">${["obsidian", "forest", "midnight", "warm-dark", "light"].map((item) => `<option value="${item}" ${pref.theme === item ? "selected" : ""}>${titleCase(item)}</option>`).join("")}</select></label>
-    <label>Accent<select data-pref="accent">${["green", "teal", "blue", "purple", "amber"].map((item) => `<option value="${item}" ${pref.accent === item ? "selected" : ""}>${titleCase(item)}</option>`).join("")}</select></label>
-    <label>Density<select data-pref="density">${["compact", "comfortable", "spacious"].map((item) => `<option value="${item}" ${pref.density === item ? "selected" : ""}>${titleCase(item)}</option>`).join("")}</select></label>
-    <label>Card size<select data-pref="cardSize">${["compact", "standard", "large"].map((item) => `<option value="${item}" ${pref.cardSize === item ? "selected" : ""}>${titleCase(item)}</option>`).join("")}</select></label>
-    <label><input data-pref="reduceMotion" type="checkbox" ${pref.reduceMotion ? "checked" : ""}> Reduce motion</label>
-    <label><input data-pref="interfaceBlur" type="checkbox" ${pref.interfaceBlur ? "checked" : ""}> Interface blur</label>
-    <div class="actions wide"><button id="resetPrefs" type="button">Reset to defaults</button></div>
+  return `<section class="studio-panel">
+    <div class="studio-heading"><h2>Appearance</h2><span>${state.account ? "Saved to account when possible" : "Saved locally"}</span></div>
+    <h3>Basic</h3>
+    <div class="choice-grid">${["obsidian", "forest", "midnight", "warm-dark", "light"].map((item) => radioCard("theme", item, pref.theme, titleCase(item), "visual theme")).join("")}</div>
+    <h3>Accent</h3>
+    <div class="swatch-row">${["green", "teal", "blue", "purple", "amber"].map((item) => `<label class="swatch ${pref.accent === item ? "active" : ""}" data-accent-swatch="${item}"><input data-pref="accent" type="radio" name="accent" value="${item}" ${pref.accent === item ? "checked" : ""}><span></span>${titleCase(item)}</label>`).join("")}</div>
+    <details open><summary>Advanced</summary><div class="preview-grid">${["compact", "comfortable", "spacious"].map((item) => radioCard("density", item, pref.density, `${titleCase(item)} density`, "spacing preview")).join("")}${radioToggle("interfaceBlur", pref.interfaceBlur, "Interface blur", "Soft translucent surfaces")}</div></details>
+    <div class="actions"><button id="resetPrefs" type="button">Reset to defaults</button></div>
+  </section>`;
+}
+
+function renderLibrarySettings(pref) {
+  return `<section class="studio-panel">
+    <div class="studio-heading"><h2>Library</h2><span>Catalog density and metadata</span></div>
+    <h3>Basic</h3>
+    <div class="choice-grid">${["compact", "standard", "large"].map((item) => radioCard("cardSize", item, pref.cardSize, `${titleCase(item)} cards`, "card size")).join("")}</div>
+    <details open><summary>Advanced</summary><div class="preview-grid">
+      ${["small", "medium", "large"].map((item) => radioCard("coverSize", item, pref.coverSize, `${titleCase(item)} covers`, "cover treatment")).join("")}
+      ${["dense", "balanced", "airy"].map((item) => radioCard("gridDensity", item, pref.gridDensity, `${titleCase(item)} grid`, "grid density")).join("")}
+      ${["minimal", "balanced", "full"].map((item) => radioCard("metadataAmount", item, pref.metadataAmount, `${titleCase(item)} metadata`, "metadata amount")).join("")}
+    </div></details>
   </section>`;
 }
 
 function renderReaderSettings(pref) {
-  return `<section class="panel form-grid">
-    <h2>Reader</h2>
-    <label>Font family<select data-pref="readerFont">${["serif", "sans", "system"].map((item) => `<option value="${item}" ${pref.readerFont === item ? "selected" : ""}>${titleCase(item)}</option>`).join("")}</select></label>
-    <label>Line height<input data-pref="readerLineHeight" type="range" min="1.55" max="2.15" step="0.05" value="${pref.readerLineHeight}"></label>
-    <label>Paragraph spacing<input data-pref="paragraphSpacing" type="range" min="0.7" max="1.8" step="0.1" value="${pref.paragraphSpacing}"></label>
-    <label>Reading width<input data-pref="readingWidth" type="range" min="680" max="1080" step="20" value="${pref.readingWidth}"></label>
-    <label>Reader tone<select data-pref="readerTone">${["obsidian", "paper", "sepia", "midnight", "forest"].map((item) => `<option value="${item}" ${pref.readerTone === item ? "selected" : ""}>${titleCase(item)}</option>`).join("")}</select></label>
-    <label>Text align<select data-pref="textAlign">${["left", "justify"].map((item) => `<option value="${item}" ${pref.textAlign === item ? "selected" : ""}>${titleCase(item)}</option>`).join("")}</select></label>
-    <div class="actions wide"><button id="resetPrefs" type="button">Reset to defaults</button></div>
+  return `<section class="studio-panel">
+    <div class="studio-heading"><h2>Reader</h2><span>Live reading preview</span></div>
+    <article class="reader-preview"><p>Chapter text appears here with your current font, spacing, width, and theme.</p><p>Use the controls below to shape long reading sessions without crowding the Reader itself.</p></article>
+    <h3>Basic</h3>
+    <div class="choice-grid">${["paper", "sepia", "dark", "oled", "green-night", "midnight"].map((item) => radioCard("readerTone", item, pref.readerTone, titleCase(item), "reader theme")).join("")}</div>
+    <div class="form-grid"><label>Font size<input data-pref="readerFontSize" type="range" min="16" max="25" value="${pref.readerFontSize}"></label><label>Reading width<input data-pref="readingWidth" type="range" min="680" max="1080" step="20" value="${pref.readingWidth}"></label></div>
+    <details open><summary>Advanced</summary><div class="form-grid">
+      <label>Font family<select data-pref="readerFont">${["serif", "sans", "system"].map((item) => `<option value="${item}" ${pref.readerFont === item ? "selected" : ""}>${titleCase(item)}</option>`).join("")}</select></label>
+      <label>Line height<input data-pref="readerLineHeight" type="range" min="1.55" max="2.15" step="0.05" value="${pref.readerLineHeight}"></label>
+      <label>Paragraph spacing<input data-pref="paragraphSpacing" type="range" min="0.7" max="1.8" step="0.1" value="${pref.paragraphSpacing}"></label>
+      <label>Alignment<select data-pref="textAlign">${["left", "justify"].map((item) => `<option value="${item}" ${pref.textAlign === item ? "selected" : ""}>${titleCase(item)}</option>`).join("")}</select></label>
+    </div></details>
+    <div class="actions"><button id="resetPrefs" type="button">Reset to defaults</button></div>
   </section>`;
+}
+
+function renderAccessibilitySettings(pref) {
+  return `<section class="studio-panel">
+    <div class="studio-heading"><h2>Accessibility</h2><span>Motion, focus, and contrast</span></div>
+    <h3>Basic</h3>
+    <div class="preview-grid">${radioToggle("reduceMotion", pref.reduceMotion, "Reduce motion", "Disable interface animation")}${radioToggle("contrastFocus", pref.contrastFocus, "High contrast focus", "Stronger keyboard focus")}</div>
+    <details open><summary>Advanced</summary><div class="preview-grid">${radioToggle("accessibilityComfort", pref.accessibilityComfort, "Comfort reading", "Favor stable spacing and calmer transitions")}</div></details>
+  </section>`;
+}
+
+function radioCard(name, value, current, title, subtitle) {
+  return `<label class="choice-card ${current === value ? "active" : ""}"><input data-pref="${name}" type="radio" name="${name}" value="${value}" ${current === value ? "checked" : ""}><strong>${escapeHtml(title)}</strong><span>${escapeHtml(subtitle)}</span></label>`;
+}
+
+function radioToggle(name, checked, title, subtitle) {
+  return `<label class="choice-card toggle-card ${checked ? "active" : ""}"><input data-pref="${name}" type="checkbox" ${checked ? "checked" : ""}><strong>${escapeHtml(title)}</strong><span>${escapeHtml(subtitle)}</span></label>`;
 }
 
 function renderAccountSettings(intent = "") {
@@ -1041,13 +1389,13 @@ function renderAccountSettings(intent = "") {
         <div><strong>${escapeHtml(state.account.display_name || state.account.email || "Signed in")}</strong><p class="muted">${escapeHtml(state.account.email || "")}</p><span class="badge ok">${escapeHtml(state.account.role || "user")}</span></div>
       </div>
       <div class="account-links">
-        <a class="button" href="#/library">Continue Reading</a>
+        <a class="button" href="#/continue">Continue Reading</a>
         <a class="button" href="#/bookmarks">Bookmarks</a>
         <a class="button" href="#/history">History</a>
         <a class="button" href="#/settings/appearance">Personalization</a>
       </div>
       ${renderRecentAccountLinks()}
-      <div class="actions"><button id="signOutBtn" type="button">Sign Out</button><a class="button" href="#/admin">Admin Login</a></div>
+      <div class="actions"><button id="signOutBtn" type="button">Sign Out</button>${state.admin ? `<button id="exitAdminBtn" type="button">Exit Admin Mode</button>` : `<a class="button" href="#/admin">Admin Login</a>`}</div>
     </section>`;
   }
   const configured = Boolean(state.authConfig?.configured && state.supabaseClient);
@@ -1065,7 +1413,7 @@ function renderAccountSettings(intent = "") {
         <button id="googleBtn" type="button" ${configured ? "" : "disabled"}>Continue with Google</button>
       </div>
     </form>
-    <div class="actions"><a class="button" href="#/admin">Emergency Admin Login</a><a class="button" href="#/library">Back to Library</a></div>
+    <div class="actions">${state.admin ? `<button id="exitAdminBtn" type="button">Exit Admin Mode</button>` : `<a class="button" href="#/admin">Emergency Admin Login</a>`}<a class="button" href="#/home">Back Home</a></div>
   </section>`;
 }
 
@@ -1120,19 +1468,20 @@ function objectDetails(label, value) {
 }
 
 function renderBreadcrumbs() {
-  const crumbs = breadcrumbsForHash(window.location.hash || "#/library");
+  const crumbs = breadcrumbsForHash(window.location.hash || "#/home");
   if (crumbs.length < 2) return "";
   return `<nav class="breadcrumbs" aria-label="Breadcrumbs">${crumbs.map((item, index) => index === crumbs.length - 1 ? `<span>${escapeHtml(item.label)}</span>` : `<a href="${escapeAttr(item.href)}">${escapeHtml(item.label)}</a>`).join("<span>/</span>")}</nav>`;
 }
 
 function breadcrumbsForHash(hash) {
-  const [path] = String(hash || "#/library").replace(/^#\/?/, "").split("?");
+  const [path] = String(hash || "#/home").replace(/^#\/?/, "").split("?");
   const parts = path.split("/").filter(Boolean);
   const novelId = parts[1] || state.currentNovelId;
   const novel = state.novels.find((item) => item.id === novelId);
   const novelLabel = novel?.title || novelId || "Novel";
-  const root = [{label: "Home", href: "#/library"}];
-  if (!parts.length || parts[0] === "library") return root;
+  const root = [{label: "Home", href: "#/home"}];
+  if (!parts.length || parts[0] === "home") return root;
+  if (parts[0] === "library") return [...root, {label: "Library", href: "#/library"}];
   if (parts[0] === "novel") return [...root, {label: novelLabel, href: hash}];
   if (parts[0] === "chapters") return [...root, {label: "Library", href: "#/library"}, {label: novelLabel, href: hash}];
   if (parts[0] === "reader") return [...root, {label: novelLabel, href: `#/chapters/${novelId}`}, {label: `Chapter ${parts[2] || ""}`, href: hash}];
@@ -1252,7 +1601,7 @@ function validateTranslateForm() {
 
 function preferredSource(chapter) {
   if (chapter?.has_ai) return "ai";
-  if (chapter?.has_reference) return "reference";
+  if (state.admin && chapter?.has_reference) return "reference";
   return "original";
 }
 
@@ -1292,6 +1641,13 @@ function timeAgo(value) {
 function durationEstimateText(estimate) {
   if (!estimate || !estimate.has_history) return "Improves after first chapters";
   return `${formatDuration(estimate.low_seconds)}-${formatDuration(estimate.high_seconds)}`;
+}
+
+function budgetMarginText(estimate) {
+  const limit = numberOrNull("#maxTotalBudget");
+  if (!limit) return "No cap";
+  const remaining = limit - Number(estimate.estimated_cost || 0);
+  return remaining >= 0 ? `$${remaining.toFixed(4)} left` : `$${Math.abs(remaining).toFixed(4)} over`;
 }
 
 function formatDuration(seconds) {
@@ -1357,7 +1713,7 @@ function bindCopyLinks(root = document) {
 }
 
 async function copyLink(hash) {
-  const url = new URL(hash || window.location.hash || "#/library", window.location.href).toString();
+  const url = new URL(hash || window.location.hash || "#/home", window.location.href).toString();
   try {
     await navigator.clipboard.writeText(url);
     toast("Link copied.");
@@ -1371,7 +1727,7 @@ function saveScrollPosition() {
   sessionStorage.setItem(`gt-scroll:${activeRouteKey}`, String(window.scrollY || 0));
 }
 
-function restoreScrollPosition(key = window.location.hash || "#/library") {
+function restoreScrollPosition(key = window.location.hash || "#/home") {
   const saved = Number(sessionStorage.getItem(`gt-scroll:${key}`) || 0);
   if (saved > 0) requestAnimationFrame(() => window.scrollTo({top: saved, behavior: "auto"}));
 }
@@ -1399,13 +1755,19 @@ function defaultPreferences() {
     accent: "green",
     density: "comfortable",
     cardSize: "standard",
+    coverSize: "medium",
+    gridDensity: "balanced",
+    metadataAmount: "balanced",
     reduceMotion: false,
+    contrastFocus: false,
+    accessibilityComfort: false,
     interfaceBlur: true,
     readerFont: "serif",
+    readerFontSize: Number(localStorage.getItem("gt-reader-font") || 19),
     readerLineHeight: 1.8,
     paragraphSpacing: 1.2,
     readingWidth: 900,
-    readerTone: "obsidian",
+    readerTone: "dark",
     textAlign: "left",
   };
 }
@@ -1421,8 +1783,12 @@ function loadPreferences() {
 function savePreferenceFromField(event) {
   const key = event.currentTarget.dataset.pref;
   let value = event.currentTarget.type === "checkbox" ? event.currentTarget.checked : event.currentTarget.value;
-  if (["readerLineHeight", "paragraphSpacing", "readingWidth"].includes(key)) value = Number(value);
+  if (["readerLineHeight", "paragraphSpacing", "readingWidth", "readerFontSize"].includes(key)) value = Number(value);
   state.preferences[key] = value;
+  if (key === "readerFontSize") {
+    state.fontSize = value;
+    localStorage.setItem("gt-reader-font", String(value));
+  }
   localStorage.setItem("gt-preferences", JSON.stringify(state.preferences));
   applyPreferences();
   saveRemotePreferences();
@@ -1444,6 +1810,7 @@ function bindAccountControls() {
   document.querySelector("#forgotBtn")?.addEventListener("click", resetPassword);
   document.querySelector("#googleBtn")?.addEventListener("click", signInWithGoogle);
   document.querySelector("#signOutBtn")?.addEventListener("click", signOut);
+  document.querySelector("#exitAdminBtn")?.addEventListener("click", exitAdminMode);
 }
 
 async function authEmailPassword(mode) {
@@ -1481,11 +1848,19 @@ async function signOut() {
   if (state.supabaseClient) await state.supabaseClient.auth.signOut();
   state.account = null;
   state.personal = null;
-  state.admin = false;
-  state.role = "guest";
+  await refreshSession();
   renderNav();
   openSettings("account");
   toast("Signed out.");
+}
+
+async function exitAdminMode() {
+  await api("/api/admin/logout", {method: "POST"});
+  state.admin = false;
+  await refreshSession();
+  renderNav();
+  route();
+  toast("Exited Admin Mode.");
 }
 
 function applyPreferences() {
@@ -1494,8 +1869,14 @@ function applyPreferences() {
   document.body.dataset.accent = pref.accent;
   document.body.dataset.density = pref.density;
   document.body.dataset.cardSize = pref.cardSize;
+  document.body.dataset.coverSize = pref.coverSize;
+  document.body.dataset.gridDensity = pref.gridDensity;
+  document.body.dataset.metadata = pref.metadataAmount;
   document.body.dataset.motion = pref.reduceMotion ? "reduced" : "standard";
+  document.body.dataset.focus = pref.contrastFocus ? "strong" : "standard";
+  document.body.dataset.comfort = pref.accessibilityComfort ? "on" : "off";
   document.body.dataset.blur = pref.interfaceBlur ? "on" : "off";
+  document.documentElement.style.setProperty("--reader-font", `${pref.readerFontSize || state.fontSize}px`);
   document.documentElement.style.setProperty("--reader-line-height", String(pref.readerLineHeight));
   document.documentElement.style.setProperty("--reader-paragraph-spacing", `${pref.paragraphSpacing}em`);
   document.documentElement.style.setProperty("--reader-width", `${pref.readingWidth}px`);
@@ -1507,7 +1888,7 @@ function applyPreferences() {
 function bindShellControls() {
   document.querySelector("#globalSearchBtn")?.addEventListener("click", openCommandPalette);
   document.querySelector("#personalizeBtn")?.addEventListener("click", () => { window.location.hash = "#/settings/appearance"; });
-  document.querySelector("#jobCenterBtn")?.addEventListener("click", () => { window.location.hash = canTranslate() ? "#/jobs" : "#/settings/account"; });
+  document.querySelector("#jobCenterBtn")?.addEventListener("click", () => { window.location.hash = canTranslate() ? "#/activity" : "#/settings/account"; });
   commandInput?.addEventListener("input", renderCommandResults);
   commandDialog?.addEventListener("close", () => { if (commandInput) commandInput.value = ""; });
   document.addEventListener("keydown", (event) => {
@@ -1568,20 +1949,20 @@ function renderCommandResults() {
   if (!commandResults) return;
   const query = (commandInput?.value || "").trim().toLowerCase();
   const commands = [
+    ["Go Home", "#/home", true],
     ["Go to Library", "#/library", true],
-    ["Continue Reading", state.personal?.continue_reading ? `#/reader/${state.personal.continue_reading.novel_id}/${state.personal.continue_reading.chapter_number}/${state.personal.continue_reading.source}` : "#/library", Boolean(state.personal?.continue_reading)],
-    ["Open Chapters", `#/chapters/${state.currentNovelId}`, true],
+    ["Continue Reading", continueReadingHref(), continueReadingHref() !== "#/library"],
     ["Open Settings", "#/settings/appearance", true],
     ["Open Translate", `#/translate/${state.currentNovelId}`, canTranslate()],
-    ["Open Job Center", "#/jobs", canTranslate()],
-    ["Manage Novels", "#/novels", state.admin],
-    ["Add Novel", "#/novels", state.admin],
-    ["Open Recovery", `#/recovery/${state.currentNovelId}`, state.admin],
+    ["Open Activity", "#/activity", canTranslate()],
+    ["Manage Novels", "#/admin/novels", state.admin],
+    ["Add Novel", "#/novels/add", state.admin],
+    ["Open Novel Recovery", "#/admin/recovery", state.admin],
     ["Open Admin", "#/admin", state.admin],
     ["Show Shortcuts", "#shortcuts", true],
   ];
-  const novelMatches = state.novels.map((novel) => [`Novel: ${novel.title}`, `#/chapters/${novel.id}`, true]);
-  const chapterMatches = state.chapters.slice(0, 500).map((chapter) => [`Chapter ${chapter.chapter_number}: ${chapter.title}`, `#/reader/${state.currentNovelId}/${chapter.chapter_number}/${state.source}`, true]);
+  const novelMatches = state.novels.map((novel) => [`Novel: ${novel.title}`, `#/novel/${novel.id}`, true]);
+  const chapterMatches = state.chapters.slice(0, 500).map((chapter) => [`Chapter ${chapter.chapter_number}: ${chapter.title}`, `#/reader/${state.currentNovelId}/${chapter.chapter_number}/${safeReaderSource()}`, true]);
   const recentMatches = [
     ...(state.recent.novels || []).map((item) => [`Recent Novel: ${item.label}`, item.href, true]),
     ...(state.recent.chapters || []).map((item) => [`Recent Chapter: ${item.label}`, item.href, true]),
@@ -1633,7 +2014,7 @@ function titleCase(value) {
 
 window.addEventListener("hashchange", () => {
   saveScrollPosition();
-  activeRouteKey = window.location.hash || "#/library";
+  activeRouteKey = window.location.hash || "#/home";
   if (!activeRouteKey.startsWith("#/reader/") && readerScrollHandler) {
     window.removeEventListener("scroll", readerScrollHandler);
     readerScrollHandler = null;
@@ -1646,6 +2027,6 @@ window.addEventListener("DOMContentLoaded", async () => {
   await loadAuth();
   await refreshSession();
   await loadNovels().catch(() => {});
-  activeRouteKey = window.location.hash || "#/library";
+  activeRouteKey = window.location.hash || "#/home";
   route();
 });

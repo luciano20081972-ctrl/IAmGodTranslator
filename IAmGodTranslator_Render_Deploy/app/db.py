@@ -570,9 +570,14 @@ class Database:
             metadata = novel.get("metadata") if isinstance(novel.get("metadata"), dict) else {}
             start = start if start is not None else optional_int(metadata.get("reference_target_start"))
             end = end if end is not None else optional_int(metadata.get("reference_target_end"))
-        if (start is None or end is None) and novel_id == "i-am-god":
-            start = 1
-            end = 434
+        if start is None or end is None:
+            with self.connect() as conn:
+                row = conn.execute(
+                    f"SELECT MIN(chapter_number) AS start, MAX(chapter_number) AS end FROM {self.table('chapters')} WHERE novel_id = ?",
+                    (novel_id,),
+                ).fetchone()
+            start = start if start is not None else optional_int(row["start"] if row else None)
+            end = end if end is not None else optional_int(row["end"] if row else None)
         if start is not None and end is not None and start > end:
             start, end = end, start
         return start, end
@@ -1001,7 +1006,7 @@ class Database:
                 payload = public_job_row(row)
                 items = conn.execute(
                     f"""
-                    SELECT status, worker_id, heartbeat_at, lease_expires_at
+                    SELECT chapter_number, status, worker_id, heartbeat_at, lease_expires_at
                     FROM {self.table('translation_job_items')}
                     WHERE job_id = ? AND status = 'running'
                     """,
@@ -1667,6 +1672,19 @@ class Database:
                 conn.execute(f"DELETE FROM {self.table('favorites')} WHERE user_id = ? AND novel_id = ?", (user_id, novel_id))
         return {"novel_id": novel_id, "favorite": favorite}
 
+    def users(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT user_id, email, display_name, avatar_url, preferred_language, role, created_at, updated_at
+                FROM {self.table('user_profiles')}
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def missing_data(self, novel_id: str) -> dict[str, Any]:
         reference_start, reference_end = self.reference_range(novel_id)
         with self.connect() as conn:
@@ -1728,6 +1746,126 @@ class Database:
             "created_at": utc_now(),
             "novel": novel,
             "chapters": [dict(row) for row in rows],
+        }
+
+    def platform_backup_payload(self) -> dict[str, Any]:
+        table_names = [
+            "novels",
+            "chapters",
+            "translation_jobs",
+            "translation_job_items",
+            "translation_performance",
+            "import_jobs",
+            "import_job_items",
+            "user_profiles",
+            "user_preferences",
+            "reading_progress",
+            "reading_history",
+            "bookmarks",
+            "favorites",
+            "translation_profiles",
+        ]
+        tables: dict[str, list[dict[str, Any]]] = {}
+        errors: dict[str, str] = {}
+        with self.connect() as conn:
+            for name in table_names:
+                try:
+                    rows = conn.execute(f"SELECT * FROM {self.table(name)}").fetchall()
+                    tables[name] = [dict(row) for row in rows]
+                except Exception as exc:
+                    tables[name] = []
+                    errors[name] = exc.__class__.__name__
+        counts = self.admin_overview()
+        table_counts = {name: len(rows) for name, rows in tables.items()}
+        manifest = {
+            "format_version": "godtranslator-v10-platform-backup.v1",
+            "app_version": "10.2.0",
+            "schema": self.config.schema,
+            "created_at": utc_now(),
+            "table_counts": table_counts,
+            "novel_count": table_counts.get("novels", 0),
+            "chapter_source_counts": {
+                "chapters": counts.get("chapters", 0),
+                "original": counts.get("original", 0),
+                "ai": counts.get("ai", 0),
+                "reference": counts.get("reference", 0),
+                "needs_translation": counts.get("needs_translation", 0),
+            },
+            "excluded": ["secrets", "passwords", "api_keys", "tokens", "cookies", "auth_password_material"],
+            "table_errors": errors,
+            "size_bytes": 0,
+            "sha256": "",
+        }
+        return {"ok": True, "manifest": manifest, "tables": tables}
+
+    def restore_preview(self, backup: dict[str, Any], mode: str = "add-missing") -> dict[str, Any]:
+        tables = backup.get("tables") if isinstance(backup.get("tables"), dict) else {}
+        key_columns = {
+            "novels": ["id"],
+            "chapters": ["novel_id", "chapter_number"],
+            "translation_jobs": ["id"],
+            "translation_job_items": ["id"],
+            "translation_performance": ["id"],
+            "import_jobs": ["id"],
+            "import_job_items": ["id"],
+            "user_profiles": ["user_id"],
+            "user_preferences": ["user_id"],
+            "reading_progress": ["user_id", "novel_id"],
+            "reading_history": ["id"],
+            "bookmarks": ["id"],
+            "favorites": ["user_id", "novel_id"],
+            "translation_profiles": ["id"],
+        }
+        changes: dict[str, dict[str, Any]] = {}
+        valid_tables = 0
+        with self.connect() as conn:
+            for name, rows in tables.items():
+                if name not in key_columns or not isinstance(rows, list):
+                    continue
+                valid_tables += 1
+                keys = key_columns[name]
+                add = skip = overwrite = invalid = 0
+                examples: list[dict[str, Any]] = []
+                for row in rows:
+                    if not isinstance(row, dict) or any(row.get(key) is None for key in keys):
+                        invalid += 1
+                        continue
+                    where = " AND ".join(f"{key} = ?" for key in keys)
+                    existing = conn.execute(
+                        f"SELECT 1 AS found FROM {self.table(name)} WHERE {where} LIMIT 1",
+                        tuple(row.get(key) for key in keys),
+                    ).fetchone()
+                    identity = {key: row.get(key) for key in keys}
+                    if existing:
+                        if mode == "overwrite":
+                            overwrite += 1
+                            if len(examples) < 6:
+                                examples.append({"action": "overwrite", "identity": identity})
+                        else:
+                            skip += 1
+                            if len(examples) < 6:
+                                examples.append({"action": "skip-existing", "identity": identity})
+                    else:
+                        add += 1
+                        if len(examples) < 6:
+                            examples.append({"action": "add", "identity": identity})
+                changes[name] = {
+                    "rows": len(rows),
+                    "add": add,
+                    "skip_existing": skip,
+                    "overwrite": overwrite,
+                    "invalid": invalid,
+                    "examples": examples,
+                }
+        return {
+            "ok": True,
+            "valid": valid_tables > 0,
+            "mode": mode if mode in {"add-missing", "skip-existing", "overwrite"} else "add-missing",
+            "stages": ["select", "validate", "compatibility", "dry_run", "exact_changes", "confirm", "background_restore", "verify"],
+            "default_mode": "add-missing",
+            "compatible": backup.get("manifest", {}).get("format_version") == "godtranslator-v10-platform-backup.v1",
+            "changes": changes,
+            "will_overwrite_chapter_text": mode == "overwrite",
         }
 
     def precheck(self, novel_id: str) -> dict[str, Any]:
@@ -2034,9 +2172,11 @@ def job_activity(items: list[dict[str, Any]]) -> dict[str, Any]:
     workers = {item.get("worker_id") for item in running if item.get("worker_id")}
     heartbeats = [item.get("heartbeat_at") for item in running if item.get("heartbeat_at")]
     stalled = [item for item in running if timestamp_expired(item.get("lease_expires_at"), now)]
+    current_chapters = sorted(int(item.get("chapter_number") or 0) for item in running if item.get("chapter_number"))
     return {
         "active_workers": len(workers),
         "running_items": len(running),
+        "current_chapter": current_chapters[0] if current_chapters else None,
         "stalled_items": len(stalled),
         "last_heartbeat_at": max(heartbeats) if heartbeats else None,
     }

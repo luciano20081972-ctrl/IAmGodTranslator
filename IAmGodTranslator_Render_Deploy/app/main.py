@@ -207,8 +207,16 @@ def admin_logout(response: Response) -> dict[str, object]:
 
 @app.get("/api/admin/session")
 def admin_session(request: Request) -> dict[str, object]:
-    user = current_user(request)
-    return {"ok": True, "admin": bool(user and user.role == "admin"), "role": user.role if user else "guest"}
+    account = account_user(request)
+    emergency_admin = valid_admin_cookie(request)
+    effective_role = "admin" if emergency_admin else (account.role if account else "guest")
+    return {
+        "ok": True,
+        "admin": is_admin_request(request),
+        "role": effective_role,
+        "account_role": account.role if account else "guest",
+        "emergency_admin": emergency_admin,
+    }
 
 
 @app.get("/api/auth/config")
@@ -229,7 +237,7 @@ def auth_config() -> dict[str, object]:
 
 @app.get("/api/account/me")
 def account_me(request: Request) -> dict[str, object]:
-    user = current_user(request)
+    user = account_user(request)
     if not user:
         return {"ok": True, "authenticated": False, "role": "guest", "auth": auth_config()}
     profile = database.ensure_user_profile(user.user_id, user.email, user.role, user.display_name, user.avatar_url)
@@ -338,27 +346,17 @@ def require_translator(request: Request) -> None:
 
 
 def require_user(request: Request) -> RequestUser:
-    user = current_user(request)
+    user = account_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="account_required")
     return user
 
 
 def is_admin_request(request: Request) -> bool:
-    user = current_user(request)
-    if user and user.role == "admin":
+    if valid_admin_cookie(request):
         return True
-    token = request.cookies.get(SESSION_COOKIE)
-    if not token:
-        return False
-    try:
-        timestamp_text, signature = token.split(".", 1)
-        timestamp = int(timestamp_text)
-    except Exception:
-        return False
-    if time.time() - timestamp > SESSION_TTL_SECONDS:
-        return False
-    return hmac.compare_digest(signature, session_signature(timestamp))
+    user = account_user(request)
+    return bool(user and user.role == "admin")
 
 
 def sign_session(timestamp: int) -> str:
@@ -371,6 +369,12 @@ def session_signature(timestamp: int) -> str:
 
 
 def current_user(request: Request) -> RequestUser | None:
+    if valid_admin_cookie(request):
+        return RequestUser(user_id="admin-password", email=None, role="admin", display_name="Admin")
+    return account_user(request)
+
+
+def account_user(request: Request) -> RequestUser | None:
     token = bearer_token(request)
     if token:
         supabase_user = validate_supabase_token(token)
@@ -391,8 +395,6 @@ def current_user(request: Request) -> RequestUser | None:
                 display_name=profile.get("display_name"),
                 avatar_url=profile.get("avatar_url"),
             )
-    if valid_admin_cookie(request):
-        return RequestUser(user_id="admin-password", email=None, role="admin", display_name="Admin")
     return None
 
 
@@ -461,9 +463,29 @@ def sanitize_profile(profile: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def can_view_reference(request: Request) -> bool:
+    user = current_user(request)
+    return bool(user and user.role in {"translator", "admin"})
+
+
+def scrub_reference_metadata(novel: dict[str, Any], request: Request) -> dict[str, Any]:
+    if can_view_reference(request):
+        return novel
+    scrubbed = dict(novel)
+    for key in ("reference_count", "reference_source_url", "reference_target_start", "reference_target_end"):
+        scrubbed.pop(key, None)
+    metadata = scrubbed.get("metadata")
+    if isinstance(metadata, dict):
+        metadata = dict(metadata)
+        metadata.pop("reference_target_start", None)
+        metadata.pop("reference_target_end", None)
+        scrubbed["metadata"] = metadata
+    return scrubbed
+
+
 @app.get("/api/novels")
-def list_novels() -> dict[str, object]:
-    return {"ok": True, "novels": database.novels()}
+def list_novels(request: Request) -> dict[str, object]:
+    return {"ok": True, "novels": [scrub_reference_metadata(novel, request) for novel in database.novels()]}
 
 
 @app.post("/api/novels")
@@ -489,12 +511,14 @@ def archive_novel(novel_id: str, payload: dict[str, Any] = Body(default={}), _: 
 
 
 @app.get("/api/novels/{novel_id}")
-def get_novel(novel_id: str) -> dict[str, object]:
+def get_novel(request: Request, novel_id: str) -> dict[str, object]:
     novel = database.novel(novel_id)
     if novel is None:
         raise HTTPException(status_code=404, detail="novel_not_found")
     counts = database.verification_counts(novel_id)
-    return {"ok": True, "novel": novel, "counts": counts}
+    if not can_view_reference(request):
+        counts = {key: value for key, value in counts.items() if key != "reference"}
+    return {"ok": True, "novel": scrub_reference_metadata(novel, request), "counts": counts}
 
 
 @app.get("/api/models")
@@ -517,6 +541,7 @@ def model_registry() -> dict[str, object]:
 
 @app.get("/api/novels/{novel_id}/library")
 def library(
+    request: Request,
     novel_id: str,
     limit: int = Query(100, ge=1, le=5000),
     offset: int = Query(0, ge=0),
@@ -526,13 +551,21 @@ def library(
     payload = database.library(novel_id, limit=limit, offset=offset, search=search, view=view)
     if payload["novel"] is None:
         raise HTTPException(status_code=404, detail="novel_not_found")
-    return {"ok": True, **payload, "counts": database.library_counts(novel_id)}
+    counts = database.library_counts(novel_id)
+    if not can_view_reference(request):
+        payload["novel"] = scrub_reference_metadata(payload["novel"], request)
+        for chapter in payload["chapters"]:
+            chapter.pop("has_reference", None)
+        counts.pop("reference_readable", None)
+    return {"ok": True, **payload, "counts": counts}
 
 
 @app.get("/api/novels/{novel_id}/chapters/{chapter_number}/{mode}")
-def chapter_text(novel_id: str, chapter_number: int, mode: str) -> dict[str, object]:
+def chapter_text(request: Request, novel_id: str, chapter_number: int, mode: str) -> dict[str, object]:
     if mode not in {"original", "reference", "ai"}:
         raise HTTPException(status_code=404, detail="chapter_mode_not_found")
+    if mode == "reference":
+        require_translator(request)
     return database.chapter_text(novel_id, chapter_number, mode)
 
 
@@ -550,14 +583,14 @@ def compare_chapter(novel_id: str, chapter_number: int, _: None = Depends(requir
 
 @app.post("/api/translation/estimate")
 def translation_estimate(payload: dict[str, Any] = Body(...), _: None = Depends(require_translator)) -> dict[str, object]:
-    novel_id = payload.get("novel_id") or "i-am-god"
+    novel_id = payload.get("novel_id") or default_novel_id()
     chapters = selected_chapters(novel_id, payload)
     return database.estimate_translation(novel_id, chapters, payload)
 
 
 @app.post("/api/translation/jobs")
 def create_translation_job(payload: dict[str, Any] = Body(...), _: None = Depends(require_translator)) -> dict[str, object]:
-    novel_id = payload.get("novel_id") or "i-am-god"
+    novel_id = payload.get("novel_id") or default_novel_id()
     chapters = selected_chapters(novel_id, payload)
     job = database.create_translation_job(novel_id, chapters, payload)
     translation_runner.start(str(job["id"]))
@@ -617,12 +650,14 @@ def reference_recovery_diagnostic(novel_id: str, _: None = Depends(require_admin
 @app.get("/api/novels/{novel_id}/recovery/request")
 def download_recovery_request(
     novel_id: str,
-    source_url: str = Query("https://novelfire.net/book/i-am-god-lslccf"),
-    chapter_url_template: str = Query("https://novelfire.net/book/i-am-god-lslccf/chapter-{chapter}"),
+    source_url: str = Query(""),
+    chapter_url_template: str = Query(""),
     _: None = Depends(require_admin),
 ) -> JSONResponse:
-    if database.novel(novel_id) is None:
+    novel = database.novel(novel_id)
+    if novel is None:
         raise HTTPException(status_code=404, detail="novel_not_found")
+    source_url = source_url or str(novel.get("reference_source_url") or novel.get("source_url") or "")
     payload = recovery_request(database, novel_id, source_url=source_url, chapter_url_template=chapter_url_template)
     return JSONResponse(payload, headers={"Content-Disposition": f'attachment; filename="{novel_id}-reference-recovery-request.json"'})
 
@@ -676,6 +711,11 @@ def admin_missing(novel_id: str, _: None = Depends(require_admin)) -> dict[str, 
     return {"ok": True, "missing": database.missing_data(novel_id)}
 
 
+@app.get("/api/admin/users")
+def admin_users(_: None = Depends(require_admin)) -> dict[str, object]:
+    return {"ok": True, "users": [sanitize_profile(user) for user in database.users()]}
+
+
 @app.get("/api/novels/{novel_id}/backup")
 def export_backup(novel_id: str, _: None = Depends(require_admin)) -> StreamingResponse:
     payload = database.backup_payload(novel_id)
@@ -687,6 +727,84 @@ def export_backup(novel_id: str, _: None = Depends(require_admin)) -> StreamingR
         zf.writestr(f"novels/{novel_id}/backup.json", json.dumps(payload, ensure_ascii=False, indent=2))
     memory.seek(0)
     return StreamingResponse(memory, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{novel_id}-v10-backup.zip"'})
+
+
+@app.get("/api/admin/backups/manifest")
+def platform_backup_manifest(_: None = Depends(require_admin)) -> dict[str, object]:
+    payload = complete_platform_backup_payload()
+    return {"ok": True, "manifest": payload["manifest"]}
+
+
+@app.get("/api/admin/backups/download")
+def download_platform_backup(_: None = Depends(require_admin)) -> StreamingResponse:
+    payload = complete_platform_backup_payload()
+    raw = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    return StreamingResponse(
+        io.BytesIO(raw),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{platform_backup_filename(payload)}"'},
+    )
+
+
+@app.post("/api/admin/backups/create")
+def create_platform_backup(payload: dict[str, Any] = Body(default={}), _: None = Depends(require_admin)) -> dict[str, object]:
+    backup = complete_platform_backup_payload()
+    raw = json.dumps(backup, ensure_ascii=False, indent=2).encode("utf-8")
+    storage = store_platform_backup(raw, platform_backup_filename(backup)) if bool(payload.get("store", True)) else {"status": "skipped", "location": None}
+    return {"ok": True, "manifest": backup["manifest"], "storage": storage}
+
+
+@app.post("/api/admin/backups/restore-preview")
+def preview_platform_restore(payload: dict[str, Any] = Body(...), _: None = Depends(require_admin)) -> dict[str, object]:
+    mode = str(payload.get("mode") or "add-missing")
+    backup = payload.get("backup") if isinstance(payload.get("backup"), dict) else payload
+    return database.restore_preview(backup, mode=mode)
+
+
+def complete_platform_backup_payload() -> dict[str, Any]:
+    payload = database.platform_backup_payload()
+    raw_without_checksum = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    payload["manifest"]["size_bytes"] = len(raw_without_checksum)
+    payload["manifest"]["sha256"] = hashlib.sha256(raw_without_checksum).hexdigest()
+    return payload
+
+
+def platform_backup_filename(payload: dict[str, Any]) -> str:
+    created = str(payload.get("manifest", {}).get("created_at") or utc_filename_time())
+    stamp = "".join(ch if ch.isdigit() else "-" for ch in created).strip("-")[:19].replace("--", "-")
+    return f"godtranslator-v10-platform-backup-{stamp}.json"
+
+
+def utc_filename_time() -> str:
+    return time.strftime("%Y-%m-%dT%H-%M-%SZ", time.gmtime())
+
+
+def store_platform_backup(raw: bytes, filename: str) -> dict[str, object]:
+    url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+    service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_BACKUP_SERVICE_KEY") or ""
+    bucket = os.getenv("SUPABASE_BACKUP_BUCKET") or "godtranslator-backups"
+    if not url or not service_key:
+        return {"status": "not_configured", "location": None}
+    object_path = f"platform/{filename}"
+    request = urllib.request.Request(
+        f"{url}/storage/v1/object/{bucket}/{object_path}",
+        data=raw,
+        headers={
+            "Authorization": f"Bearer {service_key}",
+            "apikey": service_key,
+            "Content-Type": "application/json",
+            "x-upsert": "false",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            response.read()
+        return {"status": "stored", "bucket": bucket, "path": object_path}
+    except urllib.error.HTTPError as exc:
+        return {"status": "failed", "error": f"storage_http_{exc.code}", "bucket": bucket, "path": object_path}
+    except (urllib.error.URLError, TimeoutError) as exc:
+        return {"status": "failed", "error": exc.__class__.__name__, "bucket": bucket, "path": object_path}
 
 
 def selected_chapters(novel_id: str, payload: dict[str, Any]) -> list[int]:
@@ -706,6 +824,13 @@ def selected_chapters(novel_id: str, payload: dict[str, Any]) -> list[int]:
         else:
             chapters.add(int(part))
     return sorted(chapters)
+
+
+def default_novel_id() -> str:
+    novels = database.novels()
+    if not novels:
+        raise HTTPException(status_code=400, detail="novel_id_required")
+    return str(novels[0]["id"])
 
 
 def fake_translator(original: str, reference: str | None, settings: dict[str, Any]) -> dict[str, Any]:
