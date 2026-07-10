@@ -18,14 +18,22 @@ The app does not use v9 chapter indexes, counts files, hydration, startup restor
 Routes:
 
 - `#/library`
+- `#/novel/i-am-god`
 - `#/novels`
 - `#/chapters/i-am-god`
 - `#/reader/i-am-god/1/ai`
+- `#/compare/i-am-god/1`
 - `#/translate/i-am-god`
+- `#/jobs`
 - `#/recovery/i-am-god`
-- `#/admin`
+- `#/admin/overview`
+- `#/admin/database`
+- `#/admin/missing`
 - `#/settings/appearance`
 - `#/settings/reader`
+- `#/account`
+- `#/history`
+- `#/bookmarks`
 
 Restored workflows:
 
@@ -34,10 +42,12 @@ Restored workflows:
 - Chapter Library with search, status filters, pagination, availability badges, Reader links, and Translate links.
 - Reader with AI / Reference / Original modes, previous/next, chapter selector, and font control.
 - Translate workspace with estimates, budget controls, persistent jobs, pause/resume/stop/retry, and explicit run-next execution.
-- Recovery workspace from v10.0.6 for safe Reference preview/import.
+- Admin-protected Recovery workspace from v10.0.6 for safe Reference diagnostic, request export, preview/import.
 - Admin dashboard with system overview, database health, missing data, translation jobs, import jobs, and database-first backup export.
 - v10.2 shell with authorization-aware navigation, global search/command palette, job/account/settings controls, and local guest personalization.
 - Supabase Auth foundation for email/password, Google OAuth, account profile discovery, and database-backed preferences when configured.
+- Database-backed reading progress, history, bookmarks, and favorites.
+- Premium Novel Detail, Reader Zen mode, Job Center, comparison mode, and tabbed Admin operations.
 
 ## Translation Safety
 
@@ -45,7 +55,7 @@ Chinese `original_text` is always the translation source.
 
 `reference_text` is optional style guidance only. A chapter with Original text and no Reference text remains eligible for translation.
 
-OpenAI is called only when an authenticated admin explicitly runs a real translation item. Automated QA should use `POST /api/translation/jobs/{job_id}/run-next?mock=true`.
+OpenAI is called only when an authenticated translator/admin explicitly runs a real translation item. Automated QA should use `POST /api/translation/jobs/{job_id}/run-next?mock=true`.
 
 ## Admin Auth
 
@@ -92,6 +102,7 @@ SUPABASE_PUBLISHABLE_KEY
 SUPABASE_AUTH_REDIRECT_URL
 OPENAI_API_KEY
 OPENAI_MODEL=gpt-4o-mini
+OPENAI_MODEL_REGISTRY=gpt-4o-mini,gpt-4o
 ```
 
 Use the Supabase pooled Postgres connection string for `DATABASE_URL`. `DB_SCHEMA` defaults to `godtranslator_v10`.
@@ -110,6 +121,8 @@ Configure Supabase Auth with:
 Only publishable Supabase config is sent to the browser. Do not expose `DATABASE_URL`, service-role keys, Google OAuth secret, `ADMIN_PASSWORD`, or `ADMIN_EMAILS`.
 
 ## Recovery
+
+Recovery UI and API access require admin authorization. Missing Reference for I Am God is scoped to the configured Reference target range `1-434`; the expected release-state missing Reference chapter is `362`.
 
 Diagnose missing Reference chapters:
 

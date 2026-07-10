@@ -308,7 +308,16 @@ async function openNovelDetail(novelId) {
     await loadNovels();
     const detail = await api(`/api/novels/${encodeURIComponent(novelId)}`);
     const library = await api(`/api/novels/${encodeURIComponent(novelId)}/library?limit=8`);
-    const novel = detail.novel || state.novels.find((item) => item.id === novelId) || {};
+    const baseNovel = detail.novel || state.novels.find((item) => item.id === novelId) || {};
+    const detailCounts = detail.counts || {};
+    const novel = {
+      ...baseNovel,
+      chapter_count: detailCounts.total ?? baseNovel.chapter_count,
+      original_count: detailCounts.original ?? baseNovel.original_count,
+      reference_count: detailCounts.reference ?? baseNovel.reference_count,
+      ai_count: detailCounts.ai ?? baseNovel.ai_count,
+      remaining_count: detailCounts.needs_translation ?? baseNovel.remaining_count,
+    };
     const pct = progress(novel);
     const personal = await loadPersonalHome(true);
     const current = personal?.continue_reading?.novel_id === novelId ? personal.continue_reading : null;
@@ -714,6 +723,7 @@ async function openRecovery(novelId) {
   setLoading("Loading recovery...");
   try {
     await refreshSession();
+    if (!state.admin) return renderAdminGate("Recovery");
     const diagnostic = await api(`/api/novels/${encodeURIComponent(novelId)}/recovery/reference`);
     app.innerHTML = `
       ${pageHeader("Recovery", "Preview and import missing Reference chapters without overwriting existing text.", [["Reference", diagnostic.reference_rows_in_range], ["Missing", diagnostic.missing_count], ["Range", `${diagnostic.range.start}-${diagnostic.range.end}`]])}

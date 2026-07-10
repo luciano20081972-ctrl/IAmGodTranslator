@@ -488,7 +488,7 @@ def run_next_translation(job_id: str, mock: bool = Query(False), _: None = Depen
 
 
 @app.get("/api/novels/{novel_id}/recovery/reference")
-def reference_recovery_diagnostic(novel_id: str) -> dict[str, object]:
+def reference_recovery_diagnostic(novel_id: str, _: None = Depends(require_admin)) -> dict[str, object]:
     if database.novel(novel_id) is None:
         raise HTTPException(status_code=404, detail="novel_not_found")
     return {"ok": True, **reference_diagnostic(database, novel_id)}
@@ -499,6 +499,7 @@ def download_recovery_request(
     novel_id: str,
     source_url: str = Query("https://novelfire.net/book/i-am-god-lslccf"),
     chapter_url_template: str = Query("https://novelfire.net/book/i-am-god-lslccf/chapter-{chapter}"),
+    _: None = Depends(require_admin),
 ) -> JSONResponse:
     if database.novel(novel_id) is None:
         raise HTTPException(status_code=404, detail="novel_not_found")

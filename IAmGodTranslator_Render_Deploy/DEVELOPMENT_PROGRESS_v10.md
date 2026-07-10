@@ -740,3 +740,32 @@ Checkpoint 7 QA:
 - Missing Reference respected target range 1-434 and reported chapter 362 only in the fixture.
 - No OpenAI call was made.
 - No translation was started.
+
+## v10.2.0 Checkpoint 8 - Final QA and Release Package
+
+Completed:
+
+- Resumed isolated fixture QA with realistic multi-paragraph chapter text instead of short placeholder text.
+- Kept production readable-text validation unchanged.
+- Protected Recovery diagnostic and request export endpoints with admin authorization.
+- Added a client-side Recovery admin gate before loading Recovery diagnostics.
+- Tightened mobile/tablet header navigation so search, nav, and action controls do not overlap or dominate the first viewport.
+- Fixed Novel Detail counts by merging the `/api/novels/{novel_id}` verification counts into the detail view model.
+- Completed final package documentation pass for README, auth setup, local preview, product spec, and this progress log.
+
+Checkpoint 8 QA:
+
+- Fixture expected state passed: Total `908`, Original `906`, Reference `433`, AI `25`, Needs Translation `881`.
+- Missing Original proof: `176`, `177`.
+- Missing Reference proof: target range `1-434`, missing count `1`, chapter `362`.
+- Reader, account/preferences, reading progress/history, bookmarks/favorites, comparison, recovery preview, admin overview/database/missing data, and backup/export passed against disposable SQLite.
+- Authorization matrix passed: guests blocked from private APIs, users blocked from Admin/Recovery/novel management/translation jobs, translators allowed translation features but blocked from Admin/Recovery, admins allowed Admin, spoofed user IDs and roles ignored, self-promotion blocked, private user data scoped to owner.
+- Mock translation flow passed for estimate, create job, persist job, Chapter 362 Original-without-Reference eligibility, mock run-next, AI write/readback, pause/resume, interrupted state, cancel, total budget stop, per-chapter budget skip, and Missing Original skip.
+- Visual QA screenshots saved under `qa_screenshots_v10_2/` for desktop `1920x1080`, desktop `1366x768`, mobile `390x844`, and tablet `768x1024`.
+- Visual QA confirmed no horizontal overflow, no clipped navigation, usable mobile controls, readable text, and Missing Reference UI showing only chapter `362`.
+- Visual QA confirmed Novel Detail shows `908` chapters, `906` Original, `433` Reference, `25` AI, and `881` Remaining.
+- Security scan passed for source, docs, screenshots, and release ZIP safety checks: no `.env`, database URL value, database password, service-role key, Google secret, OpenAI key, admin password value, access tokens, refresh tokens, cookies, or browser profiles included.
+- Performance sanity passed: chapter list APIs return metadata only, pagination works, search and reading progress are debounced, and the UI does not load all 908 chapter bodies.
+- No OpenAI call was made.
+- No production database was modified.
+- Production was not deployed.
