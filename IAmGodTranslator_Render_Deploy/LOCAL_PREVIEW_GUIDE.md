@@ -1,6 +1,6 @@
-# GodTranslator v10.2 Local Preview Guide
+# GodTranslator v10.3 Local Preview Guide
 
-Use this helper to preview the v10.2 feature branch without saving secrets.
+Use this helper to preview the v10.3 feature branch without saving secrets.
 
 ```powershell
 cd IAmGodTranslator_Render_Deploy

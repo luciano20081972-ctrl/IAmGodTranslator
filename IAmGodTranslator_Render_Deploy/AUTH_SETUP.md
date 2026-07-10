@@ -1,4 +1,4 @@
-# GodTranslator v10.2 Auth Setup
+# GodTranslator v10.3 Auth Setup
 
 GodTranslator supports public guest reading plus optional Supabase Auth accounts.
 

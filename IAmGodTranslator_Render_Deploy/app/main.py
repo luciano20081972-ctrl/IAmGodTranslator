@@ -26,7 +26,7 @@ from app.db import Database, model_pricing
 from app.recovery import parse_uploads, recovery_request, reference_diagnostic
 
 
-VERSION = "10.2.0"
+VERSION = "10.3.0"
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_COOKIE = "gt_admin_session"
 SESSION_TTL_SECONDS = 60 * 60 * 12

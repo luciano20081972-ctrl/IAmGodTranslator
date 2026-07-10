@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 $AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $AppDir
 
-Write-Host "GodTranslator v10.2 local preview"
+Write-Host "GodTranslator v10.3 local preview"
 $dbUrlSecure = Read-Host "Paste DATABASE_URL" -AsSecureString
 $dbUrlBstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($dbUrlSecure)
 $dbUrl = [Runtime.InteropServices.Marshal]::PtrToStringAuto($dbUrlBstr)

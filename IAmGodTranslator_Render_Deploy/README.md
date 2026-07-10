@@ -1,6 +1,6 @@
-# GodTranslator v10.2.0 Premium Product Evolution
+# GodTranslator v10.3.0 Product Experience Rebuild
 
-GodTranslator v10.2.0 evolves the restored v10 product shell into a premium, personalized novel-reading and translation application on top of the v10 database-first foundation.
+GodTranslator v10.3.0 evolves the restored v10 product shell into a polished, responsive novel-reading and translation application on top of the v10 database-first foundation.
 
 PostgreSQL remains the live source of truth:
 
@@ -44,7 +44,7 @@ Restored workflows:
 - Translate workspace with estimates, budget controls, persistent jobs, pause/resume/stop/retry, and explicit run-next execution.
 - Admin-protected Recovery workspace from v10.0.6 for safe Reference diagnostic, request export, preview/import.
 - Admin dashboard with system overview, database health, missing data, translation jobs, import jobs, and database-first backup export.
-- v10.2 shell with authorization-aware navigation, global search/command palette, job/account/settings controls, and local guest personalization.
+- v10.3 shell with authorization-aware navigation, global search/command palette, activity/account/settings controls, and local guest personalization.
 - Supabase Auth foundation for email/password, Google OAuth, account profile discovery, and database-backed preferences when configured.
 - Database-backed reading progress, history, bookmarks, and favorites.
 - Premium Novel Detail, Reader Zen mode, Job Center, comparison mode, and tabbed Admin operations.

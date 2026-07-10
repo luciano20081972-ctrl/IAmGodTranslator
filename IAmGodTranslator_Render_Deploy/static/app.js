@@ -36,7 +36,7 @@ const state = {
 };
 
 const sourceLabels = {ai: "AI", reference: "Reference", original: "Original"};
-const APP_VERSION = "10.2.0";
+const APP_VERSION = "10.3.0";
 const chapterViews = [
   ["all", "All"],
   ["translated", "Translated"],
@@ -116,6 +116,7 @@ function route() {
   const params = new URLSearchParams(query);
   updateNav(parts[0] || "home");
   if (!parts.length || parts[0] === "home") return openHome();
+  if (parts[0] === "library") return openLibrary();
   if (parts[0] === "continue") return openContinueReading();
   if (parts[0] === "reader" && parts[1] && parts[2]) return openReader(parts[1], Number(parts[2]), parts[3] || state.source);
   if (parts[0] === "novel" && parts[1]) return openNovelDetail(parts[1]);
@@ -139,7 +140,7 @@ function updateNav(active) {
   renderNav();
   nav.querySelectorAll("a").forEach((link) => {
     const target = link.getAttribute("href").replace("#/", "").split("/")[0];
-    link.classList.toggle("active", target === active || (active === "reader" && target === "chapters"));
+    link.classList.toggle("active", target === active || (active === "reader" && link.dataset.nav === "continue"));
   });
 }
 
@@ -150,18 +151,16 @@ function renderNav() {
     ["home", "Home", "#/home", true],
     ["library", "Library", "#/library", true],
     ["continue", "Continue Reading", continueHref, true],
-    ["activity", activityLabel(), "#/activity", canTranslate()],
-    ["translate", "Translate", `#/translate/${state.currentNovelId}`, canTranslate()],
-    ["admin", "Admin", "#/admin", state.admin],
   ];
   nav.innerHTML = links.filter(([, , , allowed]) => allowed).map(([key, label, href]) => `<a data-nav="${key}" href="${href}">${label}</a>`).join("");
   if (accountBtn) {
-    accountBtn.textContent = state.account?.display_name || state.account?.email || (state.admin ? "Admin Mode" : "Guest");
-    accountBtn.href = "#/account";
+    accountBtn.textContent = state.admin ? "Admin Mode" : state.account?.display_name || state.account?.email || "Guest";
+    accountBtn.href = state.admin ? "#/admin" : "#/account";
   }
   const jobButton = document.querySelector("#jobCenterBtn");
   if (jobButton) {
-    jobButton.textContent = canTranslate() ? "Activity" : "Activity";
+    jobButton.textContent = activityLabel();
+    jobButton.hidden = !canTranslate();
     jobButton.dataset.relevant = canTranslate() ? "true" : "false";
   }
 }
@@ -263,21 +262,26 @@ async function openHome() {
     const updates = [...activeNovels].sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || ""))).slice(0, 6);
     app.innerHTML = `
       <section class="home-hero">
-        <div>
+        <div class="home-hero-copy">
           <p class="eyebrow">GodTranslator</p>
-          <h1>Read, continue, and manage translated novels.</h1>
-          <p>${activeNovels.length === 1 ? "Your catalog has one active novel ready for focused reading." : `${activeNovels.length} active novels are available across the catalog.`}</p>
+          <h1>Your translated reading room.</h1>
+          <p>${activeNovels.length === 1 ? "One active novel is ready for focused reading, resume, and translation progress." : `${activeNovels.length} active novels are ready for reading, resume, and translation progress.`}</p>
           <div class="actions">
             <a class="button primary" href="${escapeAttr(continueReadingHref(continueItem))}">${continueItem ? "Continue Reading" : "Open Library"}</a>
             ${spotlight ? `<a class="button" href="#/novel/${encodeURIComponent(spotlight.id)}">Open ${escapeHtml(spotlight.title || "Novel")}</a>` : ""}
             <a class="button" href="#/settings/appearance">Personalize</a>
           </div>
         </div>
-        <div class="home-snapshot">
-          ${metric("Novels", activeNovels.length)}
-          ${metric("Chapters", sum(activeNovels, "chapter_count"))}
-          ${metric("AI", sum(activeNovels, "ai_count"))}
-          ${metric("Needs Translation", sum(activeNovels, "remaining_count"))}
+        <div class="home-hero-panel">
+          <span class="badge ok">${continueItem ? "Progress saved" : "Catalog ready"}</span>
+          <strong>${continueItem ? `Chapter ${continueItem.chapter_number}` : spotlight ? escapeHtml(spotlight.title || "Start reading") : "No novel selected"}</strong>
+          <p>${continueItem ? escapeHtml(continueItem.novel_title) : "Start from the catalog, then GodTranslator will keep the next read within reach."}</p>
+          <div class="home-metrics">
+            ${metric("Novels", activeNovels.length)}
+            ${metric("Chapters", sum(activeNovels, "chapter_count"))}
+            ${metric("AI Ready", sum(activeNovels, "ai_count"))}
+            ${metric("Needs Translation", sum(activeNovels, "remaining_count"))}
+          </div>
         </div>
       </section>
       ${renderContinueReading(continueItem)}
@@ -371,10 +375,20 @@ async function openLibrary() {
   setLoading("Opening library...");
   try {
     const novels = await loadNovels(true);
-    const personal = await loadPersonalHome(true);
+    const active = novels.filter((novel) => !novel.is_archived);
     app.innerHTML = `
-      ${pageHeader("Library", "Catalog, reading progress, and AI translation availability.", libraryStats(novels))}
-      ${renderContinueReading(personal?.continue_reading)}
+      ${pageHeader("Library", "Browse the catalog, filter by status, and open a title without the Home reading dashboard.", libraryStats(novels))}
+      <section class="library-intro">
+        <div>
+          <p class="eyebrow">Catalog</p>
+          <h2>${novels.length === 1 ? "One title, ready to browse." : "A catalog built for scanning."}</h2>
+          <p class="muted">Search, sort, and filter novels by reading and translation state. Home keeps resume and recommendations; Library stays focused on discovery.</p>
+        </div>
+        <div class="library-mini-stats">
+          ${metric("Active", active.length)}
+          ${metric("Archived", novels.length - active.length)}
+        </div>
+      </section>
       <section class="toolbar">
         <input class="search" id="librarySearch" type="search" value="${escapeAttr(state.libraryView.search)}" placeholder="Search novels">
         <select id="libraryFilter"><option value="active" ${state.libraryView.filter === "active" ? "selected" : ""}>Active</option><option value="all" ${state.libraryView.filter === "all" ? "selected" : ""}>All</option><option value="favorites" ${state.libraryView.filter === "favorites" ? "selected" : ""}>Favorites</option><option value="archived" ${state.libraryView.filter === "archived" ? "selected" : ""}>Archived</option></select>
@@ -596,13 +610,13 @@ async function openNovels(mode = "") {
 
 function renderNovelManagement(novels, mode = "") {
   const showForm = mode === "add";
-  return `<section class="management-header"><div><h2>Novel Management</h2><p class="muted">Catalog-first administration for covers, status, translation progress, and metadata.</p></div><div class="actions"><a class="button primary" href="#/novels/add">Add Novel</a><a class="button" href="#/library">Open Public Library</a></div></section>
+  return `<section class="management-header"><div><h2>Novel Management</h2><p class="muted">Catalog-first administration for covers, status, translation progress, and metadata.</p></div><div class="actions management-actions"><a class="button primary" href="#/novels/add">Add Novel</a><a class="button" href="#/library">Open Public Library</a></div></section>
     ${showForm ? renderNovelForm() : ""}
     <section class="management-grid">${novels.map((novel) => {
       const pct = progress(novel);
       return `<article class="management-card">
         <div class="mini-cover">${novel.cover_url ? `<img src="${escapeAttr(novel.cover_url)}" alt="">` : `<span>${escapeHtml(initials(novel.title || novel.id))}</span>`}</div>
-        <div><h3>${escapeHtml(novel.title || novel.id)}</h3>${novel.author ? `<p class="muted">${escapeHtml(novel.author)}</p>` : ""}<p><span class="badge ${novel.is_archived ? "missing" : "ok"}">${novel.is_archived ? "Archived" : "Active"}</span></p><div class="mini-progress"><span style="width:${pct}%"></span></div><p class="muted">${novel.chapter_count || 0} chapters · ${novel.ai_count || 0} AI · ${pct}% translated · updated ${timeAgo(novel.updated_at)}</p><div class="actions"><a class="button" href="#/novel/${encodeURIComponent(novel.id)}">Open</a><a class="button" href="#/novels/add">Edit</a><button data-archive="${novel.id}" data-value="${novel.is_archived ? "false" : "true"}">${novel.is_archived ? "Unarchive" : "Archive"}</button><a class="button" href="#/admin/novels">Admin Tools</a></div></div>
+        <div class="management-card-copy"><div><h3>${escapeHtml(novel.title || novel.id)}</h3>${novel.author ? `<p class="muted">${escapeHtml(novel.author)}</p>` : ""}<p><span class="badge ${novel.is_archived ? "missing" : "ok"}">${novel.is_archived ? "Archived" : "Active"}</span></p></div><div><div class="mini-progress"><span style="width:${pct}%"></span></div><p class="muted">AI progress: ${pct}% · ${novel.ai_count || 0}/${novel.original_count || 0} readable chapters translated.</p><p class="muted">${novel.chapter_count || 0} chapters · updated ${timeAgo(novel.updated_at)}</p></div><div class="actions management-card-actions"><a class="button primary" href="#/novel/${encodeURIComponent(novel.id)}">Open</a><a class="button" href="#/novels/add">Edit</a><button data-archive="${novel.id}" data-value="${novel.is_archived ? "false" : "true"}">${novel.is_archived ? "Unarchive" : "Archive"}</button><a class="button" href="#/admin/novels">Admin Tools</a></div></div>
       </article>`;
     }).join("") || `<p class="empty-state">No novels exist yet.</p>`}</section>`;
 }
@@ -745,12 +759,13 @@ function renderReader(novelId, chapterNumber, source, payload) {
   document.body.dataset.zen = state.zen ? "on" : "off";
   app.innerHTML = `
     <section class="reader-panel ${state.zen ? "zen" : ""}">
-      <div class="reader-nav"><a class="button" href="#/novel/${novelId}">Back to Novel</a><button id="openChapterDrawer" type="button">Chapter List</button><div class="spacer"></div><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous</button><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next</button><button id="bookmarkChapter" type="button">Bookmark</button><button id="zenToggle" type="button">${state.zen ? "Exit Focus" : "Focus"}</button></div>
-      <div class="reader-tabs"><div class="segmented">${options.map((item) => `<button data-source="${item}" class="${item === source ? "active" : ""}">${sourceLabels[item]}</button>`).join("")}</div><label>Text size<input id="fontSize" type="range" min="16" max="25" value="${state.fontSize}"></label><a class="button" href="#/settings/reader">Reader Settings</a><button type="button" data-copy-link="#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}">Copy Link</button></div>
+      <div class="reader-nav"><a class="button" href="#/novel/${novelId}">Novel</a><button id="openChapterDrawer" type="button">Chapters</button><div class="spacer"></div><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous</button><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next</button><button id="bookmarkChapter" type="button">Bookmark</button><button id="zenToggle" type="button">${state.zen ? "Exit Focus" : "Focus"}</button></div>
+      <div class="reader-tabs"><div class="segmented reader-source-switch">${options.map((item) => `<button data-source="${item}" class="${item === source ? "active" : ""}">${sourceLabels[item]}</button>`).join("")}</div><label class="font-control">Text size<input id="fontSize" type="range" min="16" max="25" value="${state.fontSize}"></label><button id="readerSettingsToggle" type="button">Reader Settings</button><button type="button" data-copy-link="#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}">Copy Link</button></div>
       ${renderChapterDrawer(novelId, chapterNumber, source)}
+      ${renderReaderSettingsSheet()}
       <header class="reader-heading"><span>${escapeHtml(novel.title || sourceLabels[source])} · ${sourceLabels[source]}</span><h1>Chapter ${chapterNumber}</h1><p>${escapeHtml(payload.title || `Chapter ${chapterNumber}`)}</p></header>
       <article class="reader-text">${renderReaderText(payload, source)}</article>
-      <div class="reader-bottom"><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous</button><button id="bottomChapterDrawer" type="button">Chapter List</button><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next</button><button id="backToTop" type="button">Back to Top</button></div>
+      <div class="reader-bottom"><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous</button><button id="bottomChapterDrawer" type="button">Chapters</button><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next</button><button id="backToTop" type="button" hidden>Back to Top</button></div>
     </section>`;
   document.querySelectorAll("[data-go]").forEach((button) => button.addEventListener("click", () => { if (button.dataset.go) window.location.hash = `#/reader/${novelId}/${button.dataset.go}/${state.source}`; }));
   document.querySelectorAll("[data-source]").forEach((button) => button.addEventListener("click", () => { window.location.hash = `#/reader/${novelId}/${chapterNumber}/${button.dataset.source}`; }));
@@ -760,11 +775,15 @@ function renderReader(novelId, chapterNumber, source, payload) {
   document.querySelector("#chapterSearch")?.addEventListener("input", filterChapterDrawer);
   document.querySelector("#openChapterDrawer")?.addEventListener("click", openChapterDrawer);
   document.querySelector("#bottomChapterDrawer")?.addEventListener("click", openChapterDrawer);
+  document.querySelector("#closeChapterDrawer")?.addEventListener("click", closeChapterDrawer);
+  document.querySelector("#readerSettingsToggle")?.addEventListener("click", toggleReaderSettingsSheet);
+  document.querySelector("#closeReaderSettings")?.addEventListener("click", toggleReaderSettingsSheet);
+  document.querySelector("#zenToggleSheet")?.addEventListener("click", () => document.querySelector("#zenToggle")?.click());
   document.querySelector("#backToTop")?.addEventListener("click", () => window.scrollTo({top: 0, behavior: state.preferences.reduceMotion ? "auto" : "smooth"}));
-  document.querySelector(".chapter-drawer .current")?.scrollIntoView({block: "center"});
   bindCopyLinks(app);
   bindReaderProgress(novelId, chapterNumber, source);
   restoreReaderScroll(novelId, chapterNumber, source);
+  updateBackToTop();
 }
 
 function renderReaderText(payload, source) {
@@ -775,11 +794,19 @@ function renderReaderText(payload, source) {
 }
 
 function renderChapterDrawer(novelId, chapterNumber, source) {
-  return `<details class="chapter-drawer" id="chapterDrawer">
-    <summary>Chapter List</summary>
+  return `<section class="chapter-drawer" id="chapterDrawer" hidden>
+    <div class="sheet-header"><div><p class="eyebrow">Chapter List</p><h2>Choose a chapter</h2></div><button id="closeChapterDrawer" type="button">Close</button></div>
     <input id="chapterSearch" type="search" placeholder="Search chapters">
     <div class="chapter-drawer-list">${state.chapters.map((chapter) => `<a class="${chapter.chapter_number === chapterNumber ? "current" : ""}" href="#/reader/${novelId}/${chapter.chapter_number}/${source}" data-chapter-row><strong>Chapter ${chapter.chapter_number}</strong><span>${escapeHtml(chapter.title || "")}</span><small>${chapter.has_ai ? "AI" : chapter.has_original ? "Original" : "Missing"}</small></a>`).join("")}</div>
-  </details>`;
+  </section>`;
+}
+
+function renderReaderSettingsSheet() {
+  return `<section class="reader-settings-sheet" id="readerSettingsSheet" hidden>
+    <div class="sheet-header"><div><p class="eyebrow">Reader Settings</p><h2>Reading surface</h2></div><button id="closeReaderSettings" type="button">Close</button></div>
+    <div class="reader-settings-preview"><p>Preview your reading tone, width, and text scale without leaving the chapter.</p><p class="muted">Deeper theme controls remain in the Personalization Studio.</p></div>
+    <div class="actions"><a class="button primary" href="#/settings/reader">Open Studio</a><button id="zenToggleSheet" type="button">Toggle Focus</button></div>
+  </section>`;
 }
 
 function filterChapterDrawer(event) {
@@ -792,9 +819,23 @@ function filterChapterDrawer(event) {
 function openChapterDrawer() {
   const drawer = document.querySelector("#chapterDrawer");
   if (!drawer) return;
-  drawer.open = true;
-  drawer.scrollIntoView({block: "start", behavior: state.preferences.reduceMotion ? "auto" : "smooth"});
+  drawer.hidden = false;
+  drawer.classList.add("open");
   document.querySelector("#chapterSearch")?.focus();
+  document.querySelector(".chapter-drawer .current")?.scrollIntoView({block: "center"});
+}
+
+function closeChapterDrawer() {
+  const drawer = document.querySelector("#chapterDrawer");
+  if (!drawer) return;
+  drawer.classList.remove("open");
+  drawer.hidden = true;
+}
+
+function toggleReaderSettingsSheet() {
+  const sheet = document.querySelector("#readerSettingsSheet");
+  if (!sheet) return;
+  sheet.hidden = !sheet.hidden;
 }
 
 function isDuplicateChapterHeading(line, payload) {
@@ -886,17 +927,33 @@ async function openTranslate(novelId, params = new URLSearchParams()) {
     const mode = form.translation_mode || "simple";
     const selectionMode = form.selection_mode || (form.all_untranslated ? "all-untranslated" : "next-untranslated");
     const speedPreset = form.speed_preset || (mode === "economy" ? "careful" : "balanced");
+    state.lastEstimate = null;
     app.innerHTML = `
-      ${pageHeader("Translate", "Plan controlled translation jobs from Original text, with Reference as optional guidance.", [["Novel", novel.title || novelId], ["Default model", novel.model || "gpt-4o-mini"]])}
+      ${renderBreadcrumbs()}
+      <section class="translate-hero">
+        <div>
+          <p class="eyebrow">Translation Workspace</p>
+          <h1>Translate</h1>
+          <p>Plan controlled AI translation jobs from Original text, with Reference as optional guidance when available.</p>
+        </div>
+        <div class="translate-hero-summary">
+          <span class="badge ok">Current novel</span>
+          <strong>${escapeHtml(novel.title || novelId)}</strong>
+          <div class="metric-grid">
+            ${metric("Default model", novel.model || "gpt-4o-mini")}
+            ${metric("Needs AI", novel.remaining_count || 0)}
+          </div>
+        </div>
+      </section>
       <section class="draft-bar"><span id="draftStatus">${draft.saved_at ? `Draft saved ${timeAgo(draft.saved_at)}` : "No saved draft"}</span><div class="actions"><button id="restoreTranslateDraft" type="button" ${draft.saved_at ? "" : "disabled"}>Restore Draft</button><button id="discardTranslateDraft" type="button" ${draft.saved_at ? "" : "disabled"}>Discard Draft</button></div></section>
       <section class="translate-workspace">
         <div class="translate-steps" id="translateForm">
-          <section class="panel form-grid"><h2>1. Mode & Chapters</h2><label>Mode<select id="translationMode"><option value="simple" ${mode === "simple" ? "selected" : ""}>Simple</option><option value="fast" ${mode === "fast" ? "selected" : ""}>Fast</option><option value="advanced" ${mode === "advanced" ? "selected" : ""}>Advanced</option><option value="economy" ${mode === "economy" ? "selected" : ""}>Economy / Overnight</option></select></label><label>Novel<select id="translateNovel">${state.novels.map((n) => `<option value="${n.id}" ${n.id === novelId ? "selected" : ""}>${escapeHtml(n.title)}</option>`).join("")}</select></label><label>What to translate<select id="selectionMode"><option value="next-untranslated" ${selectionMode === "next-untranslated" ? "selected" : ""}>Next untranslated chapters</option><option value="specific" ${selectionMode === "specific" ? "selected" : ""}>Specific chapters</option><option value="all-untranslated" ${selectionMode === "all-untranslated" ? "selected" : ""}>All untranslated</option></select></label><label id="nextCountLabel">Next count<select id="nextCount"><option value="25" ${Number(form.next_count || 25) === 25 ? "selected" : ""}>Next 25</option><option value="50" ${Number(form.next_count) === 50 ? "selected" : ""}>Next 50</option><option value="100" ${Number(form.next_count) === 100 ? "selected" : ""}>Next 100</option></select></label><label id="chapterInputLabel">Chapters<input id="translateChapters" value="${escapeAttr(form.chapters || "")}" placeholder="26,53,60-70"><span class="field-error" id="chapterError"></span></label><p class="muted wide" id="chapterPreview">Choose what to translate.</p></section>
-          <section class="panel form-grid"><h2>2. Translation Profile</h2><label>Profile<select id="profile"><option ${form.profile === "Default literary translation" ? "selected" : ""}>Default literary translation</option><option ${form.profile === "Reference-guided polish" ? "selected" : ""}>Reference-guided polish</option></select></label><label class="wide">Style guide<textarea id="styleGuide" rows="3">${escapeHtml(form.style_guide || "")}</textarea></label><label class="wide">Glossary notes<textarea id="glossary" rows="3">${escapeHtml(form.glossary || "")}</textarea></label></section>
-          <section class="panel form-grid"><h2>3. Speed & Model</h2><label>Speed preset<select id="speedPreset"><option value="careful" ${speedPreset === "careful" ? "selected" : ""}>Careful - lowest pressure</option><option value="balanced" ${speedPreset === "balanced" ? "selected" : ""}>Balanced - recommended</option><option value="fast" ${speedPreset === "fast" ? "selected" : ""}>Fast - higher parallel processing</option><option value="maximum-safe" ${speedPreset === "maximum-safe" ? "selected" : ""}>Maximum Safe - highest safe throughput</option></select></label><label>Model<select id="model">${models.map((model) => `<option value="${escapeAttr(model.id)}" ${model.id === (form.model || novel.model || "gpt-4o-mini") ? "selected" : ""}>${escapeHtml(model.display_name)} · ${escapeHtml(model.pricing?.note || "Pricing not configured")}</option>`).join("")}</select></label><label><input id="autoOptimizeSpeed" type="checkbox" ${form.auto_optimize_speed === false ? "" : "checked"}> Auto Optimize Speed</label><p class="muted wide" id="speedDescription">Speed is being optimized automatically.</p></section>
-          <section class="panel form-grid"><h2>4. Budget & Safety</h2><label>Max total budget<input id="maxTotalBudget" type="number" step="0.01" value="${escapeAttr(form.max_total_budget ?? "")}"><span class="field-error" id="budgetError"></span></label><label>Max cost per chapter<input id="maxPerChapterBudget" type="number" step="0.001" value="${escapeAttr(form.max_per_chapter_budget ?? "")}"></label><label><input id="useReference" type="checkbox" ${form.use_reference === false ? "" : "checked"}> Use Reference when available</label><label><input id="onlyUntranslated" type="checkbox" ${form.only_untranslated === false ? "" : "checked"}> Only untranslated</label><div class="advanced-settings wide"><h3>Advanced Performance</h3><div class="form-grid"><label>Retry limit<input id="retryCount" type="number" min="0" max="5" value="${escapeAttr(form.retry_count ?? 2)}"></label><label>Queue depth<input id="batchSize" type="number" min="1" max="5000" value="${escapeAttr(form.batch_size ?? 25)}"></label><label>Maximum workers<select id="translationConcurrency"><option value="" ${form.concurrency ? "" : "selected"}>Auto</option><option value="1" ${Number(form.concurrency) === 1 ? "selected" : ""}>1 worker</option><option value="2" ${Number(form.concurrency) === 2 ? "selected" : ""}>2 workers</option><option value="3" ${Number(form.concurrency) === 3 ? "selected" : ""}>3 workers</option><option value="4" ${Number(form.concurrency) === 4 ? "selected" : ""}>4 workers</option><option value="6" ${Number(form.concurrency) === 6 ? "selected" : ""}>6 workers</option><option value="8" ${Number(form.concurrency) === 8 ? "selected" : ""}>8 workers</option></select></label><label>Priority<select id="jobPriority"><option value="normal" ${form.priority === "high" ? "" : "selected"}>Normal</option><option value="high" ${form.priority === "high" ? "selected" : ""}>High</option></select></label><label><input id="stopOnBudget" type="checkbox" ${form.stop_on_budget === false ? "" : "checked"}> Stop on budget</label></div></div></section>
+          <section class="workspace-panel form-grid"><div class="wide"><h2>1. Mode & Chapters</h2><p class="muted">Simple mode keeps the required choices visible and leaves performance controls hidden.</p></div><label>Mode<select id="translationMode"><option value="simple" ${mode === "simple" ? "selected" : ""}>Simple</option><option value="fast" ${mode === "fast" ? "selected" : ""}>Fast</option><option value="advanced" ${mode === "advanced" ? "selected" : ""}>Advanced</option><option value="economy" ${mode === "economy" ? "selected" : ""}>Economy / Overnight</option></select></label><label>Novel<select id="translateNovel">${state.novels.map((n) => `<option value="${n.id}" ${n.id === novelId ? "selected" : ""}>${escapeHtml(n.title)}</option>`).join("")}</select></label><label>What to translate<select id="selectionMode"><option value="next-untranslated" ${selectionMode === "next-untranslated" ? "selected" : ""}>Next untranslated chapters</option><option value="specific" ${selectionMode === "specific" ? "selected" : ""}>Specific chapters</option><option value="all-untranslated" ${selectionMode === "all-untranslated" ? "selected" : ""}>All untranslated</option></select></label><label id="nextCountLabel">Next count<select id="nextCount"><option value="25" ${Number(form.next_count || 25) === 25 ? "selected" : ""}>Next 25</option><option value="50" ${Number(form.next_count) === 50 ? "selected" : ""}>Next 50</option><option value="100" ${Number(form.next_count) === 100 ? "selected" : ""}>Next 100</option></select></label><label id="chapterInputLabel">Chapters<input id="translateChapters" value="${escapeAttr(form.chapters || "")}" placeholder="26,53,60-70"><span class="field-error" id="chapterError"></span></label><p class="muted wide" id="chapterPreview">Choose what to translate.</p></section>
+          <section class="workspace-panel form-grid"><div class="wide"><h2>2. Translation Profile</h2><p class="muted">Optional style and glossary notes shape the job without changing source data.</p></div><label>Profile<select id="profile"><option ${form.profile === "Default literary translation" ? "selected" : ""}>Default literary translation</option><option ${form.profile === "Reference-guided polish" ? "selected" : ""}>Reference-guided polish</option></select></label><label class="wide">Style guide<textarea id="styleGuide" rows="3">${escapeHtml(form.style_guide || "")}</textarea></label><label class="wide">Glossary notes<textarea id="glossary" rows="3">${escapeHtml(form.glossary || "")}</textarea></label></section>
+          <section class="workspace-panel form-grid"><div class="wide"><h2>3. Speed & Model</h2><p class="muted">Auto optimization keeps Simple mode focused while still using the selected speed intent.</p></div><label>Speed preset<select id="speedPreset"><option value="careful" ${speedPreset === "careful" ? "selected" : ""}>Careful - lowest pressure</option><option value="balanced" ${speedPreset === "balanced" ? "selected" : ""}>Balanced - recommended</option><option value="fast" ${speedPreset === "fast" ? "selected" : ""}>Fast - higher parallel processing</option><option value="maximum-safe" ${speedPreset === "maximum-safe" ? "selected" : ""}>Maximum Safe - highest safe throughput</option></select></label><label>Model<select id="model">${models.map((model) => `<option value="${escapeAttr(model.id)}" ${model.id === (form.model || novel.model || "gpt-4o-mini") ? "selected" : ""}>${escapeHtml(model.display_name)} - ${escapeHtml(model.pricing?.note || "Pricing not configured")}</option>`).join("")}</select></label><label class="inline-check"><input id="autoOptimizeSpeed" type="checkbox" ${form.auto_optimize_speed === false ? "" : "checked"}> Auto Optimize Speed</label><p class="muted wide" id="speedDescription">Speed is being optimized automatically.</p></section>
+          <section class="workspace-panel form-grid"><div class="wide"><h2>4. Budget & Safety</h2><p class="muted">Budget caps are optional; launch stays locked until this form has a current estimate.</p></div><label>Max total budget<input id="maxTotalBudget" type="number" step="0.01" value="${escapeAttr(form.max_total_budget ?? "")}"><span class="field-error" id="budgetError"></span></label><label>Max cost per chapter<input id="maxPerChapterBudget" type="number" step="0.001" value="${escapeAttr(form.max_per_chapter_budget ?? "")}"></label><label class="inline-check"><input id="useReference" type="checkbox" ${form.use_reference === false ? "" : "checked"}> Use Reference when available</label><label class="inline-check"><input id="onlyUntranslated" type="checkbox" ${form.only_untranslated === false ? "" : "checked"}> Only untranslated</label><div class="advanced-settings wide"><h3>Advanced Performance</h3><div class="form-grid"><label>Retry limit<input id="retryCount" type="number" min="0" max="5" value="${escapeAttr(form.retry_count ?? 2)}"></label><label>Queue depth<input id="batchSize" type="number" min="1" max="5000" value="${escapeAttr(form.batch_size ?? 25)}"></label><label>Maximum workers<select id="translationConcurrency"><option value="" ${form.concurrency ? "" : "selected"}>Auto</option><option value="1" ${Number(form.concurrency) === 1 ? "selected" : ""}>1 worker</option><option value="2" ${Number(form.concurrency) === 2 ? "selected" : ""}>2 workers</option><option value="3" ${Number(form.concurrency) === 3 ? "selected" : ""}>3 workers</option><option value="4" ${Number(form.concurrency) === 4 ? "selected" : ""}>4 workers</option><option value="6" ${Number(form.concurrency) === 6 ? "selected" : ""}>6 workers</option><option value="8" ${Number(form.concurrency) === 8 ? "selected" : ""}>8 workers</option></select></label><label>Priority<select id="jobPriority"><option value="normal" ${form.priority === "high" ? "" : "selected"}>Normal</option><option value="high" ${form.priority === "high" ? "selected" : ""}>High</option></select></label><label class="inline-check"><input id="stopOnBudget" type="checkbox" ${form.stop_on_budget === false ? "" : "checked"}> Stop on budget</label></div></div></section>
         </div>
-        <aside class="estimate-panel"><h2>5. Estimate</h2><section id="estimateResult"><p class="muted">Run an estimate before creating a job. Estimates are approximate.</p></section><div class="actions"><button id="estimateBtn" class="primary">Estimate</button><button id="createJobBtn">Launch Job</button></div></aside>
+        <aside class="estimate-panel"><h2>5. Estimate</h2><section id="estimateResult"><p class="muted">Run an estimate before creating a job. Estimates are approximate.</p></section><p class="muted" id="launchReason">Run an estimate before Launch Job is available.</p><div class="actions"><button id="estimateBtn" class="primary">Estimate</button><button id="createJobBtn" disabled>Launch Job</button></div></aside>
       </section>
       <section class="table-card"><h2>Recent Jobs</h2>${renderJobsTable(jobs.jobs || [])}</section>`;
     document.querySelector("#translateNovel").addEventListener("change", (e) => { window.location.hash = `#/translate/${e.target.value}`; });
@@ -1026,6 +1083,7 @@ async function estimateTranslation(event) {
   const missingOriginal = Math.max(0, Number(estimate.selected_count || 0) - Number(estimate.original_readable || 0));
   const referenceMissing = Math.max(0, Number(estimate.selected_count || 0) - Number(estimate.reference_available || 0));
   document.querySelector("#estimateResult").innerHTML = `<div class="metric-grid">${metric("Selected", estimate.selected_count)}${metric("Eligible", estimate.eligible_count)}${metric("Already translated", estimate.ai_existing || 0)}${metric("Missing Original", missingOriginal)}${metric("Reference available", estimate.reference_available || 0)}${metric("Reference missing", referenceMissing)}${metric("Speed mode", titleCase(estimate.speed_preset || "balanced"))}${metric("Expected workers", estimate.expected_workers || 1)}${metric("Approx time", durationEstimateText(estimate.duration_estimate))}${metric("Approx cost", `$${Number(estimate.estimated_cost || 0).toFixed(4)}`)}${metric("Budget margin", budgetMarginText(estimate))}</div><p class="muted">${escapeHtml(estimate.pricing_note)} ${estimate.auto_optimize_speed ? "Speed is being optimized automatically." : ""}</p>`;
+  validateTranslateForm();
 }
 
 async function createTranslationJob(event) {
@@ -1040,12 +1098,17 @@ async function createTranslationJob(event) {
 }
 
 function renderJobsTable(jobs, focusedJobId = "") {
-  return `<table class="responsive-table job-table"><thead><tr><th>Novel</th><th>Status</th><th>Progress</th><th>Current</th><th>Remaining</th><th>Failed</th><th>Workers</th><th>Speed</th><th>ETA</th><th>Budget</th><th>Last activity</th><th>Actions</th></tr></thead><tbody>${jobs.map((job) => {
+  return `<table class="responsive-table job-table"><thead><tr><th>Work</th><th>Status</th><th>Progress</th><th>Now</th><th>Throughput</th><th>Budget</th><th>Actions</th></tr></thead><tbody>${jobs.map((job) => {
     const throughput = jobThroughput(job);
+    const total = Number(job.total_items || 0);
+    const completed = Number(job.completed_items || 0);
+    const failed = Number(job.failed_items || 0);
     const remaining = Math.max(0, Number(job.total_items || 0) - Number(job.completed_items || 0) - Number(job.failed_items || 0));
     const skipped = Math.max(0, Number(job.total_items || 0) - Number(job.completed_items || 0) - Number(job.failed_items || 0) - remaining);
-    return `<tr class="${focusedJobId === job.id ? "selected-row" : ""}"><td data-label="Novel"><a href="#/jobs/${job.id}">${escapeHtml(job.novel_id || job.id.slice(0, 8))}</a><br><span>${escapeHtml(job.model || "")}</span></td><td data-label="Status">${statusBadge(job.status)}<br><span>${escapeHtml(job.priority || "normal")}</span></td><td data-label="Progress">${job.completed_items || 0}/${job.total_items || 0}</td><td data-label="Current">${job.activity?.current_chapter ? `Chapter ${job.activity.current_chapter}` : "Idle"}</td><td data-label="Remaining">${remaining}</td><td data-label="Failed">${job.failed_items || 0}<br><span>skipped ${skipped}</span></td><td data-label="Workers">${job.activity?.active_workers || 0}</td><td data-label="Speed">${throughput.summary}</td><td data-label="ETA">${throughput.remaining}</td><td data-label="Budget">$${Number(job.actual_cost || 0).toFixed(4)} / $${Number(job.estimated_cost || 0).toFixed(4)}</td><td data-label="Last activity">${timeAgo(job.updated_at)}</td><td data-label="Actions" class="row-actions">${jobActions(job)}<button type="button" data-copy-link="#/jobs/${job.id}">Copy Link</button></td></tr>`;
-  }).join("") || `<tr><td colspan="12">No translation jobs yet.</td></tr>`}</tbody></table>`;
+    const pct = total ? Math.round(completed / total * 100) : 0;
+    const title = jobNovelTitle(job);
+    return `<tr class="${focusedJobId === job.id ? "selected-row" : ""}"><td data-label="Work" class="job-work-cell"><a href="#/jobs/${job.id}"><strong title="${escapeAttr(title)}">${escapeHtml(title)}</strong></a><span class="technical-id" title="${escapeAttr(job.id)}">${escapeHtml(truncateMiddle(job.id, 18))}</span><span class="technical-id" title="${escapeAttr(job.model || "")}">${escapeHtml(truncateMiddle(job.model || "model pending", 26))}</span></td><td data-label="Status">${statusBadge(job.status)}<span class="subtle-line">${escapeHtml(job.priority || "normal")} priority</span></td><td data-label="Progress"><div class="mini-progress compact"><span style="width:${pct}%"></span></div><strong>${completed}/${total}</strong><span class="subtle-line">${failed} failed · ${remaining} remaining</span></td><td data-label="Now">${job.activity?.current_chapter ? `Chapter ${job.activity.current_chapter}` : "Idle"}<span class="subtle-line">${job.activity?.active_workers || 0} active workers</span></td><td data-label="Throughput">${escapeHtml(throughput.summary)}<span class="subtle-line">${escapeHtml(throughput.remaining)}</span></td><td data-label="Budget">$${Number(job.actual_cost || 0).toFixed(4)}<span class="subtle-line">est. $${Number(job.estimated_cost || 0).toFixed(4)} · ${timeAgo(job.updated_at)}</span></td><td data-label="Actions" class="row-actions"><div class="action-group">${jobActions(job)}<button type="button" data-copy-link="#/jobs/${job.id}">Copy Link</button></div><details class="job-row-details"><summary>Details</summary><p><strong>Novel ID</strong> ${escapeHtml(job.novel_id || "")}</p><p><strong>Skipped</strong> ${skipped}</p><p><strong>Model</strong> ${escapeHtml(job.model || "")}</p></details></td></tr>`;
+  }).join("") || `<tr><td colspan="7">No translation jobs yet.</td></tr>`}</tbody></table>`;
 }
 
 function jobActions(job) {
@@ -1058,6 +1121,18 @@ function jobActions(job) {
     actions.push(["retry-failed", "Retry Failed"], ["stop", "Stop"]);
   }
   return actions.map(([action, label]) => `<button data-job-action="${action}" data-job="${job.id}">${label}</button>`).join("") || `<span class="muted">No actions</span>`;
+}
+
+function jobNovelTitle(job) {
+  const novel = state.novels.find((item) => item.id === job.novel_id);
+  return novel?.title || job.novel_title || job.novel_id || `Job ${String(job.id || "").slice(0, 8)}`;
+}
+
+function truncateMiddle(value, max = 24) {
+  const text = String(value || "");
+  if (text.length <= max) return text;
+  const edge = Math.max(4, Math.floor((max - 3) / 2));
+  return `${text.slice(0, edge)}...${text.slice(-edge)}`;
 }
 
 function bindJobButtons() {
@@ -1230,20 +1305,51 @@ function renderAdminOverview(data, dbHealth, jobs, imports, manifest) {
   const activeJobs = (jobs.jobs || []).filter((job) => ["queued", "running", "paused"].includes(job.status));
   const failedJobs = (jobs.jobs || []).filter((job) => job.status === "failed" || job.error);
   const backupStatus = manifest?.sha256 ? "Protected" : "Needs Attention";
-  return `<section class="dashboard-grid">
-    <div class="panel status-panel"><h2>System Health</h2>${metric("Application", "Healthy")}${metric("Database", dbHealth.health?.reachable ? "Healthy" : "Needs Attention")}${metric("Version", APP_VERSION)}${metric("Schema", data.schema)}</div>
-    <div class="panel">${metric("Novels", data.novels)}${metric("Chapters", data.chapters)}${metric("AI Translations", data.ai)}${metric("Needs Translation", data.needs_translation)}</div>
-    <div class="panel">${metric("Active Jobs", activeJobs.length ? "Running" : 0)}${metric("Failed Jobs", failedJobs.length ? "Failed" : 0)}${metric("Imports", (imports.jobs || []).length)}${metric("Backup", backupStatus)}</div>
-    <div class="panel quick-actions"><h2>Quick Actions</h2><div class="actions"><button id="createBackupBtn" type="button">Create Backup</button><a class="button" href="#/translate/${state.currentNovelId}">Translate</a><a class="button" href="#/admin/novels">Add Novel</a><a class="button" href="#/admin/recovery">Missing Data</a><a class="button" href="#/admin/backups">Recovery</a><a class="button" href="#/admin/jobs">Failed Jobs</a></div></div>
+  const lastBackup = manifest?.created_at ? timeAgo(manifest.created_at) : "No backup manifest yet";
+  return `<section class="overview-panel admin-overview">
+    <div class="overview-copy">
+      <p class="eyebrow">Admin Overview</p>
+      <h2>Production workspace status</h2>
+      <p class="muted">Application ${APP_VERSION} is using schema ${escapeHtml(data.schema || "unknown")}. Database health, job state, and backup protection are summarized here before deeper actions.</p>
+      <div class="status-list">
+        <span>${statusBadge("healthy")} Application healthy</span>
+        <span>${statusBadge(dbHealth.health?.reachable ? "healthy" : "needs attention")} Database ${dbHealth.health?.reachable ? "reachable" : "needs attention"}</span>
+        <span>${statusBadge(manifest?.sha256 ? "protected" : "needs attention")} Backup ${escapeHtml(backupStatus)} · ${escapeHtml(lastBackup)}</span>
+      </div>
+    </div>
+    <div class="overview-metrics">
+      ${metric("Novels", data.novels)}
+      ${metric("Chapters", data.chapters)}
+      ${metric("AI Translations", data.ai)}
+      ${metric("Needs Translation", data.needs_translation)}
+      ${metric("Active Jobs", activeJobs.length)}
+      ${metric("Failed Jobs", failedJobs.length)}
+      ${metric("Imports", (imports.jobs || []).length)}
+      ${metric("Version", APP_VERSION)}
+    </div>
+  </section>
+  <section class="quick-actions-panel">
+    <div><h2>Quick Actions</h2><p class="muted">Common admin paths without crowding the overview.</p></div>
+    <div class="actions"><button id="createBackupBtn" type="button">Create Backup</button><a class="button" href="#/translate/${state.currentNovelId}">Translate</a><a class="button" href="#/admin/novels">Add Novel</a><a class="button" href="#/admin/recovery">Missing Data</a><a class="button" href="#/admin/backups">Recovery</a><a class="button" href="#/admin/jobs">Failed Jobs</a></div>
   </section><section id="backupActionResult"></section>`;
 }
 
 function renderBackupsRecovery(manifest) {
-  return `<section class="dashboard-grid">
-    <div class="panel"><h2>Overview</h2>${metric("Format", manifest?.format_version || "unknown")}${metric("Version", manifest?.app_version || APP_VERSION)}${metric("Schema", manifest?.schema || "")}${metric("Backup State", manifest?.sha256 ? "Protected" : "Needs Attention")}</div>
-    <div class="panel"><h2>Create Backup</h2><p class="muted">Full-platform backups include v10 application tables and exclude secrets, API keys, tokens, cookies, and auth password material.</p><div class="actions"><button id="createBackupBtn" class="primary" type="button">Create Backup</button><a class="button" href="/api/admin/backups/download">Download Local Copy</a></div></div>
-    <div class="panel"><h2>Backup History</h2><table><tbody><tr><td>${escapeHtml(manifest?.created_at || "Current manifest")}</td><td>${escapeHtml(manifest?.format_version || "")}</td><td>${manifest?.table_counts?.novels || 0} novels / ${manifest?.chapter_source_counts?.chapters || 0} chapters</td><td>${formatBytes(manifest?.size_bytes || 0)}</td><td>Manifest</td></tr></tbody></table></div>
-    <div class="panel"><h2>Restore</h2><p class="muted">Default restore mode adds missing data only. Restore preview reports exact add, skip, overwrite, and invalid counts before any apply step.</p><label>Mode<select id="restoreMode"><option value="add-missing">Add missing data only</option><option value="skip-existing">Skip existing data</option><option value="overwrite">Overwrite existing data</option></select></label><label>Backup JSON<input id="restoreFile" type="file" accept=".json,application/json"></label><div class="actions"><button id="restorePreviewBtn" type="button">Restore Preview</button></div></div>
+  const protectedState = manifest?.sha256 ? "Protected" : "Needs Attention";
+  const created = manifest?.created_at ? timeAgo(manifest.created_at) : "No manifest created yet";
+  const historyCreated = manifest?.created_at || "No manifest created yet";
+  return `<section class="backup-workspace">
+    <section class="overview-panel">
+      <div class="overview-copy"><p class="eyebrow">Backups & Recovery</p><h2>Protected recovery workflow</h2><p class="muted">Backups include v10 application tables and exclude secrets, API keys, tokens, cookies, and auth password material.</p></div>
+      <div class="overview-metrics">${metric("Last Backup", created)}${metric("Protected State", protectedState)}${metric("Version", manifest?.app_version || APP_VERSION)}${metric("Schema", manifest?.schema || "")}</div>
+    </section>
+    <section class="backup-grid">
+      <article class="backup-section"><h2>Overview</h2><p class="muted">Format ${escapeHtml(manifest?.format_version || "unknown")} · ${manifest?.table_counts?.novels || 0} novels · ${manifest?.chapter_source_counts?.chapters || 0} chapters.</p><p class="muted">Checksum ${manifest?.sha256 ? escapeHtml(truncateMiddle(manifest.sha256, 24)) : "not available"} · ${formatBytes(manifest?.size_bytes || 0)}.</p></article>
+      <article class="backup-section"><h2>Create Backup</h2><p class="muted">Create a manifest, save it to Supabase backup storage when configured, or download a local copy.</p><div class="actions"><button id="createBackupBtn" class="primary" type="button">Create Backup</button><a class="button" href="/api/admin/backups/download">Download Local Copy</a></div></article>
+      <article class="backup-section"><h2>Backup History</h2><table class="responsive-table"><tbody><tr><td data-label="Created">${escapeHtml(historyCreated)}</td><td data-label="Format">${escapeHtml(manifest?.format_version || "")}</td><td data-label="Contents">${manifest?.table_counts?.novels || 0} novels / ${manifest?.chapter_source_counts?.chapters || 0} chapters</td><td data-label="Size">${formatBytes(manifest?.size_bytes || 0)}</td><td data-label="Storage">Manifest</td></tr></tbody></table></article>
+      <article class="backup-section"><h2>Restore</h2><p class="muted">Default restore mode adds missing data only. Restore preview reports add, skip, overwrite, and invalid counts before any apply step.</p><label>Safe restore mode<select id="restoreMode"><option value="add-missing">Add missing data only</option><option value="skip-existing">Skip existing data</option><option value="overwrite">Overwrite existing data</option></select></label><label>Backup JSON<input id="restoreFile" type="file" accept=".json,application/json"></label><div class="actions"><button id="restorePreviewBtn" type="button">Restore Preview</button></div></article>
+      <article class="backup-section"><h2>Novel Recovery</h2><p class="muted">Recover missing Reference chapters for a selected novel without overwriting readable chapter text.</p><div class="actions"><a class="button" href="#/admin/recovery">Open Novel Recovery</a><a class="button" href="/api/novels/${state.currentNovelId}/recovery/request">Download Recovery Request</a></div></article>
+    </section>
   </section><section id="backupActionResult"></section><section id="restorePreviewResult"></section>`;
 }
 
@@ -1493,8 +1599,9 @@ function breadcrumbsForHash(hash) {
 }
 
 function statusBadge(status) {
-  const ok = ["completed", "running", "queued"].includes(status);
-  return `<span class="badge ${ok ? "ok" : status === "failed" ? "missing" : ""}">${escapeHtml(status || "unknown")}</span>`;
+  const ok = ["completed", "running", "queued", "healthy", "protected"].includes(String(status || "").toLowerCase());
+  const missing = ["failed", "needs attention", "unhealthy"].includes(String(status || "").toLowerCase());
+  return `<span class="badge ${ok ? "ok" : missing ? "missing" : ""}">${escapeHtml(status || "unknown")}</span>`;
 }
 
 function jobActivityText(job) {
@@ -1529,8 +1636,14 @@ function bindReaderProgress(novelId, chapterNumber, source) {
     const percent = readerScrollPercent();
     localStorage.setItem(readerScrollKey(novelId, chapterNumber, source), String(percent));
     saveProgressDebounced(novelId, chapterNumber, source, percent);
+    updateBackToTop();
   }, 700);
   window.addEventListener("scroll", readerScrollHandler, {passive: true});
+}
+
+function updateBackToTop() {
+  const button = document.querySelector("#backToTop");
+  if (button) button.hidden = window.scrollY < 500;
 }
 
 function readerScrollKey(novelId, chapterNumber, source) {
@@ -1584,6 +1697,7 @@ function validateTranslateForm() {
   const budgetError = document.querySelector("#budgetError");
   const estimateButton = document.querySelector("#estimateBtn");
   const createButton = document.querySelector("#createJobBtn");
+  const launchReason = document.querySelector("#launchReason");
   if (!chaptersInput || !chapterError || !budgetError) return true;
   const raw = chaptersInput.value.trim();
   const parsed = parseChapterInput(raw);
@@ -1595,7 +1709,14 @@ function validateTranslateForm() {
   budgetError.textContent = invalidBudget ? "Per-chapter budget cannot exceed total budget." : "";
   const valid = !invalidChapter && !invalidBudget;
   if (estimateButton) estimateButton.disabled = !valid;
-  if (createButton) createButton.disabled = !valid;
+  if (createButton) createButton.disabled = !valid || !state.lastEstimate;
+  if (launchReason) {
+    launchReason.textContent = !valid
+      ? "Fix the highlighted fields before estimating or launching."
+      : state.lastEstimate
+        ? "Estimate is current. Launch Job will create queued work for this novel."
+        : "Run an estimate before Launch Job is available.";
+  }
   return valid;
 }
 
