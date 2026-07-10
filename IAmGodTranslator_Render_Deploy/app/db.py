@@ -7,13 +7,17 @@ import sqlite3
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def utc_after(seconds: int) -> str:
+    return (datetime.now(UTC) + timedelta(seconds=seconds)).isoformat()
 
 
 def readable(value: str | None) -> bool:
@@ -131,6 +135,7 @@ class Database:
             job_ref_type = "TEXT"
             ts_type = "TEXT"
             numeric_type = "REAL"
+        translation_performance = self.table("translation_performance")
         return f"""
         CREATE TABLE IF NOT EXISTS {novels} (
             id TEXT PRIMARY KEY,
@@ -185,6 +190,7 @@ class Database:
             max_per_chapter_budget {numeric_type},
             estimated_cost {numeric_type},
             actual_cost {numeric_type},
+            priority TEXT NOT NULL DEFAULT 'normal',
             created_at {ts_type} NOT NULL,
             started_at {ts_type},
             finished_at {ts_type},
@@ -201,9 +207,32 @@ class Database:
             estimated_cost {numeric_type},
             actual_cost {numeric_type},
             error TEXT,
+            failure_category TEXT,
+            worker_id TEXT,
+            claimed_at {ts_type},
+            heartbeat_at {ts_type},
+            lease_expires_at {ts_type},
             created_at {ts_type} NOT NULL,
             updated_at {ts_type} NOT NULL,
             UNIQUE (job_id, chapter_number)
+        );
+
+        CREATE TABLE IF NOT EXISTS {translation_performance} (
+            id {id_type},
+            model TEXT NOT NULL,
+            novel_id TEXT,
+            sample_count INTEGER NOT NULL DEFAULT 0,
+            success_count INTEGER NOT NULL DEFAULT 0,
+            failure_count INTEGER NOT NULL DEFAULT 0,
+            total_duration_seconds {numeric_type} NOT NULL DEFAULT 0,
+            total_input_chars INTEGER NOT NULL DEFAULT 0,
+            total_output_chars INTEGER NOT NULL DEFAULT 0,
+            total_input_tokens INTEGER NOT NULL DEFAULT 0,
+            total_output_tokens INTEGER NOT NULL DEFAULT 0,
+            rate_limited_count INTEGER NOT NULL DEFAULT 0,
+            timeout_count INTEGER NOT NULL DEFAULT 0,
+            updated_at {ts_type} NOT NULL,
+            UNIQUE (model, novel_id)
         );
 
         CREATE TABLE IF NOT EXISTS {import_jobs} (
@@ -321,13 +350,20 @@ class Database:
             "current_chapter": "INTEGER",
             "error": "TEXT",
             "settings_json": "TEXT",
+            "priority": "TEXT NOT NULL DEFAULT 'normal'",
         }
+        ts_type = "TIMESTAMPTZ" if self.config.backend == "postgres" else "TEXT"
         item_columns = {
             "model": "TEXT",
             "input_tokens": "INTEGER",
             "output_tokens": "INTEGER",
-            "started_at": "TEXT",
-            "finished_at": "TEXT",
+            "started_at": ts_type,
+            "finished_at": ts_type,
+            "failure_category": "TEXT",
+            "worker_id": "TEXT",
+            "claimed_at": ts_type,
+            "heartbeat_at": ts_type,
+            "lease_expires_at": ts_type,
         }
         for table, columns in (
             ("novels", novel_columns),
@@ -814,7 +850,43 @@ class Database:
             ).fetchall()
         return [int(row["chapter_number"]) for row in rows]
 
+    def performance_summary(self, model: str, novel_id: str | None = None) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT
+                    SUM(sample_count) AS sample_count,
+                    SUM(success_count) AS success_count,
+                    SUM(failure_count) AS failure_count,
+                    SUM(total_duration_seconds) AS total_duration_seconds,
+                    SUM(total_input_chars) AS total_input_chars,
+                    SUM(total_output_chars) AS total_output_chars,
+                    SUM(total_input_tokens) AS total_input_tokens,
+                    SUM(total_output_tokens) AS total_output_tokens,
+                    SUM(rate_limited_count) AS rate_limited_count,
+                    SUM(timeout_count) AS timeout_count
+                FROM {self.table('translation_performance')}
+                WHERE model = ? AND novel_id IN (?, '__all__')
+                """,
+                (model, novel_id),
+            ).fetchone()
+        sample_count = int(row["sample_count"] or 0) if row else 0
+        success_count = int(row["success_count"] or 0) if row else 0
+        total_duration = float(row["total_duration_seconds"] or 0) if row else 0.0
+        return {
+            "sample_count": sample_count,
+            "success_count": success_count,
+            "failure_count": int(row["failure_count"] or 0) if row else 0,
+            "average_chapter_seconds": total_duration / success_count if success_count else None,
+            "average_input_chars": int(row["total_input_chars"] or 0) / sample_count if sample_count else None,
+            "average_output_chars": int(row["total_output_chars"] or 0) / success_count if success_count else None,
+            "success_rate": success_count / sample_count if sample_count else None,
+            "rate_limited_count": int(row["rate_limited_count"] or 0) if row else 0,
+            "timeout_count": int(row["timeout_count"] or 0) if row else 0,
+        }
+
     def estimate_translation(self, novel_id: str, chapters: list[int], settings: dict[str, Any]) -> dict[str, Any]:
+        settings = normalized_translation_settings(settings)
         rows = self.translation_candidates(
             novel_id,
             chapters,
@@ -829,10 +901,17 @@ class Database:
         input_tokens = max(1, input_chars // 4) if eligible else 0
         output_tokens = max(1, sum(row["original_chars"] for row in eligible) // 5) if eligible else 0
         estimated_cost = (input_tokens / 1_000_000 * pricing["input"]) + (output_tokens / 1_000_000 * pricing["output"])
+        performance = self.performance_summary(model, novel_id)
+        speed = speed_estimate(len(eligible), settings, performance)
         return {
             "ok": True,
             "novel_id": novel_id,
             "model": model,
+            "translation_mode": settings["translation_mode"],
+            "speed_preset": settings["speed_preset"],
+            "auto_optimize_speed": settings["auto_optimize_speed"],
+            "expected_workers": speed["expected_workers"],
+            "duration_estimate": speed,
             "pricing_note": pricing["note"],
             "selected_count": len(chapters),
             "eligible_count": len(eligible),
@@ -847,6 +926,7 @@ class Database:
         }
 
     def create_translation_job(self, novel_id: str, chapters: list[int], settings: dict[str, Any]) -> dict[str, Any]:
+        settings = normalized_translation_settings(settings)
         estimate = self.estimate_translation(novel_id, chapters, settings)
         eligible = [row for row in estimate["items"] if row["eligible"]]
         batch_size = int(settings.get("batch_size") or len(eligible) or 0)
@@ -861,10 +941,10 @@ class Database:
                 INSERT INTO {self.table('translation_jobs')} (
                     id, novel_id, status, start_chapter, end_chapter, max_chapters,
                     total_items, completed_items, failed_items, model, max_total_budget,
-                    max_per_chapter_budget, estimated_cost, actual_cost, settings_json,
+                    max_per_chapter_budget, estimated_cost, actual_cost, priority, settings_json,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, 0, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, 0, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -878,6 +958,7 @@ class Database:
                     settings.get("max_total_budget"),
                     settings.get("max_per_chapter_budget"),
                     estimate["estimated_cost"],
+                    settings.get("priority", "normal"),
                     json.dumps(settings, ensure_ascii=False),
                     now,
                     now,
@@ -910,12 +991,25 @@ class Database:
                 SELECT *
                 FROM {self.table('translation_jobs')}
                 {where}
-                ORDER BY created_at DESC
+                ORDER BY CASE WHEN priority = 'high' THEN 0 ELSE 1 END, created_at DESC
                 LIMIT ?
                 """,
                 tuple(params),
             ).fetchall()
-        return [public_job_row(row) for row in rows]
+            jobs: list[dict[str, Any]] = []
+            for row in rows:
+                payload = public_job_row(row)
+                items = conn.execute(
+                    f"""
+                    SELECT status, worker_id, heartbeat_at, lease_expires_at
+                    FROM {self.table('translation_job_items')}
+                    WHERE job_id = ? AND status = 'running'
+                    """,
+                    (payload["id"],),
+                ).fetchall()
+                payload["activity"] = job_activity([dict(item) for item in items])
+                jobs.append(payload)
+        return jobs
 
     def translation_job(self, job_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
@@ -924,8 +1018,9 @@ class Database:
                 return None
             items = conn.execute(
                 f"""
-                SELECT chapter_number, status, attempts, estimated_cost, actual_cost, error, model,
-                    input_tokens, output_tokens, started_at, finished_at
+                SELECT chapter_number, status, attempts, estimated_cost, actual_cost, error, failure_category, model,
+                    input_tokens, output_tokens, started_at, finished_at,
+                    worker_id, claimed_at, heartbeat_at, lease_expires_at
                 FROM {self.table('translation_job_items')}
                 WHERE job_id = ?
                 ORDER BY chapter_number
@@ -935,6 +1030,7 @@ class Database:
             ).fetchall()
         payload = public_job_row(job)
         payload["items"] = [dict(row) for row in items]
+        payload["activity"] = job_activity(payload["items"])
         return payload
 
     def set_job_status(self, job_id: str, status: str) -> dict[str, Any]:
@@ -944,25 +1040,70 @@ class Database:
                 f"UPDATE {self.table('translation_jobs')} SET status = ?, updated_at = ?, finished_at = CASE WHEN ? IN ('completed','failed','cancelled') THEN ? ELSE finished_at END WHERE id = ?",
                 (status, now, status, now, job_id),
             )
+            if status == "cancelled":
+                conn.execute(
+                    f"""
+                    UPDATE {self.table('translation_job_items')}
+                    SET status = 'cancelled', worker_id = NULL, claimed_at = NULL,
+                        heartbeat_at = NULL, lease_expires_at = NULL, updated_at = ?
+                    WHERE job_id = ? AND status IN ('pending', 'running', 'failed')
+                    """,
+                    (now, job_id),
+                )
         return self.translation_job(job_id) or {}
 
     def retry_failed_items(self, job_id: str) -> dict[str, Any]:
+        now = utc_now()
         with self.connect() as conn:
             conn.execute(
-                f"UPDATE {self.table('translation_job_items')} SET status = 'pending', error = NULL, updated_at = ? WHERE job_id = ? AND status = 'failed'",
-                (utc_now(), job_id),
+                f"""
+                UPDATE {self.table('translation_job_items')}
+                SET status = 'pending', error = NULL, worker_id = NULL, claimed_at = NULL,
+                    heartbeat_at = NULL, lease_expires_at = NULL, updated_at = ?
+                WHERE job_id = ? AND status = 'failed'
+                """,
+                (now, job_id),
             )
-            conn.execute(f"UPDATE {self.table('translation_jobs')} SET status = 'queued', updated_at = ? WHERE id = ?", (utc_now(), job_id))
+            conn.execute(f"UPDATE {self.table('translation_jobs')} SET status = 'queued', updated_at = ? WHERE id = ?", (now, job_id))
         return self.translation_job(job_id) or {}
 
     def run_next_translation_item(self, job_id: str, translator: Any) -> dict[str, Any]:
+        worker_id = f"manual-{uuid.uuid4()}"
+        claim = self.claim_translation_item(job_id, worker_id)
+        if claim.get("status") != "claimed":
+            return self.translation_job(job_id) or claim
+        if claim.get("skip_error"):
+            return self.finish_translation_item(job_id, int(claim["item_id"]), worker_id, skipped_error=str(claim["skip_error"]))
+        try:
+            result = translator(claim["original_text"], claim.get("reference_text"), claim["settings"])
+        except Exception as exc:
+            return self.finish_translation_item(job_id, int(claim["item_id"]), worker_id, error=compact_error(exc))
+        return self.finish_translation_item(job_id, int(claim["item_id"]), worker_id, result=result)
+
+    def runnable_translation_job_ids(self, limit: int = 25) -> list[str]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id
+                FROM {self.table('translation_jobs')}
+                WHERE status IN ('queued', 'running')
+                ORDER BY CASE WHEN priority = 'high' THEN 0 ELSE 1 END, created_at ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [str(row["id"]) for row in rows]
+
+    def claim_translation_item(self, job_id: str, worker_id: str, lease_seconds: int = 900) -> dict[str, Any]:
         now = utc_now()
+        lease_expires = utc_after(lease_seconds)
         with self.connect() as conn:
             job = conn.execute(f"SELECT * FROM {self.table('translation_jobs')} WHERE id = ?", (job_id,)).fetchone()
             if job is None:
-                raise ValueError("Translation job not found.")
-            if job["status"] in {"paused", "cancelled", "completed"}:
-                return {"ok": True, "status": job["status"], "message": "Job is not runnable."}
+                return {"ok": False, "status": "missing", "message": "Translation job not found."}
+            if job["status"] in {"paused", "cancelled", "completed", "failed"}:
+                return {"ok": True, "status": job["status"], "message": "Job is not currently claimable."}
+
             settings = json.loads(job["settings_json"] or "{}") if job["settings_json"] else {}
             stop_on_budget = bool(settings.get("stop_on_budget", True))
             max_total_budget = job["max_total_budget"]
@@ -971,57 +1112,182 @@ class Database:
                     f"UPDATE {self.table('translation_jobs')} SET status = 'paused', error = 'budget_reached', updated_at = ? WHERE id = ?",
                     (now, job_id),
                 )
-                updated_job = conn.execute(f"SELECT * FROM {self.table('translation_jobs')} WHERE id = ?", (job_id,)).fetchone()
-                items = conn.execute(
-                    f"SELECT chapter_number, status, attempts, estimated_cost, actual_cost, error, model, input_tokens, output_tokens, started_at, finished_at FROM {self.table('translation_job_items')} WHERE job_id = ? ORDER BY chapter_number LIMIT 500",
-                    (job_id,),
-                ).fetchall()
-                payload = public_job_row(updated_job)
-                payload["items"] = [dict(row) for row in items]
-                return payload
-            item = conn.execute(
-                f"""
-                SELECT *
-                FROM {self.table('translation_job_items')}
-                WHERE job_id = ? AND status IN ('pending', 'failed')
-                ORDER BY chapter_number
-                LIMIT 1
-                """,
-                (job_id,),
-            ).fetchone()
+                return {"ok": True, "status": "paused", "message": "Budget reached."}
+
+            retry_count = max(0, optional_int(settings.get("retry_count")) or 0)
+            if self.config.backend == "postgres":
+                item = conn.execute(
+                    f"""
+                    SELECT *
+                    FROM {self.table('translation_job_items')}
+                    WHERE job_id = ?
+                        AND (
+                            status = 'pending'
+                            OR (status = 'failed' AND attempts <= ? AND (failure_category IS NULL OR failure_category IN ('rate_limited','timeout','provider_unavailable','network_error','unknown')))
+                            OR (status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at < ?) AND attempts <= ?)
+                        )
+                    ORDER BY chapter_number
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
+                    """,
+                    (job_id, retry_count, now, retry_count),
+                ).fetchone()
+            else:
+                item = conn.execute(
+                    f"""
+                    SELECT *
+                    FROM {self.table('translation_job_items')}
+                    WHERE job_id = ?
+                        AND (
+                            status = 'pending'
+                            OR (status = 'failed' AND attempts <= ? AND (failure_category IS NULL OR failure_category IN ('rate_limited','timeout','provider_unavailable','network_error','unknown')))
+                            OR (status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at < ?) AND attempts <= ?)
+                        )
+                    ORDER BY chapter_number
+                    LIMIT 1
+                    """,
+                    (job_id, retry_count, now, retry_count),
+                ).fetchone()
             if item is None:
-                conn.execute(f"UPDATE {self.table('translation_jobs')} SET status = 'completed', finished_at = ?, updated_at = ? WHERE id = ?", (now, now, job_id))
-                return {"ok": True, "status": "completed", "message": "No pending items."}
+                refreshed = self._refresh_translation_job_counts(conn, job_id, now)
+                return {"ok": True, "status": "empty", "job": refreshed}
+
+            cursor = conn.execute(
+                f"""
+                UPDATE {self.table('translation_job_items')}
+                SET status = 'running',
+                    attempts = attempts + 1,
+                    error = NULL,
+                    worker_id = ?,
+                    claimed_at = COALESCE(claimed_at, ?),
+                    heartbeat_at = ?,
+                    lease_expires_at = ?,
+                    started_at = COALESCE(started_at, ?),
+                    updated_at = ?
+                WHERE id = ?
+                    AND (
+                        status = 'pending'
+                        OR (status = 'failed' AND attempts <= ? AND (failure_category IS NULL OR failure_category IN ('rate_limited','timeout','provider_unavailable','network_error','unknown')))
+                        OR (status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at < ?) AND attempts <= ?)
+                    )
+                """,
+                (worker_id, now, now, lease_expires, now, now, item["id"], retry_count, now, retry_count),
+            )
+            if not getattr(cursor, "rowcount", 0):
+                return {"ok": True, "status": "race_lost", "message": "Another worker claimed this item first."}
+            conn.execute(
+                f"""
+                UPDATE {self.table('translation_jobs')}
+                SET status = 'running',
+                    started_at = COALESCE(started_at, ?),
+                    current_chapter = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (now, item["chapter_number"], now, job_id),
+            )
             chapter = conn.execute(
                 f"SELECT * FROM {self.table('chapters')} WHERE novel_id = ? AND chapter_number = ?",
                 (job["novel_id"], item["chapter_number"]),
             ).fetchone()
-            conn.execute(
-                f"UPDATE {self.table('translation_jobs')} SET status = 'running', started_at = COALESCE(started_at, ?), current_chapter = ?, updated_at = ? WHERE id = ?",
-                (now, item["chapter_number"], now, job_id),
+
+        max_per_chapter_budget = job["max_per_chapter_budget"]
+        if max_per_chapter_budget is not None and float(item["estimated_cost"] or 0) > float(max_per_chapter_budget):
+            skip_error = "max_per_chapter_budget_exceeded"
+        elif chapter is None or not readable(chapter["original_text"]):
+            skip_error = "missing_original"
+        else:
+            skip_error = None
+        use_reference = bool(settings.get("use_reference", True))
+        return {
+            "ok": True,
+            "status": "claimed",
+            "job_id": job_id,
+            "item_id": int(item["id"]),
+            "novel_id": job["novel_id"],
+            "chapter_number": int(item["chapter_number"]),
+            "model": job["model"],
+            "settings": settings,
+            "original_text": chapter["original_text"] if chapter is not None else "",
+            "reference_text": chapter["reference_text"] if chapter is not None and use_reference else None,
+            "skip_error": skip_error,
+        }
+
+    def heartbeat_translation_item(self, job_id: str, item_id: int, worker_id: str, lease_seconds: int = 900) -> bool:
+        now = utc_now()
+        lease_expires = utc_after(lease_seconds)
+        with self.connect() as conn:
+            cursor = conn.execute(
+                f"""
+                UPDATE {self.table('translation_job_items')}
+                SET heartbeat_at = ?, lease_expires_at = ?, updated_at = ?
+                WHERE job_id = ? AND id = ? AND worker_id = ? AND status = 'running'
+                """,
+                (now, lease_expires, now, job_id, item_id, worker_id),
             )
-            conn.execute(
-                f"UPDATE {self.table('translation_job_items')} SET status = 'running', attempts = attempts + 1, started_at = ?, updated_at = ? WHERE id = ?",
-                (now, now, item["id"]),
-            )
-            max_per_chapter_budget = job["max_per_chapter_budget"]
-            if max_per_chapter_budget is not None and float(item["estimated_cost"] or 0) > float(max_per_chapter_budget):
+        return bool(getattr(cursor, "rowcount", 0))
+
+    def finish_translation_item(
+        self,
+        job_id: str,
+        item_id: int,
+        worker_id: str,
+        result: Any | None = None,
+        error: str | None = None,
+        skipped_error: str | None = None,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        with self.connect() as conn:
+            item = conn.execute(
+                f"SELECT * FROM {self.table('translation_job_items')} WHERE job_id = ? AND id = ?",
+                (job_id, item_id),
+            ).fetchone()
+            if item is None:
+                return {"ok": False, "status": "stale_claim", "message": "Claimed item no longer exists."}
+            if item["status"] != "running" or item["worker_id"] != worker_id:
+                return {"ok": False, "status": "stale_claim", "message": "Claim no longer belongs to this worker."}
+            if timestamp_expired(item["lease_expires_at"], now):
+                return {"ok": False, "status": "stale_claim", "message": "Claim lease expired before save."}
+
+            job = conn.execute(f"SELECT * FROM {self.table('translation_jobs')} WHERE id = ?", (job_id,)).fetchone()
+            if job is None:
+                return {"ok": False, "status": "missing", "message": "Translation job not found."}
+            if job["status"] == "cancelled":
+                return {"ok": True, "status": "cancelled", "message": "Job was cancelled before save."}
+            chapter = conn.execute(
+                f"SELECT original_text, reference_text FROM {self.table('chapters')} WHERE novel_id = ? AND chapter_number = ?",
+                (job["novel_id"], item["chapter_number"]),
+            ).fetchone()
+            original_chars = len(chapter["original_text"] or "") if chapter else 0
+            duration_seconds = seconds_between(item["started_at"], now)
+
+            if skipped_error:
+                category = skipped_error
                 conn.execute(
-                    f"UPDATE {self.table('translation_job_items')} SET status = 'skipped', error = 'max_per_chapter_budget_exceeded', finished_at = ?, updated_at = ? WHERE id = ?",
-                    (now, now, item["id"]),
+                    f"""
+                    UPDATE {self.table('translation_job_items')}
+                    SET status = 'skipped', error = ?, failure_category = ?, worker_id = NULL, claimed_at = NULL,
+                        heartbeat_at = NULL, lease_expires_at = NULL, finished_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (skipped_error, category, now, now, item_id),
                 )
-            elif chapter is None or not readable(chapter["original_text"]):
+                self.record_translation_performance(conn, job["model"], job["novel_id"], duration_seconds, original_chars, 0, 0, 0, False, category)
+            elif error:
+                category = classify_failure_text(error)
                 conn.execute(
-                    f"UPDATE {self.table('translation_job_items')} SET status = 'skipped', error = 'missing_original', finished_at = ?, updated_at = ? WHERE id = ?",
-                    (now, now, item["id"]),
+                    f"""
+                    UPDATE {self.table('translation_job_items')}
+                    SET status = 'failed', error = ?, failure_category = ?, worker_id = NULL, claimed_at = NULL,
+                        heartbeat_at = NULL, lease_expires_at = NULL, finished_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (error, category, now, now, item_id),
                 )
+                self.record_translation_performance(conn, job["model"], job["novel_id"], duration_seconds, original_chars, 0, 0, 0, False, category)
             else:
-                use_reference = bool(settings.get("use_reference", True))
-                result = translator(chapter["original_text"], chapter["reference_text"] if use_reference else None, settings)
-                text = result["text"] if isinstance(result, dict) else str(result)
-                input_tokens = int(result.get("input_tokens", 0)) if isinstance(result, dict) else 0
-                output_tokens = int(result.get("output_tokens", 0)) if isinstance(result, dict) else 0
-                actual_cost = float(result.get("actual_cost", 0)) if isinstance(result, dict) else 0.0
+                values = translation_result_values(result)
+                text = values["text"]
                 conn.execute(
                     f"""
                     UPDATE {self.table('chapters')}
@@ -1030,41 +1296,135 @@ class Database:
                         translation_status = 'translated', translation_error = NULL, updated_at = ?
                     WHERE novel_id = ? AND chapter_number = ?
                     """,
-                    (text, len(text), job["model"], now, input_tokens, output_tokens, actual_cost, now, job["novel_id"], item["chapter_number"]),
+                    (
+                        text,
+                        len(text),
+                        job["model"],
+                        now,
+                        values["input_tokens"],
+                        values["output_tokens"],
+                        values["actual_cost"],
+                        now,
+                        job["novel_id"],
+                        item["chapter_number"],
+                    ),
                 )
                 conn.execute(
                     f"""
                     UPDATE {self.table('translation_job_items')}
                     SET status = 'completed', input_tokens = ?, output_tokens = ?, actual_cost = ?,
-                        model = ?, finished_at = ?, updated_at = ?
+                        model = ?, error = NULL, failure_category = NULL, worker_id = NULL, claimed_at = NULL,
+                        heartbeat_at = NULL, lease_expires_at = NULL, finished_at = ?, updated_at = ?
                     WHERE id = ?
                     """,
-                    (input_tokens, output_tokens, actual_cost, job["model"], now, now, item["id"]),
+                    (values["input_tokens"], values["output_tokens"], values["actual_cost"], job["model"], now, now, item_id),
                 )
-            counts = conn.execute(
-                f"""
-                SELECT
-                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
-                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
-                    SUM(CASE WHEN status IN ('pending','running') THEN 1 ELSE 0 END) AS remaining,
-                    SUM(COALESCE(actual_cost, 0)) AS actual
-                FROM {self.table('translation_job_items')}
-                WHERE job_id = ?
-                """,
-                (job_id,),
-            ).fetchone()
-            status = "completed" if int(counts["remaining"] or 0) == 0 and int(counts["failed"] or 0) == 0 else "running"
+                self.record_translation_performance(
+                    conn,
+                    job["model"],
+                    job["novel_id"],
+                    duration_seconds,
+                    original_chars,
+                    len(text),
+                    values["input_tokens"],
+                    values["output_tokens"],
+                    True,
+                )
+            return self._refresh_translation_job_counts(conn, job_id, now)
+
+    def _refresh_translation_job_counts(self, conn: Any, job_id: str, now: str | None = None) -> dict[str, Any]:
+        now = now or utc_now()
+        counts = conn.execute(
+            f"""
+            SELECT
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+                SUM(CASE WHEN status IN ('pending','running') THEN 1 ELSE 0 END) AS remaining,
+                SUM(COALESCE(actual_cost, 0)) AS actual
+            FROM {self.table('translation_job_items')}
+            WHERE job_id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+        job = conn.execute(f"SELECT * FROM {self.table('translation_jobs')} WHERE id = ?", (job_id,)).fetchone()
+        if job is None:
+            return {}
+        current_status = job["status"]
+        remaining = int(counts["remaining"] or 0)
+        failed = int(counts["failed"] or 0)
+        if current_status in {"paused", "cancelled"}:
+            status = current_status
+        elif remaining == 0:
+            status = "failed" if failed else "completed"
+        else:
+            status = "running"
+        conn.execute(
+            f"""
+            UPDATE {self.table('translation_jobs')}
+            SET status = ?, completed_items = ?, failed_items = ?, actual_cost = ?,
+                finished_at = CASE WHEN ? IN ('completed','failed','cancelled') THEN COALESCE(finished_at, ?) ELSE finished_at END,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (status, int(counts["completed"] or 0), failed, float(counts["actual"] or 0), status, now, now, job_id),
+        )
+        row = conn.execute(f"SELECT * FROM {self.table('translation_jobs')} WHERE id = ?", (job_id,)).fetchone()
+        return public_job_row(row) if row else {}
+
+    def record_translation_performance(
+        self,
+        conn: Any,
+        model: str,
+        novel_id: str,
+        duration_seconds: float,
+        input_chars: int,
+        output_chars: int,
+        input_tokens: int,
+        output_tokens: int,
+        success: bool,
+        failure_category: str | None = None,
+    ) -> None:
+        now = utc_now()
+        rate_limited = 1 if failure_category == "rate_limited" else 0
+        timeout = 1 if failure_category == "timeout" else 0
+        for scoped_novel_id in (novel_id, "__all__"):
             conn.execute(
                 f"""
-                UPDATE {self.table('translation_jobs')}
-                SET status = ?, completed_items = ?, failed_items = ?, actual_cost = ?,
-                    finished_at = CASE WHEN ? = 'completed' THEN ? ELSE finished_at END,
-                    updated_at = ?
-                WHERE id = ?
+                INSERT INTO {self.table('translation_performance')} (
+                    model, novel_id, sample_count, success_count, failure_count,
+                    total_duration_seconds, total_input_chars, total_output_chars,
+                    total_input_tokens, total_output_tokens, rate_limited_count,
+                    timeout_count, updated_at
+                )
+                VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(model, novel_id) DO UPDATE SET
+                    sample_count = sample_count + 1,
+                    success_count = success_count + excluded.success_count,
+                    failure_count = failure_count + excluded.failure_count,
+                    total_duration_seconds = total_duration_seconds + excluded.total_duration_seconds,
+                    total_input_chars = total_input_chars + excluded.total_input_chars,
+                    total_output_chars = total_output_chars + excluded.total_output_chars,
+                    total_input_tokens = total_input_tokens + excluded.total_input_tokens,
+                    total_output_tokens = total_output_tokens + excluded.total_output_tokens,
+                    rate_limited_count = rate_limited_count + excluded.rate_limited_count,
+                    timeout_count = timeout_count + excluded.timeout_count,
+                    updated_at = excluded.updated_at
                 """,
-                (status, int(counts["completed"] or 0), int(counts["failed"] or 0), float(counts["actual"] or 0), status, now, now, job_id),
+                (
+                    model,
+                    scoped_novel_id,
+                    1 if success else 0,
+                    0 if success else 1,
+                    max(0.0, duration_seconds),
+                    max(0, input_chars),
+                    max(0, output_chars),
+                    max(0, input_tokens),
+                    max(0, output_tokens),
+                    rate_limited,
+                    timeout,
+                    now,
+                ),
             )
-        return self.translation_job(job_id) or {}
 
     def admin_overview(self) -> dict[str, Any]:
         with self.connect() as conn:
@@ -1092,14 +1452,21 @@ class Database:
         }
 
     def mark_interrupted_jobs(self) -> None:
+        now = utc_now()
         with self.connect() as conn:
             conn.execute(
-                f"UPDATE {self.table('translation_jobs')} SET status = 'paused', error = 'interrupted_after_restart', updated_at = ? WHERE status = 'running'",
-                (utc_now(),),
+                f"UPDATE {self.table('translation_jobs')} SET status = 'queued', error = 'interrupted_after_restart', updated_at = ? WHERE status = 'running'",
+                (now,),
             )
             conn.execute(
-                f"UPDATE {self.table('translation_job_items')} SET status = 'pending', error = 'interrupted_after_restart', updated_at = ? WHERE status = 'running'",
-                (utc_now(),),
+                f"""
+                UPDATE {self.table('translation_job_items')}
+                SET status = 'pending', error = 'interrupted_after_restart',
+                    worker_id = NULL, claimed_at = NULL, heartbeat_at = NULL,
+                    lease_expires_at = NULL, updated_at = ?
+                WHERE status = 'running'
+                """,
+                (now,),
             )
 
     def user_profile(self, user_id: str) -> dict[str, Any] | None:
@@ -1549,6 +1916,86 @@ def optional_int(value: Any) -> int | None:
         return None
 
 
+def optional_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+SPEED_PRESETS: dict[str, dict[str, Any]] = {
+    "careful": {"label": "Careful", "concurrency": 1, "retry_count": 2, "description": "Lowest server/API pressure."},
+    "balanced": {"label": "Balanced", "concurrency": 3, "retry_count": 2, "description": "Recommended for most translation jobs."},
+    "fast": {"label": "Fast", "concurrency": 4, "retry_count": 2, "description": "Higher parallel processing when capacity allows."},
+    "maximum-safe": {"label": "Maximum Safe", "concurrency": 6, "retry_count": 1, "description": "Highest safe adaptive throughput currently available."},
+}
+
+
+def normalized_translation_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(settings or {})
+    mode = str(payload.get("translation_mode") or "simple").lower()
+    if mode not in {"simple", "fast", "advanced", "economy"}:
+        mode = "simple"
+    preset = str(payload.get("speed_preset") or ("careful" if mode == "economy" else "balanced")).lower()
+    if preset not in SPEED_PRESETS:
+        preset = "balanced"
+    preset_config = SPEED_PRESETS[preset]
+    auto = bool(payload.get("auto_optimize_speed", True))
+    max_workers = optional_int(payload.get("max_workers"))
+    concurrency = optional_int(payload.get("concurrency"))
+    if mode != "advanced":
+        concurrency = preset_config["concurrency"]
+        max_workers = preset_config["concurrency"]
+    elif concurrency is None:
+        concurrency = preset_config["concurrency"]
+    hard_max = max(1, min(24, optional_int(payload.get("hard_worker_limit")) or 8))
+    per_job_limit = max(1, min(hard_max, max_workers or concurrency or preset_config["concurrency"]))
+    payload["translation_mode"] = mode
+    payload["speed_preset"] = preset
+    payload["speed_preset_label"] = preset_config["label"]
+    payload["speed_preset_description"] = preset_config["description"]
+    payload["auto_optimize_speed"] = auto
+    payload["concurrency"] = max(1, min(per_job_limit, concurrency or preset_config["concurrency"]))
+    payload["max_workers"] = per_job_limit
+    retry_count = optional_int(payload.get("retry_count"))
+    if retry_count is None:
+        retry_count = preset_config["retry_count"]
+    payload["retry_count"] = max(0, min(5, retry_count))
+    payload["batch_size"] = max(1, min(5000, optional_int(payload.get("batch_size")) or 25))
+    payload["priority"] = "high" if str(payload.get("priority") or "normal").lower() == "high" else "normal"
+    payload["use_reference"] = bool(payload.get("use_reference", True))
+    payload["only_untranslated"] = bool(payload.get("only_untranslated", True))
+    payload["stop_on_budget"] = bool(payload.get("stop_on_budget", True))
+    payload["max_total_budget"] = optional_float(payload.get("max_total_budget"))
+    payload["max_per_chapter_budget"] = optional_float(payload.get("max_per_chapter_budget"))
+    return payload
+
+
+def speed_estimate(eligible_count: int, settings: dict[str, Any], performance: dict[str, Any]) -> dict[str, Any]:
+    workers = max(1, int(settings.get("concurrency") or 1))
+    average = performance.get("average_chapter_seconds")
+    if not average or int(performance.get("success_count") or 0) < 3:
+        return {
+            "approximate": True,
+            "has_history": False,
+            "expected_workers": workers,
+            "message": "Time estimate will improve after the first few chapters complete.",
+            "low_seconds": None,
+            "high_seconds": None,
+        }
+    base_seconds = eligible_count * float(average) / workers
+    return {
+        "approximate": True,
+        "has_history": True,
+        "expected_workers": workers,
+        "average_chapter_seconds": round(float(average), 2),
+        "low_seconds": round(base_seconds * 0.8),
+        "high_seconds": round(base_seconds * 1.3),
+    }
+
+
 def public_job_row(row: Any) -> dict[str, Any]:
     payload = dict(row)
     for key in ("total_items", "completed_items", "failed_items", "current_chapter"):
@@ -1564,6 +2011,90 @@ def public_job_row(row: Any) -> dict[str, Any]:
         payload["settings"] = {}
     payload.pop("settings_json", None)
     return payload
+
+
+def translation_result_values(result: Any) -> dict[str, Any]:
+    if isinstance(result, dict):
+        text = str(result.get("text") or result.get("output_text") or "")
+        input_tokens = int(result.get("input_tokens") or 0)
+        output_tokens = int(result.get("output_tokens") or 0)
+        actual_cost = float(result.get("actual_cost") or 0)
+        return {"text": text, "input_tokens": input_tokens, "output_tokens": output_tokens, "actual_cost": actual_cost}
+    return {"text": str(result or ""), "input_tokens": 0, "output_tokens": 0, "actual_cost": 0.0}
+
+
+def compact_error(exc: Any) -> str:
+    text = str(exc) or exc.__class__.__name__
+    return text[:800]
+
+
+def job_activity(items: list[dict[str, Any]]) -> dict[str, Any]:
+    now = utc_now()
+    running = [item for item in items if item.get("status") == "running"]
+    workers = {item.get("worker_id") for item in running if item.get("worker_id")}
+    heartbeats = [item.get("heartbeat_at") for item in running if item.get("heartbeat_at")]
+    stalled = [item for item in running if timestamp_expired(item.get("lease_expires_at"), now)]
+    return {
+        "active_workers": len(workers),
+        "running_items": len(running),
+        "stalled_items": len(stalled),
+        "last_heartbeat_at": max(heartbeats) if heartbeats else None,
+    }
+
+
+def timestamp_expired(value: Any, now_text: str | None = None) -> bool:
+    if not value:
+        return False
+    now = parse_timestamp(now_text or utc_now())
+    target = parse_timestamp(value)
+    return bool(target and now and target < now)
+
+
+def seconds_between(start: Any, end: Any) -> float:
+    start_dt = parse_timestamp(start)
+    end_dt = parse_timestamp(end)
+    if not start_dt or not end_dt:
+        return 0.0
+    return max(0.0, (end_dt - start_dt).total_seconds())
+
+
+def classify_failure_text(value: str | None) -> str:
+    text = (value or "").lower()
+    if "429" in text or "rate" in text:
+        return "rate_limited"
+    if "timeout" in text or "timed out" in text:
+        return "timeout"
+    if "unavailable" in text or "503" in text or "502" in text or "504" in text:
+        return "provider_unavailable"
+    if "network" in text or "connection" in text:
+        return "network_error"
+    if "invalid" in text or "400" in text:
+        return "invalid_request"
+    if "policy" in text or "content" in text:
+        return "content_policy"
+    if "budget" in text:
+        return "budget_exceeded"
+    if "missing_original" in text:
+        return "missing_original"
+    if "cancel" in text:
+        return "cancelled"
+    return "unknown"
+
+
+def parse_timestamp(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = datetime.fromisoformat(text.replace(" ", "T"))
+        except ValueError:
+            return None
+    return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def model_pricing(model: str) -> dict[str, Any]:

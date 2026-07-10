@@ -5,6 +5,11 @@ const commandInput = document.querySelector("#commandInput");
 const commandResults = document.querySelector("#commandResults");
 const accountBtn = document.querySelector("#accountBtn");
 
+const CACHE_TTL_MS = 45_000;
+let activeRouteKey = window.location.hash || "#/library";
+let connectionInterrupted = false;
+let readerScrollHandler = null;
+
 const state = {
   novels: [],
   currentNovelId: localStorage.getItem("gt-current-novel") || "i-am-god",
@@ -25,6 +30,9 @@ const state = {
   supabaseClient: null,
   lastEstimate: null,
   preferences: loadPreferences(),
+  libraryView: readStored("gt-library-view", {search: "", filter: "active", sort: "updated"}),
+  recent: readStored("gt-recent", {novels: [], chapters: [], jobs: [], searches: [], admin: []}),
+  cache: new Map(),
 };
 
 const sourceLabels = {ai: "AI", reference: "Reference", original: "Original"};
@@ -39,12 +47,35 @@ const chapterViews = [
 ];
 
 async function api(path, options = {}) {
+  const method = (options.method || "GET").toUpperCase();
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await apiOnce(path, options);
+    } catch (error) {
+      const retryable = method === "GET" && (error.network || [502, 503, 504].includes(error.status));
+      if (!retryable || attempt === 2) throw error;
+      if (!connectionInterrupted) {
+        connectionInterrupted = true;
+        toast("Connection interrupted. Retrying...");
+      }
+      await delay(350 * (attempt + 1) + Math.random() * 250);
+    }
+  }
+}
+
+async function apiOnce(path, options = {}) {
   const token = await getAccessToken();
-  const response = await fetch(path, {
-    credentials: "same-origin",
-    headers: {"Accept": "application/json", ...(token ? {"Authorization": `Bearer ${token}`} : {}), ...(options.headers || {})},
-    ...options,
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      credentials: "same-origin",
+      headers: {"Accept": "application/json", ...(token ? {"Authorization": `Bearer ${token}`} : {}), ...(options.headers || {})},
+      ...options,
+    });
+  } catch (error) {
+    error.network = true;
+    throw error;
+  }
   const text = await response.text();
   let payload = null;
   try {
@@ -58,7 +89,25 @@ async function api(path, options = {}) {
     error.status = response.status;
     throw error;
   }
+  if (connectionInterrupted) {
+    connectionInterrupted = false;
+    toast("Reconnected.");
+  }
   return payload;
+}
+
+async function cachedApi(path, ttl = CACHE_TTL_MS) {
+  const cached = state.cache.get(path);
+  if (cached && Date.now() - cached.time < ttl) return cached.payload;
+  const payload = await api(path);
+  state.cache.set(path, {time: Date.now(), payload});
+  return payload;
+}
+
+function invalidateCache(prefix = "") {
+  for (const key of [...state.cache.keys()]) {
+    if (!prefix || key.startsWith(prefix)) state.cache.delete(key);
+  }
 }
 
 function route() {
@@ -69,7 +118,7 @@ function route() {
   if (parts[0] === "reader" && parts[1] && parts[2]) return openReader(parts[1], Number(parts[2]), parts[3] || state.source);
   if (parts[0] === "novel" && parts[1]) return openNovelDetail(parts[1]);
   if (parts[0] === "compare" && parts[1] && parts[2]) return openCompare(parts[1], Number(parts[2]));
-  if (parts[0] === "jobs") return openJobCenter();
+  if (parts[0] === "jobs") return openJobCenter(parts[1] || "");
   if (parts[0] === "chapters" && parts[1]) return openChapters(parts[1]);
   if (parts[0] === "translate") return openTranslate(parts[1] || state.currentNovelId, params);
   if (parts[0] === "recovery") return openRecovery(parts[1] || state.currentNovelId);
@@ -78,7 +127,7 @@ function route() {
   if (parts[0] === "bookmarks") return openBookmarks();
   if (parts[0] === "settings") return openSettings(parts[1] || "appearance");
   if (["account", "login", "signup", "forgot-password", "reset-password"].includes(parts[0])) return openSettings("account", parts[0]);
-  if (parts[0] === "admin") return openAdmin(parts[1] || "overview");
+  if (parts[0] === "admin") return openAdmin(parts[1] || localStorage.getItem("gt-last-admin-tab") || "overview");
   return openLibrary();
 }
 
@@ -186,7 +235,7 @@ async function getAccessToken() {
 
 async function loadNovels(force = false) {
   if (!force && state.novels.length) return state.novels;
-  const payload = await api("/api/novels");
+  const payload = force ? await api("/api/novels") : await cachedApi("/api/novels");
   state.novels = payload.novels || [];
   if (!state.novels.some((novel) => novel.id === state.currentNovelId) && state.novels[0]) {
     state.currentNovelId = state.novels[0].id;
@@ -209,14 +258,21 @@ async function openLibrary() {
       ])}
       ${renderContinueReading(personal?.continue_reading)}
       <section class="toolbar">
-        <input class="search" id="librarySearch" type="search" placeholder="Search novels">
-        <select id="libraryFilter"><option value="active">Active</option><option value="all">All</option><option value="favorites">Favorites</option><option value="archived">Archived</option></select>
-        <select id="librarySort"><option value="updated">Recently updated</option><option value="title">Title</option><option value="progress">Translation progress</option></select>
+        <input class="search" id="librarySearch" type="search" value="${escapeAttr(state.libraryView.search)}" placeholder="Search novels">
+        <select id="libraryFilter"><option value="active" ${state.libraryView.filter === "active" ? "selected" : ""}>Active</option><option value="all" ${state.libraryView.filter === "all" ? "selected" : ""}>All</option><option value="favorites" ${state.libraryView.filter === "favorites" ? "selected" : ""}>Favorites</option><option value="archived" ${state.libraryView.filter === "archived" ? "selected" : ""}>Archived</option></select>
+        <select id="librarySort"><option value="updated" ${state.libraryView.sort === "updated" ? "selected" : ""}>Recently updated</option><option value="title" ${state.libraryView.sort === "title" ? "selected" : ""}>Title</option><option value="progress" ${state.libraryView.sort === "progress" ? "selected" : ""}>Translation progress</option></select>
+        <button id="resetLibraryFilters" type="button">Reset Filters</button>
       </section>
       <section class="novel-grid" id="novelGrid"></section>
     `;
     ["librarySearch", "libraryFilter", "librarySort"].forEach((id) => document.querySelector(`#${id}`).addEventListener("input", renderLibraryCards));
+    document.querySelector("#resetLibraryFilters").addEventListener("click", () => {
+      state.libraryView = {search: "", filter: "active", sort: "updated"};
+      writeStored("gt-library-view", state.libraryView);
+      openLibrary();
+    });
     renderLibraryCards();
+    restoreScrollPosition();
   } catch (error) {
     setError(error.message);
   }
@@ -225,9 +281,13 @@ async function openLibrary() {
 function renderLibraryCards() {
   const grid = document.querySelector("#novelGrid");
   if (!grid) return;
-  const query = document.querySelector("#librarySearch").value.trim().toLowerCase();
+  const rawQuery = document.querySelector("#librarySearch").value.trim();
+  const query = rawQuery.toLowerCase();
   const filter = document.querySelector("#libraryFilter").value;
   const sort = document.querySelector("#librarySort").value;
+  state.libraryView = {search: rawQuery, filter, sort};
+  writeStored("gt-library-view", state.libraryView);
+  if (query) rememberRecent("searches", {label: query, href: "#/library", at: new Date().toISOString()});
   let novels = state.novels.filter((novel) => {
     if (filter === "active" && novel.is_archived) return false;
     if (filter === "archived" && !novel.is_archived) return false;
@@ -242,6 +302,7 @@ function renderLibraryCards() {
   });
   grid.innerHTML = novels.map(renderNovelCard).join("") || `<div class="empty-state">No novels match this view.</div>`;
   grid.querySelectorAll("[data-favorite]").forEach((button) => button.addEventListener("click", toggleFavorite));
+  bindCopyLinks(grid);
 }
 
 function renderContinueReading(progress) {
@@ -264,10 +325,29 @@ async function toggleFavorite(event) {
   if (!state.account) return toast("Sign in to favorite novels.");
   const novelId = event.currentTarget.dataset.favorite;
   const next = !favoriteIds().has(novelId);
-  await api(`/api/account/favorites/${encodeURIComponent(novelId)}`, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({favorite: next})});
-  await loadPersonalHome(true);
+  const previous = [...(state.personal?.favorites || [])];
+  const novel = state.novels.find((item) => item.id === novelId) || {id: novelId};
+  state.personal = state.personal || {};
+  state.personal.favorites = next ? [{novel_id: novelId, title: novel.title}, ...previous] : previous.filter((item) => item.novel_id !== novelId);
   renderLibraryCards();
-  toast(next ? "Favorite saved." : "Favorite removed.");
+  try {
+    await api(`/api/account/favorites/${encodeURIComponent(novelId)}`, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({favorite: next})});
+    await loadPersonalHome(true);
+    renderLibraryCards();
+    if (!next) {
+      toast("Favorite removed.", "Undo", async () => {
+        await api(`/api/account/favorites/${encodeURIComponent(novelId)}`, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({favorite: true})});
+        await loadPersonalHome(true);
+        renderLibraryCards();
+      });
+    } else {
+      toast("Favorite saved.");
+    }
+  } catch (error) {
+    state.personal.favorites = previous;
+    renderLibraryCards();
+    toast(error.message || "Favorite change failed.");
+  }
 }
 
 function renderNovelCard(novel) {
@@ -294,6 +374,7 @@ function renderNovelCard(novel) {
           <a class="button primary" href="#/novel/${encodeURIComponent(novel.id)}">Open</a>
           <a class="button" href="#/reader/${encodeURIComponent(novel.id)}/1/${state.source}">Read</a>
           ${canTranslate() ? `<a class="button" href="#/translate/${encodeURIComponent(novel.id)}">Translate</a>` : ""}
+          <details class="more-menu"><summary>More</summary><button type="button" data-copy-link="#/novel/${encodeURIComponent(novel.id)}">Copy Link</button>${state.admin ? `<a class="button" href="#/novels">Admin Edit</a>` : ""}</details>
         </div>
       </div>
     </article>`;
@@ -321,6 +402,7 @@ async function openNovelDetail(novelId) {
     const pct = progress(novel);
     const personal = await loadPersonalHome(true);
     const current = personal?.continue_reading?.novel_id === novelId ? personal.continue_reading : null;
+    rememberRecent("novels", {id: novelId, label: novel.title || novelId, href: `#/novel/${encodeURIComponent(novelId)}`, at: new Date().toISOString()});
     app.innerHTML = `
       <section class="novel-hero">
         <div class="hero-cover">${novel.cover_url ? `<img src="${escapeAttr(novel.cover_url)}" alt="">` : `<span>${escapeHtml(initials(novel.title || novel.id))}</span>`}</div>
@@ -333,6 +415,7 @@ async function openNovelDetail(novelId) {
           <div class="actions">
             <a class="button primary" href="${current ? `#/reader/${current.novel_id}/${current.chapter_number}/${current.source}` : `#/reader/${novel.id}/1/${state.source}`}">Continue Reading</a>
             <a class="button" href="#/chapters/${novel.id}">Chapters</a>
+            <button type="button" data-copy-link="#/novel/${encodeURIComponent(novel.id)}">Copy Link</button>
             ${canTranslate() ? `<a class="button" href="#/translate/${novel.id}">Translate</a>` : ""}${state.admin ? `<a class="button" href="#/novels">Edit</a>` : ""}
           </div>
         </div>
@@ -341,6 +424,8 @@ async function openNovelDetail(novelId) {
         <div class="panel"><h2>Overview</h2><p class="muted">${escapeHtml(novel.author || "Unknown author")}</p><p>AI progress is ${pct}% based on readable Original and AI chapter text.</p></div>
         <div class="panel"><h2>Recent Chapters</h2>${(library.chapters || []).map((chapter) => `<a class="chapter-link" href="#/reader/${novel.id}/${chapter.chapter_number}/${state.source}"><strong>Chapter ${chapter.chapter_number}</strong><span>${escapeHtml(chapter.title)}</span></a>`).join("") || `<p class="empty-state">No chapters found.</p>`}</div>
       </section>`;
+    bindCopyLinks(app);
+    restoreScrollPosition();
   } catch (error) {
     setError(error.message);
   }
@@ -360,26 +445,35 @@ async function openNovels() {
         </tbody></table>
       </section>`;
     document.querySelector("#novelForm")?.addEventListener("submit", saveNovelForm);
+    document.querySelector("#novelForm")?.addEventListener("input", () => {
+      writeStored("gt-novel-form-draft", Object.fromEntries(new FormData(document.querySelector("#novelForm")).entries()));
+      document.querySelector("#novelDraftStatus").textContent = "Draft saved just now";
+    });
+    document.querySelector("#discardNovelDraft")?.addEventListener("click", () => { localStorage.removeItem("gt-novel-form-draft"); openNovels(); });
     document.querySelectorAll("[data-archive]").forEach((button) => button.addEventListener("click", archiveNovel));
+    restoreScrollPosition();
   } catch (error) {
     setError(error.message);
   }
 }
 
 function renderNovelForm() {
+  const draft = readStored("gt-novel-form-draft", {});
   return `<form class="panel form-grid" id="novelForm">
     <h2>Create or Update Novel</h2>
-    <label>ID / slug<input name="id" required placeholder="my-novel"></label>
-    <label>Title<input name="title" required></label>
-    <label>Author<input name="author"></label>
-    <label>Status<input name="status" value="active"></label>
-    <label>Cover URL<input name="cover_url"></label>
-    <label>Source URL<input name="source_url"></label>
-    <label>Reference Source URL<input name="reference_source_url"></label>
-    <label>Reference target start<input name="reference_target_start" type="number" min="1" placeholder="1"></label>
-    <label>Reference target end<input name="reference_target_end" type="number" min="1" placeholder="434"></label>
-    <label>Default model<input name="model" value="gpt-4o-mini"></label>
-    <label class="wide">Summary<textarea name="summary" rows="3"></textarea></label>
+    <p class="muted wide" id="novelDraftStatus">${Object.keys(draft).length ? "Draft restored" : "No saved draft"}</p>
+    <label>ID / slug<input name="id" required placeholder="my-novel" value="${escapeAttr(draft.id || "")}"></label>
+    <label>Title<input name="title" required value="${escapeAttr(draft.title || "")}"></label>
+    <label>Author<input name="author" value="${escapeAttr(draft.author || "")}"></label>
+    <label>Status<input name="status" value="${escapeAttr(draft.status || "active")}"></label>
+    <label>Cover URL<input name="cover_url" value="${escapeAttr(draft.cover_url || "")}"></label>
+    <label>Source URL<input name="source_url" value="${escapeAttr(draft.source_url || "")}"></label>
+    <label>Reference Source URL<input name="reference_source_url" value="${escapeAttr(draft.reference_source_url || "")}"></label>
+    <label>Reference target start<input name="reference_target_start" type="number" min="1" placeholder="1" value="${escapeAttr(draft.reference_target_start || "")}"></label>
+    <label>Reference target end<input name="reference_target_end" type="number" min="1" placeholder="434" value="${escapeAttr(draft.reference_target_end || "")}"></label>
+    <label>Default model<input name="model" value="${escapeAttr(draft.model || "gpt-4o-mini")}"></label>
+    <label class="wide">Summary<textarea name="summary" rows="3">${escapeHtml(draft.summary || "")}</textarea></label>
+    <div class="actions wide"><button id="discardNovelDraft" type="button" ${Object.keys(draft).length ? "" : "disabled"}>Discard Draft</button></div>
     <button class="primary" type="submit">Save Novel</button>
   </form>`;
 }
@@ -389,7 +483,9 @@ async function saveNovelForm(event) {
   const data = Object.fromEntries(new FormData(event.currentTarget).entries());
   try {
     await api("/api/novels", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(data)});
+    localStorage.removeItem("gt-novel-form-draft");
     state.novels = [];
+    invalidateCache("/api/novels");
     openNovels();
   } catch (error) {
     alert(error.message);
@@ -400,10 +496,12 @@ async function archiveNovel(event) {
   const button = event.currentTarget;
   await api(`/api/novels/${button.dataset.archive}/archive`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({archived: button.dataset.value === "true"})});
   state.novels = [];
+  invalidateCache("/api/novels");
   openNovels();
 }
 
 async function openChapters(novelId) {
+  restoreChapterState(novelId);
   state.currentNovelId = novelId;
   localStorage.setItem("gt-current-novel", novelId);
   setLoading("Loading chapters...");
@@ -417,7 +515,7 @@ async function openChapters(novelId) {
 
 async function loadChapters(novelId) {
   const path = `/api/novels/${encodeURIComponent(novelId)}/library?limit=${state.pageSize}&offset=${state.chapterOffset}&view=${encodeURIComponent(state.chapterView)}&search=${encodeURIComponent(state.chapterSearch)}`;
-  const payload = await api(path);
+  const payload = await cachedApi(path);
   state.chapters = payload.chapters || [];
   state.chapterTotal = payload.total || 0;
   return payload;
@@ -426,6 +524,7 @@ async function loadChapters(novelId) {
 function renderChapters(payload) {
   const novel = payload.novel;
   const counts = payload.counts || {};
+  rememberRecent("novels", {id: novel.id, label: novel.title || novel.id, href: `#/chapters/${encodeURIComponent(novel.id)}`, at: new Date().toISOString()});
   app.innerHTML = `
     ${pageHeader(novel.title || novel.id, "Browse chapter availability, translation state, and reader entry points.", [
       ["Chapters", counts.total_chapter_rows],
@@ -442,16 +541,18 @@ function renderChapters(payload) {
     </section>
     <section class="table-card">
       <div class="table-meta">Showing ${state.chapterTotal ? state.chapterOffset + 1 : 0}-${Math.min(state.chapterOffset + state.pageSize, state.chapterTotal)} of ${state.chapterTotal} chapters</div>
-      <table><thead><tr><th>Chapter</th><th>Original</th><th>Reference</th><th>AI</th><th>Status</th><th></th></tr></thead><tbody>
-        ${state.chapters.map((chapter) => `<tr><td><strong>Chapter ${chapter.chapter_number}</strong><br><span>${escapeHtml(chapter.title)}</span></td><td>${badge("Original", chapter.has_original)}</td><td>${badge("Reference", chapter.has_reference)}</td><td>${badge("AI", chapter.has_ai)}</td><td>${escapeHtml(chapter.translation_status || "")}</td><td class="row-actions"><a class="button" href="#/reader/${novel.id}/${chapter.chapter_number}/${state.source}">Read</a>${canTranslate() ? `<a class="button" href="#/translate/${novel.id}?chapter=${chapter.chapter_number}">Translate</a><a class="button" href="#/compare/${novel.id}/${chapter.chapter_number}">Compare</a>` : ""}</td></tr>`).join("") || `<tr><td colspan="6">No chapters match this view.</td></tr>`}
+      <table class="responsive-table"><thead><tr><th>Chapter</th><th>Original</th><th>Reference</th><th>AI</th><th>Status</th><th></th></tr></thead><tbody>
+        ${state.chapters.map((chapter) => `<tr><td data-label="Chapter"><strong>Chapter ${chapter.chapter_number}</strong><br><span>${escapeHtml(chapter.title)}</span></td><td data-label="Original">${badge("Original", chapter.has_original)}</td><td data-label="Reference">${badge("Reference", chapter.has_reference)}</td><td data-label="AI">${badge("AI", chapter.has_ai)}</td><td data-label="Status">${escapeHtml(chapter.translation_status || "")}</td><td data-label="Actions" class="row-actions"><a class="button" href="#/reader/${novel.id}/${chapter.chapter_number}/${state.source}">Read</a><button type="button" data-copy-link="#/reader/${novel.id}/${chapter.chapter_number}/${state.source}">Copy Link</button>${canTranslate() ? `<a class="button" href="#/translate/${novel.id}?chapter=${chapter.chapter_number}">Translate</a><a class="button" href="#/compare/${novel.id}/${chapter.chapter_number}">Compare</a>` : ""}</td></tr>`).join("") || `<tr><td colspan="6">No chapters match this view.</td></tr>`}
       </tbody></table>
       <div class="pager"><button id="prevPage" ${state.chapterOffset <= 0 ? "disabled" : ""}>Previous</button><button id="nextPage" ${state.chapterOffset + state.pageSize >= state.chapterTotal ? "disabled" : ""}>Next</button></div>
     </section>`;
   document.querySelector("#chapterNovel").addEventListener("change", (e) => { window.location.hash = `#/chapters/${e.target.value}`; });
-  document.querySelector("#chapterSearch").addEventListener("input", debounce((e) => { state.chapterSearch = e.target.value; state.chapterOffset = 0; openChapters(novel.id); }, 250));
-  document.querySelector("#chapterView").addEventListener("change", (e) => { state.chapterView = e.target.value; state.chapterOffset = 0; openChapters(novel.id); });
-  document.querySelector("#prevPage").addEventListener("click", () => { state.chapterOffset = Math.max(0, state.chapterOffset - state.pageSize); openChapters(novel.id); });
-  document.querySelector("#nextPage").addEventListener("click", () => { state.chapterOffset += state.pageSize; openChapters(novel.id); });
+  document.querySelector("#chapterSearch").addEventListener("input", debounce((e) => { state.chapterSearch = e.target.value; state.chapterOffset = 0; persistChapterState(novel.id); openChapters(novel.id); }, 250));
+  document.querySelector("#chapterView").addEventListener("change", (e) => { state.chapterView = e.target.value; state.chapterOffset = 0; persistChapterState(novel.id); openChapters(novel.id); });
+  document.querySelector("#prevPage").addEventListener("click", () => { state.chapterOffset = Math.max(0, state.chapterOffset - state.pageSize); persistChapterState(novel.id); openChapters(novel.id); });
+  document.querySelector("#nextPage").addEventListener("click", () => { state.chapterOffset += state.pageSize; persistChapterState(novel.id); openChapters(novel.id); });
+  bindCopyLinks(app);
+  restoreScrollPosition();
 }
 
 async function openReader(novelId, chapterNumber, requestedSource) {
@@ -462,14 +563,15 @@ async function openReader(novelId, chapterNumber, requestedSource) {
       state.chapterOffset = Math.max(0, chapterNumber - 25);
       await loadChapters(novelId);
       state.chapterOffset = 0;
-      await api(`/api/novels/${novelId}/library?limit=5000`).then((payload) => { state.chapters = payload.chapters || []; });
+      await cachedApi(`/api/novels/${novelId}/library?limit=5000`, 120_000).then((payload) => { state.chapters = payload.chapters || []; });
     }
     const chapter = state.chapters.find((item) => item.chapter_number === chapterNumber);
     const source = ["ai", "reference", "original"].includes(requestedSource) ? requestedSource : preferredSource(chapter);
     state.source = source;
     localStorage.setItem("gt-reader-source", source);
-    const payload = await api(`/api/novels/${encodeURIComponent(novelId)}/chapters/${chapterNumber}/${source}`);
+    const payload = await cachedApi(chapterTextPath(novelId, chapterNumber, source), 120_000);
     renderReader(novelId, chapterNumber, source, payload);
+    prefetchNeighborChapters(novelId, chapterNumber, source);
   } catch (error) {
     setError(error.message);
   }
@@ -478,12 +580,13 @@ async function openReader(novelId, chapterNumber, requestedSource) {
 function renderReader(novelId, chapterNumber, source, payload) {
   const previous = neighborChapter(chapterNumber, -1);
   const next = neighborChapter(chapterNumber, 1);
+  rememberRecent("chapters", {novel_id: novelId, chapter_number: chapterNumber, source, label: `Chapter ${chapterNumber}`, href: `#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}`, at: new Date().toISOString()});
   document.documentElement.style.setProperty("--reader-font", `${state.fontSize}px`);
   document.body.dataset.zen = state.zen ? "on" : "off";
   app.innerHTML = `
     <section class="reader-panel ${state.zen ? "zen" : ""}">
       <div class="reader-nav"><a class="button" href="#/chapters/${novelId}">Back to Chapters</a><a class="button" href="#/novel/${novelId}">Novel</a><a class="button" href="#/library">Library</a><div class="spacer"></div><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous</button><select id="chapterPicker">${state.chapters.map((c) => `<option value="${c.chapter_number}" ${c.chapter_number === chapterNumber ? "selected" : ""}>Chapter ${c.chapter_number}</option>`).join("")}</select><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next</button></div>
-      <div class="reader-tabs">${["ai", "reference", "original"].map((item) => `<button data-source="${item}" class="${item === source ? "active" : ""}">${sourceLabels[item]}</button>`).join("")}<button id="bookmarkChapter" type="button">Bookmark</button><button id="zenToggle" type="button">${state.zen ? "Exit Zen" : "Zen"}</button><a class="button" href="#/settings/reader">Reader Settings</a><label>Font <input id="fontSize" type="range" min="16" max="25" value="${state.fontSize}"></label></div>
+      <div class="reader-tabs">${["ai", "reference", "original"].map((item) => `<button data-source="${item}" class="${item === source ? "active" : ""}">${sourceLabels[item]}</button>`).join("")}<button id="bookmarkChapter" type="button">Bookmark</button><button type="button" data-copy-link="#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}">Copy Link</button><button id="zenToggle" type="button">${state.zen ? "Exit Zen" : "Zen"}</button><a class="button" href="#/settings/reader">Reader Settings</a><label>Font <input id="fontSize" type="range" min="16" max="25" value="${state.fontSize}"></label></div>
       <header class="reader-heading"><span>${sourceLabels[source]}</span><h1>Chapter ${chapterNumber}</h1><p>${escapeHtml(payload.title || `Chapter ${chapterNumber}`)}</p></header>
       <article class="reader-text">${renderReaderText(payload, source)}</article>
       <div class="reader-bottom"><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous Chapter</button><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next Chapter</button></div>
@@ -494,8 +597,9 @@ function renderReader(novelId, chapterNumber, source, payload) {
   document.querySelector("#fontSize").addEventListener("input", (event) => { state.fontSize = Number(event.target.value); localStorage.setItem("gt-reader-font", String(state.fontSize)); document.documentElement.style.setProperty("--reader-font", `${state.fontSize}px`); });
   document.querySelector("#bookmarkChapter").addEventListener("click", () => saveBookmark(novelId, chapterNumber));
   document.querySelector("#zenToggle").addEventListener("click", () => { state.zen = !state.zen; renderReader(novelId, chapterNumber, source, payload); });
-  saveProgressDebounced(novelId, chapterNumber, source, 0);
-  document.querySelector(".reader-text")?.addEventListener("scroll", debounce(() => saveProgressDebounced(novelId, chapterNumber, source, readerScrollPercent()), 900));
+  bindCopyLinks(app);
+  bindReaderProgress(novelId, chapterNumber, source);
+  restoreReaderScroll(novelId, chapterNumber, source);
 }
 
 function renderReaderText(payload, source) {
@@ -532,8 +636,8 @@ async function openHistory() {
   try {
     const payload = await api("/api/account/history");
     app.innerHTML = `${pageHeader("Reading History", "Your recent GodTranslator reading sessions.", [["Items", payload.history.length]])}
-      <section class="table-card"><table><thead><tr><th>Novel</th><th>Chapter</th><th>Source</th><th>Progress</th><th></th></tr></thead><tbody>
-      ${payload.history.map((item) => `<tr><td>${escapeHtml(item.novel_title)}</td><td>Chapter ${item.chapter_number}<br><span>${escapeHtml(item.chapter_title)}</span></td><td>${escapeHtml(sourceLabels[item.source] || item.source)}</td><td>${Math.round(item.progress_percent || 0)}%</td><td><a class="button" href="#/reader/${item.novel_id}/${item.chapter_number}/${item.source}">Continue</a></td></tr>`).join("") || `<tr><td colspan="5">No reading history yet.</td></tr>`}
+      <section class="table-card"><table class="responsive-table"><thead><tr><th>Novel</th><th>Chapter</th><th>Source</th><th>Progress</th><th></th></tr></thead><tbody>
+      ${payload.history.map((item) => `<tr><td data-label="Novel">${escapeHtml(item.novel_title)}</td><td data-label="Chapter">Chapter ${item.chapter_number}<br><span>${escapeHtml(item.chapter_title)}</span></td><td data-label="Source">${escapeHtml(sourceLabels[item.source] || item.source)}</td><td data-label="Progress">${Math.round(item.progress_percent || 0)}%</td><td data-label="Actions"><a class="button" href="#/reader/${item.novel_id}/${item.chapter_number}/${item.source}">Continue</a></td></tr>`).join("") || `<tr><td colspan="5">No reading history yet.</td></tr>`}
       </tbody></table><div class="actions"><button id="clearHistory" type="button">Clear History</button></div></section>`;
     document.querySelector("#clearHistory")?.addEventListener("click", async () => { await api("/api/account/history", {method: "DELETE"}); openHistory(); });
   } catch (error) {
@@ -547,12 +651,17 @@ async function openBookmarks() {
   try {
     const payload = await api("/api/account/bookmarks");
     app.innerHTML = `${pageHeader("Bookmarks", "Saved chapters and personal notes.", [["Items", payload.bookmarks.length]])}
-      <section class="table-card"><table><thead><tr><th>Novel</th><th>Chapter</th><th>Note</th><th></th></tr></thead><tbody>
-      ${payload.bookmarks.map((item) => `<tr><td>${escapeHtml(item.novel_title)}</td><td>Chapter ${item.chapter_number}<br><span>${escapeHtml(item.chapter_title)}</span></td><td>${escapeHtml(item.note || "")}</td><td class="row-actions"><a class="button" href="#/reader/${item.novel_id}/${item.chapter_number}/${state.source}">Read</a><button data-delete-bookmark="${item.novel_id}:${item.chapter_number}">Remove</button></td></tr>`).join("") || `<tr><td colspan="4">No bookmarks yet.</td></tr>`}
+      <section class="table-card"><table class="responsive-table"><thead><tr><th>Novel</th><th>Chapter</th><th>Note</th><th></th></tr></thead><tbody>
+      ${payload.bookmarks.map((item) => `<tr><td data-label="Novel">${escapeHtml(item.novel_title)}</td><td data-label="Chapter">Chapter ${item.chapter_number}<br><span>${escapeHtml(item.chapter_title)}</span></td><td data-label="Note">${escapeHtml(item.note || "")}</td><td data-label="Actions" class="row-actions"><a class="button" href="#/reader/${item.novel_id}/${item.chapter_number}/${state.source}">Read</a><button data-delete-bookmark="${item.novel_id}:${item.chapter_number}">Remove</button></td></tr>`).join("") || `<tr><td colspan="4">No bookmarks yet.</td></tr>`}
       </tbody></table></section>`;
     document.querySelectorAll("[data-delete-bookmark]").forEach((button) => button.addEventListener("click", async () => {
       const [novelId, chapter] = button.dataset.deleteBookmark.split(":");
+      const removed = payload.bookmarks.find((item) => item.novel_id === novelId && String(item.chapter_number) === String(chapter));
       await api(`/api/account/bookmarks/${encodeURIComponent(novelId)}/${chapter}`, {method: "DELETE"});
+      toast("Bookmark removed.", "Undo", async () => {
+        await api("/api/account/bookmarks", {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({novel_id: novelId, chapter_number: Number(chapter), note: removed?.note || ""})});
+        openBookmarks();
+      });
       openBookmarks();
     }));
   } catch (error) {
@@ -574,43 +683,74 @@ async function openTranslate(novelId, params = new URLSearchParams()) {
     ]);
     const novel = state.novels.find((item) => item.id === novelId) || {};
     const models = modelRegistry.models || [];
+    const draft = translateDraft(novelId);
+    const form = params.get("chapter") ? {...draft, selection_mode: "specific", chapters: params.get("chapter"), all_untranslated: false} : draft;
+    const mode = form.translation_mode || "simple";
+    const selectionMode = form.selection_mode || (form.all_untranslated ? "all-untranslated" : "next-untranslated");
+    const speedPreset = form.speed_preset || (mode === "economy" ? "careful" : "balanced");
     app.innerHTML = `
       ${pageHeader("Translate", "Plan controlled translation jobs from Original text, with Reference as optional guidance.", [["Novel", novel.title || novelId], ["Default model", novel.model || "gpt-4o-mini"]])}
+      <section class="draft-bar"><span id="draftStatus">${draft.saved_at ? `Draft saved ${timeAgo(draft.saved_at)}` : "No saved draft"}</span><div class="actions"><button id="restoreTranslateDraft" type="button" ${draft.saved_at ? "" : "disabled"}>Restore Draft</button><button id="discardTranslateDraft" type="button" ${draft.saved_at ? "" : "disabled"}>Discard Draft</button></div></section>
       <section class="translate-workspace">
         <div class="translate-steps" id="translateForm">
-          <section class="panel form-grid"><h2>1. Chapter Selection</h2><label>Novel<select id="translateNovel">${state.novels.map((n) => `<option value="${n.id}" ${n.id === novelId ? "selected" : ""}>${escapeHtml(n.title)}</option>`).join("")}</select></label><label>Chapters<input id="translateChapters" value="${escapeAttr(params.get("chapter") || "")}" placeholder="26,53,60-70"></label><label><input id="allUntranslated" type="checkbox"> All untranslated</label><p class="muted wide" id="chapterPreview">Enter chapters or choose all untranslated.</p></section>
-          <section class="panel form-grid"><h2>2. Translation Profile</h2><label>Profile<select id="profile"><option>Default literary translation</option><option>Reference-guided polish</option></select></label><label class="wide">Style guide<textarea id="styleGuide" rows="3"></textarea></label><label class="wide">Glossary notes<textarea id="glossary" rows="3"></textarea></label></section>
-          <section class="panel form-grid"><h2>3. Model & Reference</h2><label>Model<select id="model">${models.map((model) => `<option value="${escapeAttr(model.id)}" ${model.id === (novel.model || "gpt-4o-mini") ? "selected" : ""}>${escapeHtml(model.display_name)} · ${escapeHtml(model.pricing?.note || "Pricing not configured")}</option>`).join("")}</select></label><label><input id="useReference" type="checkbox" checked> Use Reference when available</label></section>
-          <section class="panel form-grid"><h2>4. Budget & Safety</h2><label>Max total budget<input id="maxTotalBudget" type="number" step="0.01"></label><label>Max cost per chapter<input id="maxPerChapterBudget" type="number" step="0.001"></label><label>Retry count<input id="retryCount" type="number" value="1"></label><label>Batch size<input id="batchSize" type="number" value="25"></label><label><input id="stopOnBudget" type="checkbox" checked> Stop on budget</label><label><input id="onlyUntranslated" type="checkbox" checked> Only untranslated</label></section>
+          <section class="panel form-grid"><h2>1. Mode & Chapters</h2><label>Mode<select id="translationMode"><option value="simple" ${mode === "simple" ? "selected" : ""}>Simple</option><option value="fast" ${mode === "fast" ? "selected" : ""}>Fast</option><option value="advanced" ${mode === "advanced" ? "selected" : ""}>Advanced</option><option value="economy" ${mode === "economy" ? "selected" : ""}>Economy / Overnight</option></select></label><label>Novel<select id="translateNovel">${state.novels.map((n) => `<option value="${n.id}" ${n.id === novelId ? "selected" : ""}>${escapeHtml(n.title)}</option>`).join("")}</select></label><label>What to translate<select id="selectionMode"><option value="next-untranslated" ${selectionMode === "next-untranslated" ? "selected" : ""}>Next untranslated chapters</option><option value="specific" ${selectionMode === "specific" ? "selected" : ""}>Specific chapters</option><option value="all-untranslated" ${selectionMode === "all-untranslated" ? "selected" : ""}>All untranslated</option></select></label><label id="nextCountLabel">Next count<select id="nextCount"><option value="25" ${Number(form.next_count || 25) === 25 ? "selected" : ""}>Next 25</option><option value="50" ${Number(form.next_count) === 50 ? "selected" : ""}>Next 50</option><option value="100" ${Number(form.next_count) === 100 ? "selected" : ""}>Next 100</option></select></label><label id="chapterInputLabel">Chapters<input id="translateChapters" value="${escapeAttr(form.chapters || "")}" placeholder="26,53,60-70"><span class="field-error" id="chapterError"></span></label><p class="muted wide" id="chapterPreview">Choose what to translate.</p></section>
+          <section class="panel form-grid"><h2>2. Translation Profile</h2><label>Profile<select id="profile"><option ${form.profile === "Default literary translation" ? "selected" : ""}>Default literary translation</option><option ${form.profile === "Reference-guided polish" ? "selected" : ""}>Reference-guided polish</option></select></label><label class="wide">Style guide<textarea id="styleGuide" rows="3">${escapeHtml(form.style_guide || "")}</textarea></label><label class="wide">Glossary notes<textarea id="glossary" rows="3">${escapeHtml(form.glossary || "")}</textarea></label></section>
+          <section class="panel form-grid"><h2>3. Speed & Model</h2><label>Speed preset<select id="speedPreset"><option value="careful" ${speedPreset === "careful" ? "selected" : ""}>Careful - lowest pressure</option><option value="balanced" ${speedPreset === "balanced" ? "selected" : ""}>Balanced - recommended</option><option value="fast" ${speedPreset === "fast" ? "selected" : ""}>Fast - higher parallel processing</option><option value="maximum-safe" ${speedPreset === "maximum-safe" ? "selected" : ""}>Maximum Safe - highest safe throughput</option></select></label><label>Model<select id="model">${models.map((model) => `<option value="${escapeAttr(model.id)}" ${model.id === (form.model || novel.model || "gpt-4o-mini") ? "selected" : ""}>${escapeHtml(model.display_name)} · ${escapeHtml(model.pricing?.note || "Pricing not configured")}</option>`).join("")}</select></label><label><input id="autoOptimizeSpeed" type="checkbox" ${form.auto_optimize_speed === false ? "" : "checked"}> Auto Optimize Speed</label><p class="muted wide" id="speedDescription">Speed is being optimized automatically.</p></section>
+          <section class="panel form-grid"><h2>4. Budget & Safety</h2><label>Max total budget<input id="maxTotalBudget" type="number" step="0.01" value="${escapeAttr(form.max_total_budget ?? "")}"><span class="field-error" id="budgetError"></span></label><label>Max cost per chapter<input id="maxPerChapterBudget" type="number" step="0.001" value="${escapeAttr(form.max_per_chapter_budget ?? "")}"></label><label><input id="useReference" type="checkbox" ${form.use_reference === false ? "" : "checked"}> Use Reference when available</label><label><input id="onlyUntranslated" type="checkbox" ${form.only_untranslated === false ? "" : "checked"}> Only untranslated</label><div class="advanced-settings wide"><h3>Advanced Performance</h3><div class="form-grid"><label>Retry limit<input id="retryCount" type="number" min="0" max="5" value="${escapeAttr(form.retry_count ?? 2)}"></label><label>Queue depth<input id="batchSize" type="number" min="1" max="5000" value="${escapeAttr(form.batch_size ?? 25)}"></label><label>Maximum workers<select id="translationConcurrency"><option value="" ${form.concurrency ? "" : "selected"}>Auto</option><option value="1" ${Number(form.concurrency) === 1 ? "selected" : ""}>1 worker</option><option value="2" ${Number(form.concurrency) === 2 ? "selected" : ""}>2 workers</option><option value="3" ${Number(form.concurrency) === 3 ? "selected" : ""}>3 workers</option><option value="4" ${Number(form.concurrency) === 4 ? "selected" : ""}>4 workers</option><option value="6" ${Number(form.concurrency) === 6 ? "selected" : ""}>6 workers</option><option value="8" ${Number(form.concurrency) === 8 ? "selected" : ""}>8 workers</option></select></label><label>Priority<select id="jobPriority"><option value="normal" ${form.priority === "high" ? "" : "selected"}>Normal</option><option value="high" ${form.priority === "high" ? "selected" : ""}>High</option></select></label><label><input id="stopOnBudget" type="checkbox" ${form.stop_on_budget === false ? "" : "checked"}> Stop on budget</label></div></div></section>
         </div>
         <aside class="estimate-panel"><h2>5. Estimate</h2><section id="estimateResult"><p class="muted">Run an estimate before creating a job. Estimates are approximate.</p></section><div class="actions"><button id="estimateBtn" class="primary">Estimate</button><button id="createJobBtn">Launch Job</button></div></aside>
       </section>
       <section class="table-card"><h2>Recent Jobs</h2>${renderJobsTable(jobs.jobs || [])}</section>`;
     document.querySelector("#translateNovel").addEventListener("change", (e) => { window.location.hash = `#/translate/${e.target.value}`; });
     document.querySelector("#translateChapters").addEventListener("input", renderChapterPreview);
-    document.querySelector("#allUntranslated").addEventListener("change", renderChapterPreview);
+    document.querySelector("#selectionMode").addEventListener("change", renderChapterPreview);
+    document.querySelector("#nextCount").addEventListener("change", renderChapterPreview);
+    document.querySelector("#translationMode").addEventListener("change", toggleTranslationMode);
+    document.querySelector("#speedPreset").addEventListener("change", updateSpeedDescription);
+    document.querySelector("#autoOptimizeSpeed").addEventListener("change", updateSpeedDescription);
     document.querySelector("#estimateBtn").addEventListener("click", estimateTranslation);
     document.querySelector("#createJobBtn").addEventListener("click", createTranslationJob);
+    document.querySelector("#restoreTranslateDraft").addEventListener("click", () => openTranslate(novelId));
+    document.querySelector("#discardTranslateDraft").addEventListener("click", () => { localStorage.removeItem(translateDraftKey(novelId)); openTranslate(novelId); });
+    document.querySelectorAll("#translateForm input, #translateForm textarea, #translateForm select").forEach((field) => field.addEventListener("input", () => {
+      state.lastEstimate = null;
+      const result = document.querySelector("#estimateResult");
+      if (result) result.innerHTML = `<p class="muted">Run an estimate before creating a job. Estimates are approximate.</p>`;
+      saveTranslateDraft();
+      validateTranslateForm();
+    }));
     renderChapterPreview();
+    toggleTranslationMode();
+    validateTranslateForm();
     bindJobButtons();
+    bindCopyLinks(app);
   } catch (error) {
     setError(error.message);
   }
 }
 
 function translatePayload() {
+  const selectionMode = document.querySelector("#selectionMode").value;
   return {
     novel_id: document.querySelector("#translateNovel").value,
+    translation_mode: document.querySelector("#translationMode").value,
+    speed_preset: document.querySelector("#speedPreset").value,
+    auto_optimize_speed: document.querySelector("#autoOptimizeSpeed").checked,
+    selection_mode: selectionMode,
+    next_count: numberOrNull("#nextCount"),
     chapters: document.querySelector("#translateChapters").value,
-    all_untranslated: document.querySelector("#allUntranslated").checked,
+    all_untranslated: selectionMode === "all-untranslated",
     model: document.querySelector("#model").value || "gpt-4o-mini",
     max_total_budget: numberOrNull("#maxTotalBudget"),
     max_per_chapter_budget: numberOrNull("#maxPerChapterBudget"),
     retry_count: numberOrNull("#retryCount"),
     batch_size: numberOrNull("#batchSize"),
+    concurrency: numberOrNull("#translationConcurrency"),
     stop_on_budget: document.querySelector("#stopOnBudget").checked,
     use_reference: document.querySelector("#useReference").checked,
     only_untranslated: document.querySelector("#onlyUntranslated").checked,
+    priority: document.querySelector("#jobPriority")?.value || "normal",
+    profile: document.querySelector("#profile")?.value || "Default literary translation",
     style_guide: document.querySelector("#styleGuide").value,
     glossary: document.querySelector("#glossary")?.value || "",
   };
@@ -619,11 +759,22 @@ function translatePayload() {
 function renderChapterPreview() {
   const target = document.querySelector("#chapterPreview");
   if (!target) return;
-  if (document.querySelector("#allUntranslated")?.checked) {
+  const mode = document.querySelector("#selectionMode")?.value || "next-untranslated";
+  const chapterLabel = document.querySelector("#chapterInputLabel");
+  const nextLabel = document.querySelector("#nextCountLabel");
+  if (chapterLabel) chapterLabel.hidden = mode !== "specific";
+  if (nextLabel) nextLabel.hidden = mode !== "next-untranslated";
+  if (mode === "all-untranslated") {
     target.textContent = "Preview: all chapters with readable Original text and missing AI translation.";
     return;
   }
+  if (mode === "next-untranslated") {
+    target.textContent = `Preview: next ${document.querySelector("#nextCount")?.value || 25} untranslated chapters will be selected from the database when the job is created.`;
+    validateTranslateForm();
+    return;
+  }
   const parsed = parseChapterInput(document.querySelector("#translateChapters")?.value || "");
+  validateTranslateForm();
   target.textContent = parsed.length
     ? `Preview: ${parsed.length} chapter${parsed.length === 1 ? "" : "s"} selected (${parsed.slice(0, 12).join(", ")}${parsed.length > 12 ? ", ..." : ""}).`
     : "Enter chapters like 26,53,60-70.";
@@ -642,29 +793,60 @@ function parseChapterInput(value) {
   return [...chapters].sort((a, b) => a - b);
 }
 
+function toggleTranslationMode() {
+  const mode = document.querySelector("#translationMode")?.value || "simple";
+  const advanced = document.querySelector(".advanced-settings");
+  const speedPreset = document.querySelector("#speedPreset");
+  if (advanced) advanced.hidden = mode !== "advanced";
+  if (speedPreset && mode === "economy") speedPreset.value = "careful";
+  if (speedPreset && mode === "fast" && speedPreset.value === "careful") speedPreset.value = "fast";
+  updateSpeedDescription();
+  renderChapterPreview();
+}
+
+function updateSpeedDescription() {
+  const mode = document.querySelector("#translationMode")?.value || "simple";
+  const preset = document.querySelector("#speedPreset")?.value || "balanced";
+  const auto = document.querySelector("#autoOptimizeSpeed")?.checked;
+  const descriptions = {
+    careful: "Careful uses the lowest server/API pressure.",
+    balanced: "Balanced is recommended for most translation jobs.",
+    fast: "Fast uses higher parallel processing when capacity allows.",
+    "maximum-safe": "Maximum Safe uses the highest safe adaptive throughput currently available.",
+  };
+  const suffix = auto ? " Speed is being optimized automatically." : " Auto optimization is off for this job.";
+  const economy = mode === "economy" ? " Economy / Overnight prioritizes low pressure and is not intended for immediate completion. " : "";
+  const target = document.querySelector("#speedDescription");
+  if (target) target.textContent = `${economy}${descriptions[preset] || descriptions.balanced}${suffix}`;
+}
+
 async function estimateTranslation(event) {
   event.preventDefault();
+  if (!validateTranslateForm()) return toast("Fix the highlighted fields first.");
   const estimate = await api("/api/translation/estimate", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(translatePayload())});
   state.lastEstimate = estimate;
-  document.querySelector("#estimateResult").innerHTML = `<div class="metric-grid">${metric("Selected", estimate.selected_count)}${metric("Eligible", estimate.eligible_count)}${metric("Skipped", estimate.skipped_count)}${metric("Input tokens", estimate.approx_input_tokens)}${metric("Output tokens", estimate.approx_output_tokens)}${metric("Approx cost", `$${Number(estimate.estimated_cost || 0).toFixed(4)}`)}</div><p class="muted">${escapeHtml(estimate.pricing_note)}</p>`;
+  document.querySelector("#estimateResult").innerHTML = `<div class="metric-grid">${metric("Selected", estimate.selected_count)}${metric("Eligible", estimate.eligible_count)}${metric("Speed mode", titleCase(estimate.speed_preset || "balanced"))}${metric("Expected workers", estimate.expected_workers || 1)}${metric("Approx duration", durationEstimateText(estimate.duration_estimate))}${metric("Approx cost", `$${Number(estimate.estimated_cost || 0).toFixed(4)}`)}</div><p class="muted">${escapeHtml(estimate.pricing_note)} ${estimate.auto_optimize_speed ? "Speed is being optimized automatically." : ""}</p>`;
 }
 
 async function createTranslationJob(event) {
   event.preventDefault();
+  if (!validateTranslateForm()) return toast("Fix the highlighted fields first.");
   if (!state.lastEstimate) return toast("Run an estimate before creating a job.");
   const created = await api("/api/translation/jobs", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(translatePayload())});
-  alert(`Created job ${created.job.id.slice(0, 8)}`);
-  openTranslate(created.job.novel_id);
+  localStorage.removeItem(translateDraftKey(created.job.novel_id));
+  rememberRecent("jobs", {id: created.job.id, label: `Job ${created.job.id.slice(0, 8)}`, href: "#/jobs", at: new Date().toISOString()});
+  toast(`Job ${created.job.id.slice(0, 8)} started.`);
+  window.location.hash = "#/jobs";
 }
 
-function renderJobsTable(jobs) {
-  return `<table><thead><tr><th>Job</th><th>Status</th><th>Progress</th><th>Budget</th><th>Actions</th></tr></thead><tbody>${jobs.map((job) => `<tr><td>${job.id.slice(0, 8)}<br><span>${escapeHtml(job.model || "")}</span></td><td>${escapeHtml(job.status)}</td><td>${job.completed_items || 0}/${job.total_items || 0} failed ${job.failed_items || 0}</td><td>$${Number(job.actual_cost || 0).toFixed(4)} / $${Number(job.estimated_cost || 0).toFixed(4)}</td><td class="row-actions">${jobActions(job)}</td></tr>`).join("") || `<tr><td colspan="5">No translation jobs yet.</td></tr>`}</tbody></table>`;
+function renderJobsTable(jobs, focusedJobId = "") {
+  return `<table class="responsive-table"><thead><tr><th>Job</th><th>Status</th><th>Progress</th><th>Activity</th><th>Budget</th><th>Actions</th></tr></thead><tbody>${jobs.map((job) => `<tr class="${focusedJobId === job.id ? "selected-row" : ""}"><td data-label="Job"><a href="#/jobs/${job.id}">${job.id.slice(0, 8)}</a><br><span>${escapeHtml(job.model || "")}</span></td><td data-label="Status">${statusBadge(job.status)}<br><span>${timeAgo(job.updated_at)}</span></td><td data-label="Progress">${job.completed_items || 0}/${job.total_items || 0}<br><span>failed ${job.failed_items || 0}</span></td><td data-label="Activity">${jobActivityText(job)}</td><td data-label="Budget">$${Number(job.actual_cost || 0).toFixed(4)} / $${Number(job.estimated_cost || 0).toFixed(4)}</td><td data-label="Actions" class="row-actions">${jobActions(job)}<button type="button" data-copy-link="#/jobs/${job.id}">Copy Link</button></td></tr>`).join("") || `<tr><td colspan="6">No translation jobs yet.</td></tr>`}</tbody></table>`;
 }
 
 function jobActions(job) {
   const actions = [];
   if (["queued", "running"].includes(job.status)) {
-    actions.push(["run-next", "Run Next Item"], ["pause", "Pause"], ["stop", "Stop"]);
+    actions.push(["pause", "Pause"], ["stop", "Stop"]);
   } else if (job.status === "paused") {
     actions.push(["resume", "Resume"], ["stop", "Stop"]);
   } else if (job.status === "failed") {
@@ -676,11 +858,12 @@ function jobActions(job) {
 function bindJobButtons() {
   document.querySelectorAll("[data-job-action]").forEach((button) => button.addEventListener("click", async () => {
     await api(`/api/translation/jobs/${button.dataset.job}/${button.dataset.jobAction}`, {method: "POST"});
-    openTranslate(state.currentNovelId);
+    invalidateCache("/api/translation/jobs");
+    route();
   }));
 }
 
-async function openJobCenter() {
+async function openJobCenter(focusedJobId = "") {
   if (!canTranslate()) return openSettings("account");
   setLoading("Loading jobs...");
   try {
@@ -688,11 +871,17 @@ async function openJobCenter() {
       api(`/api/translation/jobs?novel_id=${encodeURIComponent(state.currentNovelId)}`),
       state.admin ? api(`/api/import-jobs?novel_id=${encodeURIComponent(state.currentNovelId)}`) : Promise.resolve({jobs: []}),
     ]);
+    const focused = focusedJobId ? await api(`/api/translation/jobs/${focusedJobId}`).catch(() => null) : null;
     const active = (jobs.jobs || []).filter((job) => ["queued", "running", "paused"].includes(job.status)).length;
     app.innerHTML = `${pageHeader("Job Center", "Translation and import operations at a glance.", [["Active", active], ["Translation Jobs", (jobs.jobs || []).length], ["Imports", (imports.jobs || []).length]])}
-      <section class="table-card"><h2>Translation Jobs</h2>${renderJobsTable(jobs.jobs || [])}</section>
+      <section class="toolbar"><button id="refreshJobs" type="button">Refresh</button><span class="muted">Updated ${timeAgo(new Date().toISOString())}</span></section>
+      ${focused?.job ? renderJobDetail(focused.job) : ""}
+      <section class="table-card"><h2>Translation Jobs</h2>${renderJobsTable(jobs.jobs || [], focusedJobId)}</section>
       ${state.admin ? `<section class="table-card"><h2>Import Jobs</h2><table><tbody>${(imports.jobs || []).map((job) => `<tr><td>${job.id.slice(0, 8)}</td><td>${escapeHtml(job.target_mode)}</td><td>${escapeHtml(job.status)}</td><td>${escapeHtml(job.updated_at)}</td></tr>`).join("") || `<tr><td>No import jobs.</td></tr>`}</tbody></table></section>` : ""}`;
     bindJobButtons();
+    bindCopyLinks(app);
+    document.querySelector("#refreshJobs")?.addEventListener("click", () => openJobCenter(focusedJobId));
+    restoreScrollPosition();
   } catch (error) {
     setError(error.message);
   }
@@ -757,6 +946,8 @@ async function openAdmin(tab = "overview") {
   await refreshSession();
   if (!state.admin) return renderAdminGate("Admin");
   try {
+    rememberRecent("admin", {label: titleCase(tab), href: `#/admin/${tab}`, at: new Date().toISOString()});
+    localStorage.setItem("gt-last-admin-tab", tab);
     const [overview, dbHealth, missing, imports, jobs] = await Promise.all([
       api("/api/admin/overview"),
       api("/api/admin/db-health"),
@@ -771,7 +962,9 @@ async function openAdmin(tab = "overview") {
       ${renderAdminTab(tab, overview, dbHealth, missing, imports, jobs)}
       <div class="actions"><button id="logoutBtn">Logout</button><a class="button" href="#/recovery/${state.currentNovelId}">Open Recovery</a></div>`;
     bindJobButtons();
+    bindCopyLinks(app);
     document.querySelector("#logoutBtn").addEventListener("click", async () => { await api("/api/admin/logout", {method: "POST"}); state.admin = false; openAdmin(); });
+    restoreScrollPosition();
   } catch (error) {
     setError(error.message);
   }
@@ -853,6 +1046,7 @@ function renderAccountSettings(intent = "") {
         <a class="button" href="#/history">History</a>
         <a class="button" href="#/settings/appearance">Personalization</a>
       </div>
+      ${renderRecentAccountLinks()}
       <div class="actions"><button id="signOutBtn" type="button">Sign Out</button><a class="button" href="#/admin">Admin Login</a></div>
     </section>`;
   }
@@ -875,6 +1069,16 @@ function renderAccountSettings(intent = "") {
   </section>`;
 }
 
+function renderRecentAccountLinks() {
+  const items = [
+    ...(state.recent.novels || []).slice(0, 2),
+    ...(state.recent.chapters || []).slice(0, 2),
+    ...(canTranslate() ? (state.recent.jobs || []).slice(0, 2) : []),
+  ].filter(Boolean);
+  if (!items.length) return "";
+  return `<section class="recent-strip">${items.map((item) => `<a href="${escapeAttr(item.href)}">${escapeHtml(item.label)}</a>`).join("")}</section>`;
+}
+
 function renderAdminGate(title) {
   app.innerHTML = `<section class="login-panel"><h1>${escapeHtml(title)} Login</h1><p class="muted">Admin actions require a secure server-side session.</p><form id="loginForm"><label>Password<input id="adminPassword" type="password" autocomplete="current-password"></label><button class="primary">Login</button></form></section>`;
   document.querySelector("#loginForm").addEventListener("submit", async (event) => {
@@ -894,7 +1098,7 @@ function adminNotice() {
 }
 
 function pageHeader(title, subtitle, stats = []) {
-  return `<section class="page-header"><div><p class="eyebrow">GodTranslator</p><h1>${escapeHtml(title)}</h1><p>${escapeHtml(subtitle)}</p></div>${stats.length ? `<div class="stats">${stats.map(([label, value]) => metric(label, value)).join("")}</div>` : ""}</section>`;
+  return `${renderBreadcrumbs()}<section class="page-header"><div><p class="eyebrow">GodTranslator</p><h1>${escapeHtml(title)}</h1><p>${escapeHtml(subtitle)}</p></div>${stats.length ? `<div class="stats">${stats.map(([label, value]) => metric(label, value)).join("")}</div>` : ""}</section>`;
 }
 
 function metric(label, value) {
@@ -913,6 +1117,137 @@ function recoveryList(label, values) {
 function objectDetails(label, value) {
   if (!value || (Array.isArray(value) && !value.length) || (!Array.isArray(value) && !Object.keys(value).length)) return "";
   return `<details><summary>${escapeHtml(label)}</summary><pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre></details>`;
+}
+
+function renderBreadcrumbs() {
+  const crumbs = breadcrumbsForHash(window.location.hash || "#/library");
+  if (crumbs.length < 2) return "";
+  return `<nav class="breadcrumbs" aria-label="Breadcrumbs">${crumbs.map((item, index) => index === crumbs.length - 1 ? `<span>${escapeHtml(item.label)}</span>` : `<a href="${escapeAttr(item.href)}">${escapeHtml(item.label)}</a>`).join("<span>/</span>")}</nav>`;
+}
+
+function breadcrumbsForHash(hash) {
+  const [path] = String(hash || "#/library").replace(/^#\/?/, "").split("?");
+  const parts = path.split("/").filter(Boolean);
+  const novelId = parts[1] || state.currentNovelId;
+  const novel = state.novels.find((item) => item.id === novelId);
+  const novelLabel = novel?.title || novelId || "Novel";
+  const root = [{label: "Home", href: "#/library"}];
+  if (!parts.length || parts[0] === "library") return root;
+  if (parts[0] === "novel") return [...root, {label: novelLabel, href: hash}];
+  if (parts[0] === "chapters") return [...root, {label: "Library", href: "#/library"}, {label: novelLabel, href: hash}];
+  if (parts[0] === "reader") return [...root, {label: novelLabel, href: `#/chapters/${novelId}`}, {label: `Chapter ${parts[2] || ""}`, href: hash}];
+  if (parts[0] === "translate") return [...root, {label: novelLabel, href: `#/chapters/${novelId}`}, {label: "Translate", href: hash}];
+  if (parts[0] === "compare") return [...root, {label: novelLabel, href: `#/chapters/${novelId}`}, {label: `Compare ${parts[2] || ""}`, href: hash}];
+  if (parts[0] === "jobs") return [...root, {label: "Jobs", href: "#/jobs"}, ...(parts[1] ? [{label: parts[1].slice(0, 8), href: hash}] : [])];
+  if (parts[0] === "admin") return [...root, {label: "Admin", href: "#/admin"}, ...(parts[1] ? [{label: titleCase(parts[1]), href: hash}] : [])];
+  return [...root, {label: titleCase(parts[0]), href: hash}];
+}
+
+function statusBadge(status) {
+  const ok = ["completed", "running", "queued"].includes(status);
+  return `<span class="badge ${ok ? "ok" : status === "failed" ? "missing" : ""}">${escapeHtml(status || "unknown")}</span>`;
+}
+
+function jobActivityText(job) {
+  const activity = job.activity || {};
+  const workers = activity.active_workers || 0;
+  const stalled = activity.stalled_items || 0;
+  const throughput = jobThroughput(job);
+  const heartbeat = activity.last_heartbeat_at ? `Heartbeat ${timeAgo(activity.last_heartbeat_at)}` : "No heartbeat yet";
+  return `Running in parallel: ${workers} active<br><span>${throughput.summary}${stalled ? ` / ${stalled} stalled` : ""} / ${escapeHtml(heartbeat)}</span>`;
+}
+
+function renderJobDetail(job) {
+  const items = job.items || [];
+  const visible = items.slice(0, 12);
+  const throughput = jobThroughput(job);
+  return `<section class="panel job-detail"><div class="actions"><h2>Job ${job.id.slice(0, 8)}</h2><button type="button" data-copy-link="#/jobs/${job.id}">Copy Link</button></div><div class="metric-grid">${metric("Status", job.status)}${metric("Completed", `${job.completed_items || 0}/${job.total_items || 0}`)}${metric("Active workers", job.activity?.active_workers || 0)}${metric("Speed", throughput.summary)}${metric("Remaining", throughput.remaining)}${metric("Updated", timeAgo(job.updated_at))}</div><details open><summary>Advanced worker details</summary><div class="job-items">${visible.map((item) => `<span class="job-item">${item.chapter_number} ${escapeHtml(item.status || "")}${item.worker_id ? ` - ${escapeHtml(item.worker_id.slice(0, 8))}` : ""}${item.failure_category ? ` - ${escapeHtml(item.failure_category)}` : ""}</span>`).join("") || `<p class="muted">No items.</p>`}</div></details></section>`;
+}
+
+function chapterTextPath(novelId, chapterNumber, source) {
+  return `/api/novels/${encodeURIComponent(novelId)}/chapters/${chapterNumber}/${source}`;
+}
+
+function prefetchNeighborChapters(novelId, chapterNumber, source) {
+  [neighborChapter(chapterNumber, -1), neighborChapter(chapterNumber, 1)]
+    .filter(Boolean)
+    .forEach((chapter) => cachedApi(chapterTextPath(novelId, chapter, source), 120_000).catch(() => {}));
+}
+
+function bindReaderProgress(novelId, chapterNumber, source) {
+  if (readerScrollHandler) window.removeEventListener("scroll", readerScrollHandler);
+  readerScrollHandler = debounce(() => {
+    const percent = readerScrollPercent();
+    localStorage.setItem(readerScrollKey(novelId, chapterNumber, source), String(percent));
+    saveProgressDebounced(novelId, chapterNumber, source, percent);
+  }, 700);
+  window.addEventListener("scroll", readerScrollHandler, {passive: true});
+}
+
+function readerScrollKey(novelId, chapterNumber, source) {
+  return `gt-reader-scroll:${novelId}:${chapterNumber}:${source}`;
+}
+
+function restoreReaderScroll(novelId, chapterNumber, source) {
+  const saved = Number(localStorage.getItem(readerScrollKey(novelId, chapterNumber, source)) || 0);
+  if (!Number.isFinite(saved) || saved <= 0) return;
+  requestAnimationFrame(() => {
+    const total = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
+    window.scrollTo({top: total * saved / 100, behavior: state.preferences.reduceMotion ? "auto" : "smooth"});
+  });
+}
+
+function chapterStateKey(novelId) {
+  return `gt-chapter-state:${novelId}`;
+}
+
+function persistChapterState(novelId) {
+  writeStored(chapterStateKey(novelId), {view: state.chapterView, search: state.chapterSearch, offset: state.chapterOffset});
+}
+
+function restoreChapterState(novelId) {
+  const saved = readStored(chapterStateKey(novelId), {});
+  state.chapterView = saved.view || "all";
+  state.chapterSearch = saved.search || "";
+  state.chapterOffset = Number(saved.offset || 0);
+}
+
+function translateDraftKey(novelId) {
+  return `gt-translate-draft:${novelId}`;
+}
+
+function translateDraft(novelId) {
+  return readStored(translateDraftKey(novelId), {});
+}
+
+function saveTranslateDraft() {
+  const novelId = document.querySelector("#translateNovel")?.value || state.currentNovelId;
+  const payload = {...translatePayload(), saved_at: new Date().toISOString()};
+  writeStored(translateDraftKey(novelId), payload);
+  const label = document.querySelector("#draftStatus");
+  if (label) label.textContent = "Draft saved just now";
+}
+
+function validateTranslateForm() {
+  const selectionMode = document.querySelector("#selectionMode")?.value || "next-untranslated";
+  const chaptersInput = document.querySelector("#translateChapters");
+  const chapterError = document.querySelector("#chapterError");
+  const budgetError = document.querySelector("#budgetError");
+  const estimateButton = document.querySelector("#estimateBtn");
+  const createButton = document.querySelector("#createJobBtn");
+  if (!chaptersInput || !chapterError || !budgetError) return true;
+  const raw = chaptersInput.value.trim();
+  const parsed = parseChapterInput(raw);
+  const invalidChapter = selectionMode === "specific" && (!raw || parsed.length === 0 || /[^\d,\-\s]/.test(raw));
+  const total = numberOrNull("#maxTotalBudget");
+  const per = numberOrNull("#maxPerChapterBudget");
+  const invalidBudget = total !== null && per !== null && per > total;
+  chapterError.textContent = invalidChapter ? "Enter chapters like 26,53,60-70 or choose all untranslated." : "";
+  budgetError.textContent = invalidBudget ? "Per-chapter budget cannot exceed total budget." : "";
+  const valid = !invalidChapter && !invalidBudget;
+  if (estimateButton) estimateButton.disabled = !valid;
+  if (createButton) createButton.disabled = !valid;
+  return valid;
 }
 
 function preferredSource(chapter) {
@@ -940,13 +1275,109 @@ function sum(rows, key) {
   return rows.reduce((total, row) => total + Number(row[key] || 0), 0);
 }
 
+function timeAgo(value) {
+  const date = value instanceof Date ? value : new Date(value || Date.now());
+  const seconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
+  if (!Number.isFinite(seconds)) return "just now";
+  if (seconds < 5) return "just now";
+  if (seconds < 60) return `${seconds} seconds ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+function durationEstimateText(estimate) {
+  if (!estimate || !estimate.has_history) return "Improves after first chapters";
+  return `${formatDuration(estimate.low_seconds)}-${formatDuration(estimate.high_seconds)}`;
+}
+
+function formatDuration(seconds) {
+  const value = Number(seconds || 0);
+  if (!value) return "unknown";
+  if (value < 60) return `${Math.round(value)} sec`;
+  if (value < 3600) return `${Math.round(value / 60)} min`;
+  return `${Math.round(value / 3600)} hr`;
+}
+
+function jobThroughput(job) {
+  const completed = Number(job.completed_items || 0);
+  const total = Number(job.total_items || 0);
+  const started = job.started_at ? new Date(job.started_at).getTime() : 0;
+  const finished = job.finished_at ? new Date(job.finished_at).getTime() : Date.now();
+  const elapsedMinutes = started ? Math.max(0.016, (finished - started) / 60000) : 0;
+  const perMinute = elapsedMinutes ? completed / elapsedMinutes : 0;
+  const remainingItems = Math.max(0, total - completed - Number(job.failed_items || 0));
+  const remainingMinutes = perMinute > 0 ? remainingItems / perMinute : 0;
+  return {
+    summary: perMinute ? `${perMinute.toFixed(1)} chapters/min` : "warming up",
+    remaining: remainingMinutes ? `about ${formatDuration(remainingMinutes * 60)}` : "estimating",
+  };
+}
+
 function initials(value) {
   return String(value || "GT").split(/\s+/).map((word) => word[0]).join("").slice(0, 2).toUpperCase();
 }
 
 function numberOrNull(selector) {
-  const value = document.querySelector(selector).value;
-  return value === "" ? null : Number(value);
+  const field = document.querySelector(selector);
+  const value = field?.value;
+  if (value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function readStored(key, fallback) {
+  try {
+    return {...fallback, ...JSON.parse(localStorage.getItem(key) || "{}")};
+  } catch {
+    return fallback;
+  }
+}
+
+function writeStored(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
+
+function rememberRecent(type, item) {
+  const list = state.recent[type] || [];
+  const key = item.id || item.href || item.label;
+  state.recent[type] = [item, ...list.filter((existing) => (existing.id || existing.href || existing.label) !== key)].slice(0, 8);
+  writeStored("gt-recent", state.recent);
+}
+
+function bindCopyLinks(root = document) {
+  root.querySelectorAll("[data-copy-link]").forEach((button) => {
+    if (button.dataset.copyBound) return;
+    button.dataset.copyBound = "1";
+    button.addEventListener("click", () => copyLink(button.dataset.copyLink));
+  });
+}
+
+async function copyLink(hash) {
+  const url = new URL(hash || window.location.hash || "#/library", window.location.href).toString();
+  try {
+    await navigator.clipboard.writeText(url);
+    toast("Link copied.");
+  } catch {
+    window.prompt("Copy link", url);
+  }
+}
+
+function saveScrollPosition() {
+  if (!activeRouteKey) return;
+  sessionStorage.setItem(`gt-scroll:${activeRouteKey}`, String(window.scrollY || 0));
+}
+
+function restoreScrollPosition(key = window.location.hash || "#/library") {
+  const saved = Number(sessionStorage.getItem(`gt-scroll:${key}`) || 0);
+  if (saved > 0) requestAnimationFrame(() => window.scrollTo({top: saved, behavior: "auto"}));
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function debounce(fn, wait) {
@@ -1086,6 +1517,10 @@ function bindShellControls() {
       event.preventDefault();
       openCommandPalette();
     }
+    if (!typing && event.key === "?") {
+      event.preventDefault();
+      showShortcutHelp();
+    }
     if (!typing && window.location.hash.startsWith("#/reader/")) {
       const parts = window.location.hash.replace(/^#\/?/, "").split("/");
       const novelId = parts[1];
@@ -1117,6 +1552,18 @@ function openCommandPalette() {
   commandInput.focus();
 }
 
+function showShortcutHelp() {
+  const existing = document.querySelector("#shortcutDialog");
+  if (existing) existing.remove();
+  const dialog = document.createElement("dialog");
+  dialog.id = "shortcutDialog";
+  dialog.className = "command-dialog shortcut-dialog";
+  dialog.innerHTML = `<form method="dialog"><section class="panel"><h2>Keyboard Shortcuts</h2><div class="shortcut-grid"><span>Ctrl/Cmd + K</span><strong>Search and commands</strong><span>?</span><strong>Shortcut help</strong><span>Left / Right</span><strong>Previous / next chapter</strong><span>B</span><strong>Bookmark chapter</strong><span>F</span><strong>Reader focus mode</strong><span>Esc</span><strong>Close dialogs</strong></div><div class="actions"><button class="primary">Close</button></div></section></form>`;
+  document.body.appendChild(dialog);
+  dialog.addEventListener("close", () => dialog.remove());
+  dialog.showModal();
+}
+
 function renderCommandResults() {
   if (!commandResults) return;
   const query = (commandInput?.value || "").trim().toLowerCase();
@@ -1131,15 +1578,31 @@ function renderCommandResults() {
     ["Add Novel", "#/novels", state.admin],
     ["Open Recovery", `#/recovery/${state.currentNovelId}`, state.admin],
     ["Open Admin", "#/admin", state.admin],
+    ["Show Shortcuts", "#shortcuts", true],
   ];
   const novelMatches = state.novels.map((novel) => [`Novel: ${novel.title}`, `#/chapters/${novel.id}`, true]);
   const chapterMatches = state.chapters.slice(0, 500).map((chapter) => [`Chapter ${chapter.chapter_number}: ${chapter.title}`, `#/reader/${state.currentNovelId}/${chapter.chapter_number}/${state.source}`, true]);
-  const rows = [...commands, ...novelMatches, ...chapterMatches]
+  const recentMatches = [
+    ...(state.recent.novels || []).map((item) => [`Recent Novel: ${item.label}`, item.href, true]),
+    ...(state.recent.chapters || []).map((item) => [`Recent Chapter: ${item.label}`, item.href, true]),
+    ...(state.recent.jobs || []).map((item) => [`Recent Job: ${item.label}`, item.href, canTranslate()]),
+    ...(state.recent.admin || []).map((item) => [`Recent Admin: ${item.label}`, item.href, state.admin]),
+  ];
+  const rows = [...commands, ...recentMatches, ...novelMatches, ...chapterMatches]
     .filter(([, , allowed]) => allowed)
     .filter(([label]) => !query || label.toLowerCase().includes(query))
     .slice(0, 20);
   commandResults.innerHTML = rows.map(([label, href]) => `<a href="${href}" data-command-result>${escapeHtml(label)}</a>`).join("") || `<p class="muted">No matches.</p>`;
-  commandResults.querySelectorAll("[data-command-result]").forEach((link) => link.addEventListener("click", () => commandDialog?.close()));
+  commandResults.querySelectorAll("[data-command-result]").forEach((link) => link.addEventListener("click", (event) => {
+    if (link.getAttribute("href") === "#shortcuts") {
+      event.preventDefault();
+      commandDialog?.close();
+      showShortcutHelp();
+      return;
+    }
+    if (query) rememberRecent("searches", {label: query, href: link.getAttribute("href"), at: new Date().toISOString()});
+    commandDialog?.close();
+  }));
 }
 
 function adjustReaderFont(delta) {
@@ -1148,10 +1611,14 @@ function adjustReaderFont(delta) {
   document.documentElement.style.setProperty("--reader-font", `${state.fontSize}px`);
 }
 
-function toast(message) {
+function toast(message, actionLabel = "", action = null) {
   const item = document.createElement("div");
   item.className = "toast";
-  item.textContent = message;
+  item.innerHTML = `<span>${escapeHtml(message)}</span>${actionLabel ? `<button type="button">${escapeHtml(actionLabel)}</button>` : ""}`;
+  item.querySelector("button")?.addEventListener("click", async () => {
+    item.remove();
+    if (action) await action();
+  });
   document.body.appendChild(item);
   requestAnimationFrame(() => item.classList.add("show"));
   setTimeout(() => {
@@ -1164,12 +1631,21 @@ function titleCase(value) {
   return String(value || "").replace(/-/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-window.addEventListener("hashchange", route);
+window.addEventListener("hashchange", () => {
+  saveScrollPosition();
+  activeRouteKey = window.location.hash || "#/library";
+  if (!activeRouteKey.startsWith("#/reader/") && readerScrollHandler) {
+    window.removeEventListener("scroll", readerScrollHandler);
+    readerScrollHandler = null;
+  }
+  route();
+});
 window.addEventListener("DOMContentLoaded", async () => {
   applyPreferences();
   bindShellControls();
   await loadAuth();
   await refreshSession();
   await loadNovels().catch(() => {});
+  activeRouteKey = window.location.hash || "#/library";
   route();
 });

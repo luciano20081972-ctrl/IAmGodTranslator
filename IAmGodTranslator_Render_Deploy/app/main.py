@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import hashlib
 import hmac
 import io
 import json
 import os
+import random
+import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +36,114 @@ app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 database = Database()
 
 
+class TranslationRunner:
+    def __init__(self, store: Database) -> None:
+        self.store = store
+        self._lock = threading.Lock()
+        self._threads: dict[str, threading.Thread] = {}
+        self._worker_condition = threading.Condition()
+        self._active_workers = 0
+        self._circuit_until = 0.0
+
+    def start_existing(self) -> None:
+        for job_id in self.store.runnable_translation_job_ids():
+            self.start(job_id)
+
+    def start(self, job_id: str, mock: bool = False) -> None:
+        if not mock and (os.getenv("TRANSLATION_AUTOSTART") or "true").lower() in {"0", "false", "no"}:
+            return
+        with self._lock:
+            thread = self._threads.get(job_id)
+            if thread and thread.is_alive():
+                return
+            thread = threading.Thread(target=self._run_thread, args=(job_id, mock), name=f"gt-translation-{job_id[:8]}", daemon=True)
+            self._threads[job_id] = thread
+            thread.start()
+
+    def _run_thread(self, job_id: str, mock: bool) -> None:
+        try:
+            asyncio.run(self._run_job(job_id, mock))
+        finally:
+            with self._lock:
+                current = threading.current_thread()
+                if self._threads.get(job_id) is current:
+                    self._threads.pop(job_id, None)
+
+    async def _run_job(self, job_id: str, mock: bool) -> None:
+        job = self.store.translation_job(job_id) or {}
+        concurrency = translation_concurrency(job.get("settings") or {})
+        workers = [asyncio.create_task(self._worker(job_id, mock)) for _ in range(concurrency)]
+        await asyncio.gather(*workers)
+
+    async def _worker(self, job_id: str, mock: bool) -> None:
+        worker_id = f"{threading.get_ident()}-{uuid.uuid4().hex[:8]}"
+        while True:
+            await self._respect_circuit_breaker()
+            await asyncio.to_thread(self._acquire_global_slot)
+            try:
+                claim = self.store.claim_translation_item(job_id, worker_id, lease_seconds=translation_lease_seconds())
+                if claim.get("status") == "race_lost":
+                    continue
+                if claim.get("status") != "claimed":
+                    return
+                item_id = int(claim["item_id"])
+                if claim.get("skip_error"):
+                    self.store.finish_translation_item(job_id, item_id, worker_id, skipped_error=str(claim["skip_error"]))
+                    continue
+                stop = asyncio.Event()
+                heartbeat = asyncio.create_task(self._heartbeat(job_id, item_id, worker_id, stop))
+                try:
+                    translator = fake_translator_async if mock else openai_translator_async
+                    result = await translator(claim["original_text"], claim.get("reference_text"), claim["settings"])
+                    self.store.finish_translation_item(job_id, item_id, worker_id, result=result)
+                except Exception as exc:
+                    self.store.finish_translation_item(job_id, item_id, worker_id, error=compact_exception(exc))
+                    if retryable_provider_error(exc):
+                        pause = provider_backoff_seconds(exc)
+                        self._open_circuit(pause)
+                        await asyncio.sleep(pause)
+                finally:
+                    stop.set()
+                    heartbeat.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await heartbeat
+            finally:
+                self._release_global_slot()
+
+    async def _heartbeat(self, job_id: str, item_id: int, worker_id: str, stop: asyncio.Event) -> None:
+        interval = max(10, min(60, translation_lease_seconds() // 4))
+        while not stop.is_set():
+            await asyncio.sleep(interval)
+            if stop.is_set():
+                return
+            ok = self.store.heartbeat_translation_item(job_id, item_id, worker_id, lease_seconds=translation_lease_seconds())
+            if not ok:
+                return
+
+    async def _respect_circuit_breaker(self) -> None:
+        remaining = self._circuit_until - time.time()
+        if remaining > 0:
+            await asyncio.sleep(min(remaining, 120))
+
+    def _open_circuit(self, seconds: float) -> None:
+        with self._lock:
+            self._circuit_until = max(self._circuit_until, time.time() + min(300, max(1, seconds)))
+
+    def _acquire_global_slot(self) -> None:
+        with self._worker_condition:
+            while self._active_workers >= translation_global_concurrency_limit():
+                self._worker_condition.wait(timeout=1.0)
+            self._active_workers += 1
+
+    def _release_global_slot(self) -> None:
+        with self._worker_condition:
+            self._active_workers = max(0, self._active_workers - 1)
+            self._worker_condition.notify_all()
+
+
+translation_runner = TranslationRunner(database)
+
+
 @dataclass(frozen=True)
 class RequestUser:
     user_id: str
@@ -44,6 +157,7 @@ class RequestUser:
 def startup() -> None:
     database.initialize()
     database.mark_interrupted_jobs()
+    translation_runner.start_existing()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -445,7 +559,9 @@ def translation_estimate(payload: dict[str, Any] = Body(...), _: None = Depends(
 def create_translation_job(payload: dict[str, Any] = Body(...), _: None = Depends(require_translator)) -> dict[str, object]:
     novel_id = payload.get("novel_id") or "i-am-god"
     chapters = selected_chapters(novel_id, payload)
-    return {"ok": True, "job": database.create_translation_job(novel_id, chapters, payload)}
+    job = database.create_translation_job(novel_id, chapters, payload)
+    translation_runner.start(str(job["id"]))
+    return {"ok": True, "job": job}
 
 
 @app.get("/api/translation/jobs")
@@ -468,7 +584,9 @@ def pause_translation_job(job_id: str, _: None = Depends(require_translator)) ->
 
 @app.post("/api/translation/jobs/{job_id}/resume")
 def resume_translation_job(job_id: str, _: None = Depends(require_translator)) -> dict[str, object]:
-    return {"ok": True, "job": database.set_job_status(job_id, "queued")}
+    job = database.set_job_status(job_id, "queued")
+    translation_runner.start(job_id)
+    return {"ok": True, "job": job}
 
 
 @app.post("/api/translation/jobs/{job_id}/stop")
@@ -478,13 +596,15 @@ def stop_translation_job(job_id: str, _: None = Depends(require_translator)) -> 
 
 @app.post("/api/translation/jobs/{job_id}/retry-failed")
 def retry_failed(job_id: str, _: None = Depends(require_translator)) -> dict[str, object]:
-    return {"ok": True, "job": database.retry_failed_items(job_id)}
+    job = database.retry_failed_items(job_id)
+    translation_runner.start(job_id)
+    return {"ok": True, "job": job}
 
 
 @app.post("/api/translation/jobs/{job_id}/run-next")
 def run_next_translation(job_id: str, mock: bool = Query(False), _: None = Depends(require_translator)) -> dict[str, object]:
-    translator = fake_translator if mock else openai_translator
-    return {"ok": True, "job": database.run_next_translation_item(job_id, translator)}
+    translation_runner.start(job_id, mock=mock)
+    return {"ok": True, "job": database.translation_job(job_id) or {"id": job_id}}
 
 
 @app.get("/api/novels/{novel_id}/recovery/reference")
@@ -570,8 +690,12 @@ def export_backup(novel_id: str, _: None = Depends(require_admin)) -> StreamingR
 
 
 def selected_chapters(novel_id: str, payload: dict[str, Any]) -> list[int]:
-    if payload.get("all_untranslated"):
+    selection_mode = str(payload.get("selection_mode") or "").lower()
+    if payload.get("all_untranslated") or selection_mode == "all-untranslated":
         return database.all_untranslated_chapters(novel_id)
+    if selection_mode == "next-untranslated":
+        count = bounded_int(payload.get("next_count"), 25, 1, 5000)
+        return database.all_untranslated_chapters(novel_id, limit=count)
     text = str(payload.get("chapters") or "").strip()
     chapters: set[int] = set()
     for part in [chunk.strip() for chunk in text.split(",") if chunk.strip()]:
@@ -591,16 +715,116 @@ def fake_translator(original: str, reference: str | None, settings: dict[str, An
     return {"text": text, "input_tokens": max(1, (len(original) + len(reference or "")) // 4), "output_tokens": max(1, len(text) // 5), "actual_cost": 0.0}
 
 
-def openai_translator(original: str, reference: str | None, settings: dict[str, Any]) -> dict[str, Any]:
+async def fake_translator_async(original: str, reference: str | None, settings: dict[str, Any]) -> dict[str, Any]:
+    await asyncio.sleep(0)
+    return fake_translator(original, reference, settings)
+
+
+_async_openai_client: Any | None = None
+_async_openai_key: str | None = None
+_openai_client: Any | None = None
+_openai_key: str | None = None
+
+
+def translation_concurrency(settings: dict[str, Any]) -> int:
+    default = bounded_int(os.getenv("TRANSLATION_DEFAULT_CONCURRENCY"), 3, 1, 4)
+    global_max = translation_global_concurrency_limit()
+    per_job_max = bounded_int(settings.get("max_workers"), default, 1, global_max)
+    requested = settings.get("concurrency") or settings.get("max_concurrency") or default
+    return bounded_int(requested, default, 1, per_job_max)
+
+
+def translation_global_concurrency_limit() -> int:
+    return bounded_int(os.getenv("TRANSLATION_MAX_CONCURRENCY"), 8, 1, 24)
+
+
+def translation_lease_seconds() -> int:
+    return bounded_int(os.getenv("TRANSLATION_ITEM_LEASE_SECONDS"), 900, 120, 3600)
+
+
+def bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def async_openai_client() -> Any:
+    global _async_openai_client, _async_openai_key
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not configured.")
-    from openai import OpenAI
+    if _async_openai_client is None or _async_openai_key != api_key:
+        from openai import AsyncOpenAI
 
+        _async_openai_client = AsyncOpenAI(api_key=api_key)
+        _async_openai_key = api_key
+    return _async_openai_client
+
+
+def openai_client() -> Any:
+    global _openai_client, _openai_key
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not configured.")
+    if _openai_client is None or _openai_key != api_key:
+        from openai import OpenAI
+
+        _openai_client = OpenAI(api_key=api_key)
+        _openai_key = api_key
+    return _openai_client
+
+
+async def openai_translator_async(original: str, reference: str | None, settings: dict[str, Any]) -> dict[str, Any]:
     model = settings.get("model") or os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
     prompt = build_prompt(original, reference, settings)
-    client = OpenAI(api_key=api_key)
-    response = client.responses.create(model=model, input=prompt)
+    response = await async_openai_client().responses.create(model=model, input=prompt)
+    text = response.output_text
+    usage = getattr(response, "usage", None)
+    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    pricing = model_pricing(model)
+    actual_cost = (input_tokens / 1_000_000 * pricing["input"]) + (output_tokens / 1_000_000 * pricing["output"])
+    return {"text": text, "input_tokens": input_tokens, "output_tokens": output_tokens, "actual_cost": round(actual_cost, 8)}
+
+
+def retryable_provider_error(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None)
+    response = getattr(exc, "response", None)
+    status = status or getattr(response, "status_code", None)
+    name = exc.__class__.__name__.lower()
+    return status in {429, 500, 502, 503, 504} or "timeout" in name or "rate" in name
+
+
+def provider_backoff_seconds(exc: Exception) -> float:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", {}) or {}
+    retry_after = None
+    if hasattr(headers, "get"):
+        retry_after = headers.get("Retry-After") or headers.get("retry-after")
+    try:
+        if retry_after:
+            return max(1.0, min(120.0, float(retry_after)))
+    except (TypeError, ValueError):
+        pass
+    return random.uniform(1.5, 4.0)
+
+
+def compact_exception(exc: Exception) -> str:
+    status = getattr(exc, "status_code", None)
+    response = getattr(exc, "response", None)
+    status = status or getattr(response, "status_code", None)
+    prefix = f"{exc.__class__.__name__}"
+    if status:
+        prefix += f" {status}"
+    return f"{prefix}: {str(exc) or exc.__class__.__name__}"[:800]
+
+
+def openai_translator(original: str, reference: str | None, settings: dict[str, Any]) -> dict[str, Any]:
+    model = settings.get("model") or os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
+    prompt = build_prompt(original, reference, settings)
+    response = openai_client().responses.create(model=model, input=prompt)
     text = response.output_text
     usage = getattr(response, "usage", None)
     input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
@@ -614,17 +838,36 @@ def build_prompt(original: str, reference: str | None, settings: dict[str, Any])
         "The Chinese original is the source of truth.",
         "Preserve paragraphs and dialogue formatting.",
         "Do not summarize, skip, or add events.",
+        "Return only the translated chapter text unless this job explicitly asks for notes.",
     ]
     if reference:
         guidance.append("Use the reference translation only as style guidance when it helps; never translate the reference instead of the original.")
     if settings.get("style_guide"):
         guidance.append(f"Style guide: {settings['style_guide']}")
     if settings.get("glossary"):
-        guidance.append(f"Glossary: {settings['glossary']}")
+        guidance.append(f"Glossary: {relevant_glossary(settings['glossary'], original)}")
     prompt = "\n".join(guidance) + "\n\nChinese original:\n" + original
     if reference:
         prompt += "\n\nReference translation:\n" + reference
     return prompt
+
+
+def relevant_glossary(glossary: str, original: str, max_lines: int = 80) -> str:
+    lines = [line.strip() for line in str(glossary or "").splitlines() if line.strip()]
+    if len(lines) <= max_lines:
+        return "\n".join(lines)
+    original_text = original or ""
+    required: list[str] = []
+    matched: list[str] = []
+    for line in lines:
+        lowered = line.lower()
+        if lowered.startswith(("!", "global:", "required:")):
+            required.append(line)
+            continue
+        term = line.split("=", 1)[0].split(":", 1)[0].strip()
+        if term and term in original_text:
+            matched.append(line)
+    return "\n".join((required + matched)[:max_lines])
 
 
 def slugify(value: str) -> str:
