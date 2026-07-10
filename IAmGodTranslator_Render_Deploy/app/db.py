@@ -475,7 +475,7 @@ class Database:
 
     def upsert_chapter(self, novel_id: str, chapter_number: int, title: str | None, original_text: str | None, reference_text: str | None, ai_text: str | None, ai_model: str | None = None) -> None:
         now = utc_now()
-        title = clean_chapter_title(chapter_number, title)
+        title = clean_chapter_title(chapter_number, title) if normalize_title_text(title) else None
         status = chapter_status(original_text, ai_text)
         counts = (len(original_text or ""), len(reference_text or ""), len(ai_text or ""))
         chapters = self.table("chapters")
@@ -494,10 +494,14 @@ class Database:
                         original_text = COALESCE(EXCLUDED.original_text, target.original_text),
                         reference_text = COALESCE(EXCLUDED.reference_text, target.reference_text),
                         ai_text = COALESCE(EXCLUDED.ai_text, target.ai_text),
-                        original_char_count = EXCLUDED.original_char_count,
-                        reference_char_count = EXCLUDED.reference_char_count,
-                        ai_char_count = EXCLUDED.ai_char_count,
-                        translation_status = EXCLUDED.translation_status,
+                        original_char_count = LENGTH(COALESCE(EXCLUDED.original_text, target.original_text, '')),
+                        reference_char_count = LENGTH(COALESCE(EXCLUDED.reference_text, target.reference_text, '')),
+                        ai_char_count = LENGTH(COALESCE(EXCLUDED.ai_text, target.ai_text, '')),
+                        translation_status = CASE
+                            WHEN LENGTH(TRIM(COALESCE(EXCLUDED.original_text, target.original_text, ''))) = 0 THEN 'missing_original'
+                            WHEN LENGTH(TRIM(COALESCE(EXCLUDED.ai_text, target.ai_text, ''))) = 0 THEN 'needs_translation'
+                            ELSE 'translated'
+                        END,
                         ai_model = COALESCE(EXCLUDED.ai_model, target.ai_model),
                         updated_at = EXCLUDED.updated_at
                     """,
@@ -517,10 +521,14 @@ class Database:
                         original_text = COALESCE(excluded.original_text, original_text),
                         reference_text = COALESCE(excluded.reference_text, reference_text),
                         ai_text = COALESCE(excluded.ai_text, ai_text),
-                        original_char_count = excluded.original_char_count,
-                        reference_char_count = excluded.reference_char_count,
-                        ai_char_count = excluded.ai_char_count,
-                        translation_status = excluded.translation_status,
+                        original_char_count = LENGTH(COALESCE(excluded.original_text, original_text, '')),
+                        reference_char_count = LENGTH(COALESCE(excluded.reference_text, reference_text, '')),
+                        ai_char_count = LENGTH(COALESCE(excluded.ai_text, ai_text, '')),
+                        translation_status = CASE
+                            WHEN LENGTH(TRIM(COALESCE(excluded.original_text, original_text, ''))) = 0 THEN 'missing_original'
+                            WHEN LENGTH(TRIM(COALESCE(excluded.ai_text, ai_text, ''))) = 0 THEN 'needs_translation'
+                            ELSE 'translated'
+                        END,
                         ai_model = COALESCE(excluded.ai_model, ai_model),
                         updated_at = excluded.updated_at
                     """,
