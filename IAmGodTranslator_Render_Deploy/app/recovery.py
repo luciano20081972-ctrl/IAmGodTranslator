@@ -32,6 +32,15 @@ class Candidate:
 
 
 def reference_diagnostic(db: Database, novel_id: str, start: int | None = None, end: int | None = None) -> dict[str, Any]:
+    return recovery_diagnostic(db, novel_id, "reference", start=start, end=end)
+
+
+def recovery_diagnostic(db: Database, novel_id: str, target_mode: str, start: int | None = None, end: int | None = None) -> dict[str, Any]:
+    if target_mode not in {"original", "reference", "english"}:
+        raise ValueError("Unsupported recovery target mode.")
+    column = {"original": "original_text", "reference": "reference_text", "english": "ai_text"}[target_mode]
+    count_label = f"{target_mode}_count"
+    missing_label = f"missing_{target_mode}_chapters"
     configured_start, configured_end = db.reference_range(novel_id)
     start = start if start is not None else configured_start if configured_start is not None else REFERENCE_START
     end = end if end is not None else configured_end if configured_end is not None else REFERENCE_END
@@ -40,7 +49,7 @@ def reference_diagnostic(db: Database, novel_id: str, start: int | None = None, 
         rows = conn.execute(
             f"""
             SELECT chapter_number, title,
-                CASE WHEN reference_text IS NOT NULL AND LENGTH(TRIM(reference_text)) > 0 THEN 1 ELSE 0 END AS has_reference
+                CASE WHEN {column} IS NOT NULL AND LENGTH(TRIM({column})) > 0 THEN 1 ELSE 0 END AS has_target
             FROM {chapters}
             WHERE novel_id = ? AND chapter_number BETWEEN ? AND ?
             ORDER BY chapter_number
@@ -49,44 +58,47 @@ def reference_diagnostic(db: Database, novel_id: str, start: int | None = None, 
         ).fetchall()
         total = conn.execute(
             f"""
-            SELECT SUM(CASE WHEN reference_text IS NOT NULL AND LENGTH(TRIM(reference_text)) > 0 THEN 1 ELSE 0 END) AS reference_count
+            SELECT SUM(CASE WHEN {column} IS NOT NULL AND LENGTH(TRIM({column})) > 0 THEN 1 ELSE 0 END) AS target_count
             FROM {chapters}
             WHERE novel_id = ?
             """,
             (novel_id,),
-        ).fetchone()["reference_count"]
-    missing = [int(row["chapter_number"]) for row in rows if not row["has_reference"]]
-    existing = [int(row["chapter_number"]) for row in rows if row["has_reference"]]
+        ).fetchone()["target_count"]
+    missing = [int(row["chapter_number"]) for row in rows if not row["has_target"]]
+    existing = [int(row["chapter_number"]) for row in rows if row["has_target"]]
     return {
         "novel_id": novel_id,
-        "target_mode": "reference",
+        "target_mode": target_mode,
         "range": {"start": start, "end": end},
         "rows_in_range": len(rows),
-        "reference_rows_in_range": len(existing),
-        "database_reference_count": int(total or 0),
-        "missing_reference_chapters": missing,
+        f"{target_mode}_rows_in_range": len(existing),
+        f"database_{count_label}": int(total or 0),
+        missing_label: missing,
+        "target_rows_in_range": len(existing),
+        "database_target_count": int(total or 0),
+        "missing_target_chapters": missing,
         "missing_count": len(missing),
     }
 
 
-def recovery_request(db: Database, novel_id: str, source_url: str = "", chapter_url_template: str = "") -> dict[str, Any]:
+def recovery_request(db: Database, novel_id: str, source_url: str = "", chapter_url_template: str = "", target_mode: str = "reference") -> dict[str, Any]:
     novel = db.novel(novel_id) or {"title": novel_id}
-    diagnostic = reference_diagnostic(db, novel_id)
+    diagnostic = recovery_diagnostic(db, novel_id, target_mode)
     return {
         "format": "godtranslator-recovery-request-v1",
         "novel_id": novel_id,
         "novel_title": novel.get("title") or novel_id,
-        "target_mode": "reference",
+        "target_mode": target_mode,
         "source_type": "novelfire",
         "source_url": source_url,
         "chapter_url_template": chapter_url_template,
-        "chapters": diagnostic["missing_reference_chapters"],
+        "chapters": diagnostic["missing_target_chapters"],
     }
 
 
-def parse_uploads(file_payloads: list[tuple[str, bytes]], novel_id: str, db: Database) -> dict[str, Any]:
-    diagnostics = reference_diagnostic(db, novel_id)
-    missing = set(diagnostics["missing_reference_chapters"])
+def parse_uploads(file_payloads: list[tuple[str, bytes]], novel_id: str, db: Database, target_mode: str = "reference") -> dict[str, Any]:
+    diagnostics = recovery_diagnostic(db, novel_id, target_mode)
+    missing = set(diagnostics["missing_target_chapters"])
     existing = set(range(diagnostics["range"]["start"], diagnostics["range"]["end"] + 1)) - missing
     candidates: list[Candidate] = []
     invalid_files: list[dict[str, str]] = []
@@ -100,7 +112,7 @@ def parse_uploads(file_payloads: list[tuple[str, bytes]], novel_id: str, db: Dat
             if len(data) > MAX_ZIP_BYTES:
                 invalid_files.append({"file": filename, "error": "ZIP is too large."})
                 continue
-            zip_candidates, zip_report = parse_zip(filename, data, novel_id)
+            zip_candidates, zip_report = parse_zip(filename, data, novel_id, target_mode)
             files_found += zip_report["files_found"]
             candidates.extend(zip_candidates)
             invalid_files.extend(zip_report["invalid_files"])
@@ -136,13 +148,14 @@ def parse_uploads(file_payloads: list[tuple[str, bytes]], novel_id: str, db: Dat
     preview = {
         "ok": True,
         "novel_id": novel_id,
-        "target_mode": "reference",
+        "target_mode": target_mode,
         "files_found": files_found,
         "recognized_chapters": recognized,
         "recognized_count": len(recognized),
-        "missing_reference_targets": diagnostics["missing_reference_chapters"],
+        "missing_targets": diagnostics["missing_target_chapters"],
+        f"missing_{target_mode}_targets": diagnostics["missing_target_chapters"],
         "missing_targets_matched": would_import,
-        "already_present_reference_chapters": already_present,
+        "already_present_chapters": already_present,
         "unexpected_chapters": unexpected,
         "duplicate_chapter_numbers": duplicate_chapters,
         "empty_files": empty_files,
@@ -154,12 +167,12 @@ def parse_uploads(file_payloads: list[tuple[str, bytes]], novel_id: str, db: Dat
         "still_missing_after_import": still_missing,
         "still_missing_count": len(still_missing),
     }
-    job_id = db.create_import_job(novel_id, "reference", preview, would_import_candidates)
+    job_id = db.create_import_job(novel_id, target_mode, preview, would_import_candidates)
     preview["job_id"] = job_id
     return preview
 
 
-def parse_zip(filename: str, data: bytes, novel_id: str) -> tuple[list[Candidate], dict[str, Any]]:
+def parse_zip(filename: str, data: bytes, novel_id: str, target_mode: str = "reference") -> tuple[list[Candidate], dict[str, Any]]:
     candidates: list[Candidate] = []
     report: dict[str, Any] = {"files_found": 0, "invalid_files": [], "empty_files": [], "ambiguous_files": []}
     try:
@@ -173,7 +186,7 @@ def parse_zip(filename: str, data: bytes, novel_id: str) -> tuple[list[Candidate
                 report["invalid_files"].append({"file": filename, "error": "ZIP uncompressed size is too large."})
                 return candidates, report
             try:
-                manifest = load_pack_manifest(zf, novel_id)
+                manifest = load_pack_manifest(zf, novel_id, target_mode)
             except Exception as exc:
                 report["invalid_files"].append({"file": f"{filename}:manifest.json", "error": str(exc)})
                 return candidates, report
@@ -199,7 +212,7 @@ def parse_zip(filename: str, data: bytes, novel_id: str) -> tuple[list[Candidate
     return candidates, report
 
 
-def load_pack_manifest(zf: zipfile.ZipFile, novel_id: str) -> dict[str, int]:
+def load_pack_manifest(zf: zipfile.ZipFile, novel_id: str, target_mode: str = "reference") -> dict[str, int]:
     try:
         raw = zf.read("manifest.json")
     except KeyError:
@@ -208,12 +221,18 @@ def load_pack_manifest(zf: zipfile.ZipFile, novel_id: str) -> dict[str, int]:
         manifest = json.loads(raw.decode("utf-8"))
     except Exception as exc:
         raise ValueError(f"Invalid manifest.json: {exc}") from exc
-    if manifest.get("format") != "godtranslator-reference-pack-v1":
+    accepted_formats = {
+        "original": {"godtranslator-original-pack-v1", "godtranslator-import-pack-v1", "godtranslator-mixed-pack-v1"},
+        "reference": {"godtranslator-reference-pack-v1", "godtranslator-import-pack-v1", "godtranslator-mixed-pack-v1"},
+        "english": {"godtranslator-english-pack-v1", "godtranslator-import-pack-v1", "godtranslator-mixed-pack-v1"},
+    }
+    if manifest.get("format") not in accepted_formats[target_mode]:
         raise ValueError("Unsupported manifest format.")
     if manifest.get("novel_id") != novel_id:
         raise ValueError("Manifest novel_id does not match.")
-    if manifest.get("target_mode") != "reference":
-        raise ValueError("Manifest target_mode must be reference.")
+    manifest_target = manifest.get("target_mode") or manifest.get("content_type") or target_mode
+    if manifest_target not in {target_mode, "mixed"}:
+        raise ValueError(f"Manifest target_mode must be {target_mode}.")
     mapping: dict[str, int] = {}
     chapters = manifest.get("chapters") or {}
     for chapter_text, meta in chapters.items():

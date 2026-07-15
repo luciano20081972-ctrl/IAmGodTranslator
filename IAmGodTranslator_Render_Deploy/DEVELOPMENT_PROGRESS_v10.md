@@ -1,5 +1,25 @@
 # GodTranslator v10 Development Progress
 
+## v10.5.0 Content Import And Chapter Editions
+
+Branch: `v10.5.0-content-import-and-editions`
+
+Completed:
+
+- Added Admin Content Import Center as the official novel onboarding workflow.
+- Added additive chapter edition storage and migration from existing AI translations to English editions.
+- Updated Reader, Library, Novel Detail, Admin, and Translate surfaces to treat English as the public reading edition.
+- Generalized Recovery to fill missing Original, Reference, or English data only.
+- Documented the content import system, chapter editions, import pack formats, and v10.5 roadmap.
+- Added focused fixture QA in `tools/qa_v10_5_content_import_editions.py`.
+
+Safety:
+
+- No production data writes.
+- No OpenAI calls.
+- No merge or deploy.
+- Existing scheduler, authentication, PostgreSQL configuration, and translation functionality are preserved.
+
 ## v10.2.0 Premium Product Evolution
 
 Branch: `v10.2.0-premium-product-evolution`

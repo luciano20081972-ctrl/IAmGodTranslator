@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import re
@@ -32,6 +33,16 @@ def readable(value: str | None) -> bool:
 MAX_TITLE_LENGTH = 72
 MAX_TITLE_WORDS = 10
 CHAPTER_TITLE_RE = re.compile(r"^(?:chapter|chap|ch)\s*0*\d+\b|^第\s*0*\d+\s*章", re.IGNORECASE)
+CONTENT_TYPES = {"original", "english", "reference", "ai", "metadata", "cover", "glossary"}
+ENGLISH_EDITION_PRIORITY = {
+    "official": 0,
+    "edited": 1,
+    "human": 2,
+    "imported": 3,
+    "ai": 4,
+    "machine": 5,
+    "community": 6,
+}
 
 
 @dataclass(frozen=True)
@@ -115,10 +126,12 @@ class Database:
     def _schema_sql(self) -> str:
         novels = self.table("novels")
         chapters = self.table("chapters")
+        chapter_editions = self.table("chapter_editions")
         translation_jobs = self.table("translation_jobs")
         translation_job_items = self.table("translation_job_items")
         import_jobs = self.table("import_jobs")
         import_job_items = self.table("import_job_items")
+        content_import_items = self.table("content_import_items")
         user_profiles = self.table("user_profiles")
         user_preferences = self.table("user_preferences")
         reading_progress = self.table("reading_progress")
@@ -128,6 +141,7 @@ class Database:
         translation_profiles = self.table("translation_profiles")
         chapters_novel_chapter = self.index("chapters_novel_chapter")
         chapters_missing_ai = self.index("chapters_missing_ai")
+        chapter_editions_lookup = self.index("chapter_editions_lookup")
         if self.config.backend == "postgres":
             id_type = "BIGSERIAL PRIMARY KEY"
             uuid_type = "UUID PRIMARY KEY"
@@ -179,6 +193,26 @@ class Database:
         WHERE original_text IS NOT NULL
         AND LENGTH(TRIM(original_text)) > 0
         AND (ai_text IS NULL OR LENGTH(TRIM(ai_text)) = 0);
+
+        CREATE TABLE IF NOT EXISTS {chapter_editions} (
+            id {id_type},
+            novel_id TEXT NOT NULL,
+            chapter_number INTEGER NOT NULL,
+            edition_key TEXT NOT NULL,
+            language TEXT NOT NULL DEFAULT 'en',
+            edition_type TEXT NOT NULL DEFAULT 'AI',
+            source_label TEXT,
+            text TEXT NOT NULL,
+            character_count INTEGER NOT NULL DEFAULT 0,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            metadata_json TEXT,
+            created_at {ts_type} NOT NULL,
+            updated_at {ts_type} NOT NULL,
+            UNIQUE (novel_id, chapter_number, edition_key)
+        );
+
+        CREATE INDEX IF NOT EXISTS {chapter_editions_lookup}
+        ON {chapter_editions}(novel_id, chapter_number, language, is_default);
 
         CREATE TABLE IF NOT EXISTS {translation_jobs} (
             id {uuid_type},
@@ -276,15 +310,41 @@ class Database:
             job_id {job_ref_type} NOT NULL REFERENCES {import_jobs}(id) ON DELETE CASCADE,
             novel_id TEXT NOT NULL REFERENCES {novels}(id) ON DELETE CASCADE,
             chapter_number INTEGER NOT NULL,
+            target_content_type TEXT,
+            edition_type TEXT,
+            language TEXT,
+            title TEXT,
+            source_url TEXT,
             filename TEXT,
             sha256 TEXT,
             character_count INTEGER NOT NULL DEFAULT 0,
             content_text TEXT,
             status TEXT NOT NULL,
             error TEXT,
+            action TEXT,
             created_at {ts_type} NOT NULL,
             updated_at {ts_type} NOT NULL,
             UNIQUE (job_id, chapter_number)
+        );
+
+        CREATE TABLE IF NOT EXISTS {content_import_items} (
+            id {id_type},
+            job_id {job_ref_type} NOT NULL REFERENCES {import_jobs}(id) ON DELETE CASCADE,
+            novel_id TEXT NOT NULL REFERENCES {novels}(id) ON DELETE CASCADE,
+            chapter_number INTEGER,
+            target_content_type TEXT NOT NULL,
+            edition_type TEXT,
+            language TEXT,
+            title TEXT,
+            source_url TEXT,
+            filename TEXT,
+            sha256 TEXT,
+            character_count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL,
+            action TEXT,
+            error TEXT,
+            created_at {ts_type} NOT NULL,
+            updated_at {ts_type} NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS {user_profiles} (
@@ -407,16 +467,48 @@ class Database:
             "prompt_reference_tokens": "INTEGER",
             "prompt_estimated_output_tokens": "INTEGER",
         }
+        import_item_columns = {
+            "target_content_type": "TEXT",
+            "edition_type": "TEXT",
+            "language": "TEXT",
+            "title": "TEXT",
+            "source_url": "TEXT",
+            "action": "TEXT",
+        }
         for table, columns in (
             ("novels", novel_columns),
             ("chapters", chapter_columns),
             ("translation_jobs", job_columns),
             ("translation_job_items", item_columns),
+            ("import_job_items", import_item_columns),
         ):
             existing = self.columns(conn, table)
             for column, definition in columns.items():
                 if column not in existing:
                     conn.execute(f"ALTER TABLE {self.table(table)} ADD COLUMN {column} {definition}")
+        self._migrate_ai_text_to_english_editions(conn)
+
+    def _migrate_ai_text_to_english_editions(self, conn: Any) -> None:
+        chapters = self.table("chapters")
+        editions = self.table("chapter_editions")
+        conn.execute(
+            f"""
+            INSERT INTO {editions} (
+                novel_id, chapter_number, edition_key, language, edition_type, source_label,
+                text, character_count, is_default, metadata_json, created_at, updated_at
+            )
+            SELECT novel_id, chapter_number, 'ai', 'en', 'AI', 'Legacy AI',
+                ai_text, LENGTH(ai_text), 1, '{{}}',
+                COALESCE(translated_at, created_at), updated_at
+            FROM {chapters}
+            WHERE ai_text IS NOT NULL AND LENGTH(TRIM(ai_text)) > 0
+            ON CONFLICT(novel_id, chapter_number, edition_key) DO UPDATE SET
+                text = excluded.text,
+                character_count = excluded.character_count,
+                is_default = excluded.is_default,
+                updated_at = excluded.updated_at
+            """
+        )
 
     def columns(self, conn: Any, table: str) -> set[str]:
         if self.config.backend == "postgres":
@@ -576,6 +668,138 @@ class Database:
                     """,
                     (novel_id, chapter_number, title, original_text, reference_text, ai_text, *counts, status, ai_model, now, now),
                 )
+            if readable(ai_text):
+                self._upsert_english_edition_conn(
+                    conn,
+                    novel_id,
+                    chapter_number,
+                    ai_text or "",
+                    edition_type="AI",
+                    source_label=ai_model or "AI",
+                    edition_key="ai",
+                    is_default=True,
+                    now=now,
+                    metadata={"model": ai_model} if ai_model else {},
+                )
+
+    def _upsert_english_edition_conn(
+        self,
+        conn: Any,
+        novel_id: str,
+        chapter_number: int,
+        text: str,
+        edition_type: str = "Imported",
+        source_label: str | None = None,
+        edition_key: str | None = None,
+        language: str = "en",
+        is_default: bool = True,
+        now: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        if not readable(text):
+            return
+        now = now or utc_now()
+        edition_type = normalize_edition_type(edition_type)
+        edition_key = edition_key or edition_key_for(edition_type, source_label)
+        if is_default:
+            conn.execute(
+                f"""
+                UPDATE {self.table('chapter_editions')}
+                SET is_default = 0, updated_at = ?
+                WHERE novel_id = ? AND chapter_number = ? AND language = ?
+                """,
+                (now, novel_id, chapter_number, language),
+            )
+        conn.execute(
+            f"""
+            INSERT INTO {self.table('chapter_editions')} (
+                novel_id, chapter_number, edition_key, language, edition_type, source_label,
+                text, character_count, is_default, metadata_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(novel_id, chapter_number, edition_key) DO UPDATE SET
+                language = excluded.language,
+                edition_type = excluded.edition_type,
+                source_label = excluded.source_label,
+                text = excluded.text,
+                character_count = excluded.character_count,
+                is_default = excluded.is_default,
+                metadata_json = excluded.metadata_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                novel_id,
+                chapter_number,
+                edition_key,
+                language or "en",
+                edition_type,
+                source_label,
+                text,
+                len(text),
+                1 if is_default else 0,
+                json.dumps(metadata or {}, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+
+    def english_editions(self, novel_id: str, chapter_number: int | None = None) -> list[dict[str, Any]]:
+        where = "novel_id = ?"
+        params: list[Any] = [novel_id]
+        if chapter_number is not None:
+            where += " AND chapter_number = ?"
+            params.append(int(chapter_number))
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT novel_id, chapter_number, edition_key, language, edition_type, source_label,
+                    character_count, is_default, metadata_json, created_at, updated_at
+                FROM {self.table('chapter_editions')}
+                WHERE {where}
+                ORDER BY chapter_number, is_default DESC, edition_type, edition_key
+                """,
+                tuple(params),
+            ).fetchall()
+        editions = [dict(row) for row in rows]
+        for edition in editions:
+            try:
+                edition["metadata"] = json.loads(edition.pop("metadata_json") or "{}")
+            except Exception:
+                edition["metadata"] = {}
+            edition["is_default"] = bool(edition.get("is_default"))
+        return editions
+
+    def set_default_english_edition(self, novel_id: str, chapter_number: int, edition_key: str) -> dict[str, Any]:
+        now = utc_now()
+        with self.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT text, edition_type, source_label
+                FROM {self.table('chapter_editions')}
+                WHERE novel_id = ? AND chapter_number = ? AND edition_key = ?
+                """,
+                (novel_id, int(chapter_number), edition_key),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Edition not found.")
+            conn.execute(
+                f"UPDATE {self.table('chapter_editions')} SET is_default = 0, updated_at = ? WHERE novel_id = ? AND chapter_number = ? AND language = 'en'",
+                (now, novel_id, int(chapter_number)),
+            )
+            conn.execute(
+                f"UPDATE {self.table('chapter_editions')} SET is_default = 1, updated_at = ? WHERE novel_id = ? AND chapter_number = ? AND edition_key = ?",
+                (now, novel_id, int(chapter_number), edition_key),
+            )
+            conn.execute(
+                f"""
+                UPDATE {self.table('chapters')}
+                SET ai_text = ?, ai_char_count = ?, translation_status = 'translated',
+                    updated_at = ?
+                WHERE novel_id = ? AND chapter_number = ?
+                """,
+                (row["text"], len(row["text"] or ""), now, novel_id, int(chapter_number)),
+            )
+        return {"novel_id": novel_id, "chapter_number": int(chapter_number), "edition_key": edition_key}
 
     def novels(self) -> list[dict[str, Any]]:
         novels = self.table("novels")
@@ -590,7 +814,8 @@ class Database:
                     COUNT(c.id) AS chapter_count,
                     SUM(CASE WHEN c.original_text IS NOT NULL AND LENGTH(TRIM(c.original_text)) > 0 THEN 1 ELSE 0 END) AS original_count,
                     SUM(CASE WHEN c.reference_text IS NOT NULL AND LENGTH(TRIM(c.reference_text)) > 0 THEN 1 ELSE 0 END) AS reference_count,
-                    SUM(CASE WHEN c.ai_text IS NOT NULL AND LENGTH(TRIM(c.ai_text)) > 0 THEN 1 ELSE 0 END) AS ai_count
+                    SUM(CASE WHEN c.ai_text IS NOT NULL AND LENGTH(TRIM(c.ai_text)) > 0 THEN 1 ELSE 0 END) AS ai_count,
+                    SUM(CASE WHEN c.ai_text IS NOT NULL AND LENGTH(TRIM(c.ai_text)) > 0 THEN 1 ELSE 0 END) AS english_count
                 FROM {novels} n
                 LEFT JOIN {chapters} c ON c.novel_id = n.id
                 GROUP BY n.id
@@ -660,7 +885,9 @@ class Database:
                 SELECT chapter_number, title, translation_status, translation_error,
                     CASE WHEN original_text IS NOT NULL AND LENGTH(TRIM(original_text)) > 0 THEN 1 ELSE 0 END AS has_original,
                     CASE WHEN reference_text IS NOT NULL AND LENGTH(TRIM(reference_text)) > 0 THEN 1 ELSE 0 END AS has_reference,
-                    CASE WHEN ai_text IS NOT NULL AND LENGTH(TRIM(ai_text)) > 0 THEN 1 ELSE 0 END AS has_ai
+                    CASE WHEN ai_text IS NOT NULL AND LENGTH(TRIM(ai_text)) > 0 THEN 1 ELSE 0 END AS has_ai,
+                    CASE WHEN ai_text IS NOT NULL AND LENGTH(TRIM(ai_text)) > 0 THEN 1 ELSE 0 END AS has_english,
+                    CASE WHEN ai_text IS NOT NULL AND LENGTH(TRIM(ai_text)) > 0 THEN 'AI' ELSE NULL END AS default_english_edition
                 FROM {chapters}
                 WHERE {where_sql}
                 ORDER BY chapter_number ASC
@@ -671,7 +898,53 @@ class Database:
         return {"novel": novel, "total": int(total_row["total"]), "chapters": [public_chapter_row(row) for row in rows]}
 
     def chapter_text(self, novel_id: str, chapter_number: int, mode: str) -> dict[str, Any]:
-        column = {"original": "original_text", "reference": "reference_text", "ai": "ai_text"}[mode]
+        if mode in {"english", "ai"}:
+            with self.connect() as conn:
+                edition = conn.execute(
+                    f"""
+                    SELECT edition_key, edition_type, source_label, text
+                    FROM {self.table('chapter_editions')}
+                    WHERE novel_id = ? AND chapter_number = ? AND language = 'en'
+                        AND text IS NOT NULL AND LENGTH(TRIM(text)) > 0
+                    ORDER BY is_default DESC,
+                        CASE LOWER(edition_type)
+                            WHEN 'official' THEN 0
+                            WHEN 'edited' THEN 1
+                            WHEN 'human' THEN 2
+                            WHEN 'imported' THEN 3
+                            WHEN 'ai' THEN 4
+                            WHEN 'machine' THEN 5
+                            WHEN 'community' THEN 6
+                            ELSE 9
+                        END,
+                        updated_at DESC
+                    LIMIT 1
+                    """,
+                    (novel_id, chapter_number),
+                ).fetchone()
+                row = conn.execute(
+                    f"SELECT chapter_number, title, ai_text FROM {self.table('chapters')} WHERE novel_id = ? AND chapter_number = ?",
+                    (novel_id, chapter_number),
+                ).fetchone()
+            if row is None:
+                return {"ok": False, "status": "chapter_not_found", "message": "Chapter row does not exist.", "text": ""}
+            text = edition["text"] if edition else row["ai_text"]
+            if not readable(text):
+                return {"ok": False, "status": "english_missing", "message": "English text is missing.", "chapter_number": chapter_number, "title": display_chapter_title(chapter_number, row["title"]), "text": ""}
+            return {
+                "ok": True,
+                "status": "ok",
+                "chapter_number": chapter_number,
+                "title": display_chapter_title(chapter_number, row["title"]),
+                "text": text,
+                "mode": "english",
+                "edition": {
+                    "edition_key": edition["edition_key"] if edition else "ai",
+                    "edition_type": edition["edition_type"] if edition else "AI",
+                    "source_label": edition["source_label"] if edition else "Legacy AI",
+                },
+            }
+        column = {"original": "original_text", "reference": "reference_text"}[mode]
         with self.connect() as conn:
             row = conn.execute(f"SELECT chapter_number, title, {column} AS text FROM {self.table('chapters')} WHERE novel_id = ? AND chapter_number = ?", (novel_id, chapter_number)).fetchone()
         if row is None:
@@ -692,13 +965,14 @@ class Database:
                     SUM(CASE WHEN original_text IS NOT NULL AND LENGTH(TRIM(original_text)) > 0 THEN 1 ELSE 0 END) AS original,
                     SUM(CASE WHEN reference_text IS NOT NULL AND LENGTH(TRIM(reference_text)) > 0 THEN 1 ELSE 0 END) AS reference,
                     SUM(CASE WHEN ai_text IS NOT NULL AND LENGTH(TRIM(ai_text)) > 0 THEN 1 ELSE 0 END) AS ai,
+                    SUM(CASE WHEN ai_text IS NOT NULL AND LENGTH(TRIM(ai_text)) > 0 THEN 1 ELSE 0 END) AS english,
                     SUM(CASE WHEN original_text IS NOT NULL AND LENGTH(TRIM(original_text)) > 0 AND (ai_text IS NULL OR LENGTH(TRIM(ai_text)) = 0) THEN 1 ELSE 0 END) AS needs_translation
                 FROM {chapters}
                 WHERE novel_id = ?
                 """,
                 (novel_id,),
             ).fetchone()
-        return {key: int(row[key] or 0) for key in ("total", "original", "reference", "ai", "needs_translation")}
+        return {key: int(row[key] or 0) for key in ("total", "original", "reference", "ai", "english", "needs_translation")}
 
     def library_counts(self, novel_id: str) -> dict[str, int]:
         counts = self.verification_counts(novel_id)
@@ -707,13 +981,16 @@ class Database:
             "original_readable": counts["original"],
             "reference_readable": counts["reference"],
             "ai_readable": counts["ai"],
+            "english_readable": counts["english"],
             "needs_translation": counts["needs_translation"],
             "missing_original": max(0, counts["total"] - counts["original"]),
+            "missing_english": max(0, counts["total"] - counts["english"]),
+            "missing_reference": max(0, counts["total"] - counts["reference"]),
         }
 
     def create_import_job(self, novel_id: str, target_mode: str, preview: dict[str, Any], candidates: list[Any]) -> str:
-        if target_mode != "reference":
-            raise ValueError("Only reference import jobs are supported.")
+        if target_mode not in {"original", "reference", "english"}:
+            raise ValueError("Only original, reference, and english recovery jobs are supported.")
         now = utc_now()
         job_id = str(uuid.uuid4())
         import_jobs = self.table("import_jobs")
@@ -730,29 +1007,42 @@ class Database:
                 conn.execute(
                     f"""
                     INSERT INTO {import_job_items} (
-                        job_id, novel_id, chapter_number, filename, sha256, character_count,
-                        content_text, status, error, created_at, updated_at
+                        job_id, novel_id, chapter_number, target_content_type, edition_type, language,
+                        title, source_url, filename, sha256, character_count,
+                        content_text, status, error, action, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(job_id, chapter_number) DO UPDATE SET
+                        target_content_type = excluded.target_content_type,
+                        edition_type = excluded.edition_type,
+                        language = excluded.language,
+                        title = excluded.title,
+                        source_url = excluded.source_url,
                         filename = excluded.filename,
                         sha256 = excluded.sha256,
                         character_count = excluded.character_count,
                         content_text = excluded.content_text,
                         status = excluded.status,
                         error = excluded.error,
+                        action = excluded.action,
                         updated_at = excluded.updated_at
                     """,
                     (
                         job_id,
                         novel_id,
                         int(item.chapter_number),
+                        target_mode,
+                        "AI" if target_mode == "english" else None,
+                        "en" if target_mode == "english" else None,
+                        getattr(item, "title", None),
+                        getattr(item, "source_url", None),
                         item.filename,
                         item.sha256,
                         int(item.character_count),
                         item.text,
                         "would_import",
                         None,
+                        "add_missing",
                         now,
                         now,
                     ),
@@ -791,11 +1081,14 @@ class Database:
             job = conn.execute(f"SELECT * FROM {import_jobs} WHERE id = ?", (job_id,)).fetchone()
             if job is None:
                 raise ValueError("Import job not found.")
-            if job["target_mode"] != "reference":
-                raise ValueError("Only reference import jobs are supported.")
+            if job["target_mode"] not in {"original", "reference", "english"}:
+                raise ValueError("Only original, reference, and english recovery jobs are supported.")
+            target_mode = job["target_mode"]
+            target_column = {"original": "original_text", "reference": "reference_text", "english": "ai_text"}[target_mode]
+            count_column = {"original": "original_char_count", "reference": "reference_char_count", "english": "ai_char_count"}[target_mode]
             items = conn.execute(
                 f"""
-                SELECT chapter_number, filename, character_count, content_text
+                SELECT chapter_number, filename, character_count, content_text, edition_type, language
                 FROM {import_job_items}
                 WHERE job_id = ? AND status IN ('would_import', 'imported', 'skipped_existing')
                 ORDER BY chapter_number
@@ -807,18 +1100,36 @@ class Database:
                 cursor = conn.execute(
                     f"""
                     UPDATE {chapters}
-                    SET reference_text = ?,
-                        reference_char_count = ?,
+                    SET {target_column} = ?,
+                        {count_column} = ?,
+                        translation_status = CASE
+                            WHEN ? = 'english' THEN 'translated'
+                            WHEN original_text IS NULL OR LENGTH(TRIM(original_text)) = 0 THEN 'missing_original'
+                            WHEN ai_text IS NULL OR LENGTH(TRIM(ai_text)) = 0 THEN 'needs_translation'
+                            ELSE translation_status
+                        END,
                         updated_at = ?
                     WHERE novel_id = ?
                         AND chapter_number = ?
-                        AND (reference_text IS NULL OR LENGTH(TRIM(reference_text)) = 0)
+                        AND ({target_column} IS NULL OR LENGTH(TRIM({target_column})) = 0)
                     """,
-                    (item["content_text"], int(item["character_count"] or 0), now, job["novel_id"], chapter_number),
+                    (item["content_text"], int(item["character_count"] or 0), target_mode, now, job["novel_id"], chapter_number),
                 )
                 if cursor.rowcount:
                     imported.append(chapter_number)
                     status = "imported"
+                    if target_mode == "english":
+                        self._upsert_english_edition_conn(
+                            conn,
+                            job["novel_id"],
+                            chapter_number,
+                            item["content_text"] or "",
+                            edition_type=item["edition_type"] or "Imported",
+                            source_label="Recovery",
+                            language=item["language"] or "en",
+                            is_default=True,
+                            now=now,
+                        )
                 else:
                     skipped.append(chapter_number)
                     status = "skipped_existing"
@@ -842,7 +1153,7 @@ class Database:
             "ok": True,
             "job_id": job_id,
             "novel_id": job["novel_id"],
-            "target_mode": "reference",
+            "target_mode": target_mode,
             "imported_chapters": imported,
             "imported_count": len(imported),
             "skipped_existing_chapters": skipped,
@@ -1426,6 +1737,18 @@ class Database:
                     """,
                     (values["input_tokens"], values["output_tokens"], values["actual_cost"], job["model"], now, now, item_id),
                 )
+                self._upsert_english_edition_conn(
+                    conn,
+                    job["novel_id"],
+                    int(item["chapter_number"]),
+                    text,
+                    edition_type="AI",
+                    source_label=job["model"],
+                    edition_key="ai",
+                    is_default=True,
+                    now=now,
+                    metadata={"model": job["model"], "job_id": job_id},
+                )
                 telemetry = (job["model"], job["novel_id"], duration_seconds, original_chars, len(text), values["input_tokens"], values["output_tokens"], True, None)
             metrics.setdefault("total_duration_seconds", seconds_between(item["claimed_at"] or item["started_at"], now))
             metrics["save_duration_seconds"] = time.perf_counter() - save_started
@@ -1694,6 +2017,7 @@ class Database:
                     SUM(CASE WHEN original_text IS NOT NULL AND LENGTH(TRIM(original_text)) > 0 THEN 1 ELSE 0 END) AS original,
                     SUM(CASE WHEN reference_text IS NOT NULL AND LENGTH(TRIM(reference_text)) > 0 THEN 1 ELSE 0 END) AS reference,
                     SUM(CASE WHEN ai_text IS NOT NULL AND LENGTH(TRIM(ai_text)) > 0 THEN 1 ELSE 0 END) AS ai,
+                    SUM(CASE WHEN ai_text IS NOT NULL AND LENGTH(TRIM(ai_text)) > 0 THEN 1 ELSE 0 END) AS english,
                     SUM(CASE WHEN original_text IS NOT NULL AND LENGTH(TRIM(original_text)) > 0 AND (ai_text IS NULL OR LENGTH(TRIM(ai_text)) = 0) THEN 1 ELSE 0 END) AS needs_translation
                 FROM {self.table('chapters')}
                 """
@@ -1706,6 +2030,7 @@ class Database:
             "original": int(row["original"] or 0),
             "reference": int(row["reference"] or 0),
             "ai": int(row["ai"] or 0),
+            "english": int(row["english"] or 0),
             "needs_translation": int(row["needs_translation"] or 0),
             "recent_jobs": self.translation_jobs(limit=5),
         }
@@ -1947,6 +2272,7 @@ class Database:
                 SELECT chapter_number,
                     CASE WHEN original_text IS NULL OR LENGTH(TRIM(original_text)) = 0 THEN 1 ELSE 0 END AS missing_original,
                     CASE WHEN reference_text IS NULL OR LENGTH(TRIM(reference_text)) = 0 THEN 1 ELSE 0 END AS missing_reference,
+                    CASE WHEN ai_text IS NULL OR LENGTH(TRIM(ai_text)) = 0 THEN 1 ELSE 0 END AS missing_english,
                     translation_error
                 FROM {self.table('chapters')}
                 WHERE novel_id = ?
@@ -1956,6 +2282,7 @@ class Database:
             ).fetchall()
         return {
             "missing_original": [int(row["chapter_number"]) for row in rows if row["missing_original"]],
+            "missing_english": [int(row["chapter_number"]) for row in rows if row["missing_english"]],
             "missing_reference": [
                 int(row["chapter_number"])
                 for row in rows
@@ -1980,6 +2307,388 @@ class Database:
                 tuple(params),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def content_import_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
+        options = normalized_import_options(payload.get("options") if isinstance(payload.get("options"), dict) else payload)
+        novel_payload = payload.get("novel") if isinstance(payload.get("novel"), dict) else {}
+        novel_id = slugify(str(payload.get("novel_id") or novel_payload.get("id") or novel_payload.get("title") or ""))
+        items = normalized_content_import_items(payload)
+        chapter_numbers = sorted({int(item["chapter_number"]) for item in items if item.get("chapter_number")})
+        existing_by_chapter: dict[int, dict[str, Any]] = {}
+        existing_novel = None
+        if novel_id:
+            with self.connect() as conn:
+                existing_novel = conn.execute(f"SELECT * FROM {self.table('novels')} WHERE id = ?", (novel_id,)).fetchone()
+                if chapter_numbers:
+                    placeholders = ",".join("?" for _ in chapter_numbers)
+                    rows = conn.execute(
+                        f"""
+                        SELECT chapter_number, title, original_text, reference_text, ai_text
+                        FROM {self.table('chapters')}
+                        WHERE novel_id = ? AND chapter_number IN ({placeholders})
+                        """,
+                        tuple([novel_id] + chapter_numbers),
+                    ).fetchall()
+                    existing_by_chapter = {int(row["chapter_number"]): dict(row) for row in rows}
+
+        warnings: list[str] = []
+        if not novel_id:
+            warnings.append("A novel id or title is required before import can execute.")
+        elif existing_novel is None:
+            warnings.append("Preview targets a new novel; execute will create it before importing content.")
+        if not items:
+            warnings.append("No importable content was found.")
+
+        seen: set[tuple[Any, ...]] = set()
+        preview_items: list[dict[str, Any]] = []
+        duplicate_keys: list[dict[str, Any]] = []
+        counters = {"would_import": 0, "would_update": 0, "would_skip": 0, "duplicates": 0, "errors": 0}
+        by_type: dict[str, int] = {}
+        missing_by_type = {"original": [], "english": [], "reference": []}
+        titles: list[dict[str, Any]] = []
+
+        for item in items:
+            content_type = item["content_type"]
+            by_type[content_type] = by_type.get(content_type, 0) + 1
+            key = (
+                content_type,
+                item.get("chapter_number"),
+                item.get("edition_type") if content_type == "english" else "",
+                item.get("language") if content_type == "english" else "",
+            )
+            row_action = "would_import"
+            reason = ""
+            if key in seen:
+                row_action = "duplicate"
+                reason = "Duplicate item in import payload."
+                counters["duplicates"] += 1
+                duplicate_keys.append({"content_type": content_type, "chapter_number": item.get("chapter_number")})
+            else:
+                seen.add(key)
+                if content_type in {"original", "reference", "english"}:
+                    chapter_number = int(item["chapter_number"])
+                    existing = existing_by_chapter.get(chapter_number)
+                    column = {"original": "original_text", "reference": "reference_text", "english": "ai_text"}[content_type]
+                    current_text = existing.get(column) if existing else None
+                    if not existing:
+                        reason = "Chapter row will be created by Content Import Center."
+                    elif readable(current_text):
+                        if options["overwrite_existing"]:
+                            row_action = "would_update"
+                            reason = "Existing text will be replaced because overwrite is enabled."
+                        else:
+                            row_action = "would_skip"
+                            reason = "Existing text is preserved by the selected import option."
+                            missing_by_type[content_type].append(chapter_number)
+                    else:
+                        missing_by_type[content_type].append(chapter_number)
+                    if item.get("title"):
+                        titles.append({"chapter_number": chapter_number, "title": item["title"]})
+                else:
+                    row_action = "would_update" if existing_novel else "would_import"
+                    reason = f"{content_type.title()} data will be merged into novel metadata."
+                if row_action == "would_update":
+                    counters["would_update"] += 1
+                elif row_action == "would_skip":
+                    counters["would_skip"] += 1
+                else:
+                    counters["would_import"] += 1
+            preview_items.append({key: value for key, value in item.items() if key != "text"} | {"action": row_action, "reason": reason})
+
+        return {
+            "ok": True,
+            "stage": "preview",
+            "novel_id": novel_id,
+            "create_new_novel": existing_novel is None,
+            "options": options,
+            "chapter_count": len(chapter_numbers),
+            "content_type_counts": by_type,
+            "missing_chapters": {key: sorted(set(value)) for key, value in missing_by_type.items()},
+            "duplicates": duplicate_keys,
+            "duplicate_count": counters["duplicates"],
+            "chapter_titles": titles[:100],
+            "estimated_import": counters,
+            "warnings": warnings,
+            "items": preview_items[:500],
+            "can_execute": bool(novel_id and items and counters["errors"] == 0),
+        }
+
+    def apply_content_import_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        preview = self.content_import_preview(payload)
+        if not preview["can_execute"]:
+            return {"ok": False, "stage": "execute", "preview": preview, "summary": {"imported": 0, "updated": 0, "skipped": 0, "errors": 1}}
+        options = preview["options"]
+        if options["dry_run"]:
+            return {"ok": True, "stage": "dry_run", "preview": preview, "summary": {"imported": 0, "updated": 0, "skipped": 0, "errors": 0}}
+
+        novel_payload = payload.get("novel") if isinstance(payload.get("novel"), dict) else {}
+        novel_id = preview["novel_id"]
+        now = utc_now()
+        items = normalized_content_import_items(payload)
+        imported: list[dict[str, Any]] = []
+        updated: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        job_id = str(uuid.uuid4())
+        preview_for_storage = {key: value for key, value in preview.items() if key != "items"}
+
+        with self.connect() as conn:
+            novel = conn.execute(f"SELECT * FROM {self.table('novels')} WHERE id = ?", (novel_id,)).fetchone()
+            if novel is None:
+                conn.execute(
+                    f"""
+                    INSERT INTO {self.table('novels')} (
+                        id, title, summary, model, status, author, cover_url, source_url,
+                        reference_source_url, reference_target_start, reference_target_end,
+                        metadata_json, is_archived, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                    """,
+                    (
+                        novel_id,
+                        novel_payload.get("title") or titleCase(novel_id),
+                        novel_payload.get("summary"),
+                        novel_payload.get("model") or "gpt-4o-mini",
+                        novel_payload.get("status") or "active",
+                        novel_payload.get("author"),
+                        novel_payload.get("cover_url"),
+                        novel_payload.get("source_url"),
+                        novel_payload.get("reference_source_url"),
+                        optional_int(novel_payload.get("reference_target_start")),
+                        optional_int(novel_payload.get("reference_target_end")),
+                        json.dumps(novel_payload.get("metadata") if isinstance(novel_payload.get("metadata"), dict) else {}, ensure_ascii=False),
+                        now,
+                        now,
+                    ),
+                )
+            elif options["merge_metadata"] and novel_payload:
+                current_metadata = {}
+                try:
+                    current_metadata = json.loads(novel["metadata_json"] or "{}")
+                except Exception:
+                    current_metadata = {}
+                incoming_metadata = novel_payload.get("metadata") if isinstance(novel_payload.get("metadata"), dict) else {}
+                merged_metadata = {**current_metadata, **incoming_metadata}
+                conn.execute(
+                    f"""
+                    UPDATE {self.table('novels')}
+                    SET title = COALESCE(?, title),
+                        summary = COALESCE(?, summary),
+                        author = COALESCE(?, author),
+                        cover_url = COALESCE(?, cover_url),
+                        source_url = COALESCE(?, source_url),
+                        metadata_json = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        novel_payload.get("title"),
+                        novel_payload.get("summary"),
+                        novel_payload.get("author"),
+                        novel_payload.get("cover_url"),
+                        novel_payload.get("source_url"),
+                        json.dumps(merged_metadata, ensure_ascii=False),
+                        now,
+                        novel_id,
+                    ),
+                )
+
+            conn.execute(
+                f"""
+                INSERT INTO {self.table('import_jobs')} (id, novel_id, target_mode, status, preview_json, created_at, updated_at)
+                VALUES (?, ?, 'content', 'running', ?, ?, ?)
+                """,
+                (job_id, novel_id, json.dumps(preview_for_storage, ensure_ascii=False), now, now),
+            )
+
+            seen: set[tuple[Any, ...]] = set()
+            for item in items:
+                content_type = item["content_type"]
+                chapter_number = optional_int(item.get("chapter_number"))
+                status = "skipped"
+                action = "skipped"
+                error = None
+                try:
+                    key = (content_type, chapter_number, item.get("edition_type"), item.get("language"))
+                    if key in seen:
+                        raise ValueError("duplicate_import_item")
+                    seen.add(key)
+                    if content_type in {"metadata", "cover", "glossary"}:
+                        self._apply_novel_sidecar_import_conn(conn, novel_id, item, options, now)
+                        action = "updated"
+                        status = "updated"
+                        updated.append({"content_type": content_type, "chapter_number": chapter_number})
+                    else:
+                        result = self._apply_chapter_content_import_conn(conn, novel_id, item, options, now)
+                        action = result["action"]
+                        status = result["status"]
+                        target = {"content_type": content_type, "chapter_number": chapter_number}
+                        if action == "imported":
+                            imported.append(target)
+                        elif action == "updated":
+                            updated.append(target)
+                        else:
+                            skipped.append(target | {"reason": result.get("reason", "")})
+                except Exception as exc:
+                    status = "error"
+                    action = "error"
+                    error = compact_error(exc)
+                    errors.append({"content_type": content_type, "chapter_number": chapter_number, "error": error})
+                conn.execute(
+                    f"""
+                    INSERT INTO {self.table('content_import_items')} (
+                        job_id, novel_id, chapter_number, target_content_type, edition_type, language,
+                        title, source_url, filename, sha256, character_count, status, action, error,
+                        created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        job_id,
+                        novel_id,
+                        chapter_number,
+                        content_type,
+                        item.get("edition_type"),
+                        item.get("language"),
+                        item.get("title"),
+                        item.get("source_url"),
+                        item.get("filename"),
+                        item.get("sha256"),
+                        int(item.get("character_count") or 0),
+                        status,
+                        action,
+                        error,
+                        now,
+                        now,
+                    ),
+                )
+            final_status = "completed_with_errors" if errors else "completed"
+            conn.execute(
+                f"UPDATE {self.table('import_jobs')} SET status = ?, updated_at = ? WHERE id = ?",
+                (final_status, now, job_id),
+            )
+        return {
+            "ok": not errors,
+            "stage": "execute",
+            "job_id": job_id,
+            "novel_id": novel_id,
+            "summary": {
+                "imported": len(imported),
+                "updated": len(updated),
+                "skipped": len(skipped),
+                "errors": len(errors),
+            },
+            "imported": imported,
+            "updated": updated,
+            "skipped": skipped,
+            "errors": errors,
+        }
+
+    def _apply_chapter_content_import_conn(self, conn: Any, novel_id: str, item: dict[str, Any], options: dict[str, Any], now: str) -> dict[str, Any]:
+        chapter_number = int(item["chapter_number"])
+        content_type = item["content_type"]
+        column = {"original": "original_text", "reference": "reference_text", "english": "ai_text", "ai": "ai_text"}[content_type]
+        count_column = {"original": "original_char_count", "reference": "reference_char_count", "english": "ai_char_count", "ai": "ai_char_count"}[content_type]
+        existing = conn.execute(
+            f"SELECT * FROM {self.table('chapters')} WHERE novel_id = ? AND chapter_number = ?",
+            (novel_id, chapter_number),
+        ).fetchone()
+        text = item["text"]
+        title = clean_chapter_title(chapter_number, item.get("title")) if options["import_titles"] and item.get("title") else None
+        if existing and readable(existing[column]) and not options["overwrite_existing"]:
+            return {"action": "skipped", "status": "skipped_existing", "reason": "existing_content_preserved"}
+        if existing is None:
+            conn.execute(
+                f"""
+                INSERT INTO {self.table('chapters')} (
+                    novel_id, chapter_number, title, {column}, {count_column},
+                    translation_status, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    novel_id,
+                    chapter_number,
+                    title,
+                    text,
+                    len(text),
+                    "translated" if column == "ai_text" else ("ready_to_translate" if column == "original_text" else "missing_original"),
+                    now,
+                    now,
+                ),
+            )
+            action = "imported"
+        else:
+            assignments: list[str] = []
+            params: list[Any] = []
+            if title:
+                assignments.append("title = COALESCE(?, title)")
+                params.append(title)
+            assignments.extend(
+                [
+                    f"{column} = ?",
+                    f"{count_column} = ?",
+                    """
+                    translation_status = CASE
+                        WHEN ? = 'ai_text' THEN 'translated'
+                        WHEN ? = 'original_text' AND (ai_text IS NULL OR LENGTH(TRIM(ai_text)) = 0) THEN 'needs_translation'
+                        WHEN ? = 'original_text' THEN 'translated'
+                        WHEN original_text IS NULL OR LENGTH(TRIM(original_text)) = 0 THEN 'missing_original'
+                        WHEN ai_text IS NULL OR LENGTH(TRIM(ai_text)) = 0 THEN 'needs_translation'
+                        ELSE 'translated'
+                    END
+                    """,
+                    "updated_at = ?",
+                ]
+            )
+            params.extend([text, len(text), column, column, column, now, novel_id, chapter_number])
+            conn.execute(
+                f"""
+                UPDATE {self.table('chapters')}
+                SET {', '.join(assignments)}
+                WHERE novel_id = ? AND chapter_number = ?
+                """,
+                tuple(params),
+            )
+            action = "updated"
+        if column == "ai_text":
+            self._upsert_english_edition_conn(
+                conn,
+                novel_id,
+                chapter_number,
+                text,
+                edition_type=item.get("edition_type") or ("AI" if content_type == "ai" else "Imported"),
+                source_label=item.get("source_url") or item.get("filename") or "Content Import",
+                language=item.get("language") or "en",
+                is_default=True,
+                now=now,
+                metadata={"import_source": item.get("source_url") or item.get("filename") or ""},
+            )
+        return {"action": action, "status": action}
+
+    def _apply_novel_sidecar_import_conn(self, conn: Any, novel_id: str, item: dict[str, Any], options: dict[str, Any], now: str) -> None:
+        novel = conn.execute(f"SELECT metadata_json FROM {self.table('novels')} WHERE id = ?", (novel_id,)).fetchone()
+        metadata = {}
+        try:
+            metadata = json.loads(novel["metadata_json"] or "{}") if novel else {}
+        except Exception:
+            metadata = {}
+        content_type = item["content_type"]
+        if content_type == "cover":
+            conn.execute(
+                f"UPDATE {self.table('novels')} SET cover_url = COALESCE(?, cover_url), updated_at = ? WHERE id = ?",
+                (item.get("source_url") or item.get("text"), now, novel_id),
+            )
+            return
+        if content_type == "glossary":
+            metadata["glossary"] = item.get("text") or metadata.get("glossary") or ""
+        else:
+            incoming = parse_json_object(item.get("text"))
+            metadata = {**metadata, **incoming} if options["merge_metadata"] else incoming
+        conn.execute(
+            f"UPDATE {self.table('novels')} SET metadata_json = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(metadata, ensure_ascii=False), now, novel_id),
+        )
 
     def backup_payload(self, novel_id: str) -> dict[str, Any]:
         novel = self.novel(novel_id)
@@ -2006,11 +2715,13 @@ class Database:
         table_names = [
             "novels",
             "chapters",
+            "chapter_editions",
             "translation_jobs",
             "translation_job_items",
             "translation_performance",
             "import_jobs",
             "import_job_items",
+            "content_import_items",
             "user_profiles",
             "user_preferences",
             "reading_progress",
@@ -2033,7 +2744,7 @@ class Database:
         table_counts = {name: len(rows) for name, rows in tables.items()}
         manifest = {
             "format_version": "godtranslator-v10-platform-backup.v1",
-            "app_version": "10.3.0",
+            "app_version": "10.5.0",
             "schema": self.config.schema,
             "created_at": utc_now(),
             "table_counts": table_counts,
@@ -2041,6 +2752,7 @@ class Database:
             "chapter_source_counts": {
                 "chapters": counts.get("chapters", 0),
                 "original": counts.get("original", 0),
+                "english": counts.get("english", counts.get("ai", 0)),
                 "ai": counts.get("ai", 0),
                 "reference": counts.get("reference", 0),
                 "needs_translation": counts.get("needs_translation", 0),
@@ -2057,11 +2769,13 @@ class Database:
         key_columns = {
             "novels": ["id"],
             "chapters": ["novel_id", "chapter_number"],
+            "chapter_editions": ["novel_id", "chapter_number", "edition_key"],
             "translation_jobs": ["id"],
             "translation_job_items": ["id"],
             "translation_performance": ["id"],
             "import_jobs": ["id"],
             "import_job_items": ["id"],
+            "content_import_items": ["id"],
             "user_profiles": ["user_id"],
             "user_preferences": ["user_id"],
             "reading_progress": ["user_id", "novel_id"],
@@ -2232,12 +2946,15 @@ def chapter_status(original_text: str | None, ai_text: str | None) -> str:
 
 def public_chapter_row(row: Any) -> dict[str, Any]:
     chapter_number = int(row["chapter_number"])
+    has_english = bool(row["has_english"] if "has_english" in row.keys() else row["has_ai"])
     return {
         "chapter_number": chapter_number,
         "title": display_chapter_title(chapter_number, row["title"]),
         "has_original": bool(row["has_original"]),
         "has_reference": bool(row["has_reference"]),
         "has_ai": bool(row["has_ai"]),
+        "has_english": has_english,
+        "default_english_edition": row["default_english_edition"] if "default_english_edition" in row.keys() else ("AI" if has_english else None),
         "translation_status": row["translation_status"],
         "translation_error": row["translation_error"] if "translation_error" in row.keys() else None,
     }
@@ -2245,7 +2962,7 @@ def public_chapter_row(row: Any) -> dict[str, Any]:
 
 def public_novel_row(row: Any) -> dict[str, Any]:
     payload = dict(row)
-    for key in ("chapter_count", "original_count", "reference_count", "ai_count", "is_archived", "reference_target_start", "reference_target_end"):
+    for key in ("chapter_count", "original_count", "reference_count", "ai_count", "english_count", "is_archived", "reference_target_start", "reference_target_end"):
         if key in payload:
             payload[key] = int(payload[key]) if payload[key] is not None else None
     metadata = payload.get("metadata_json")
@@ -2254,7 +2971,13 @@ def public_novel_row(row: Any) -> dict[str, Any]:
     except Exception:
         payload["metadata"] = {}
     payload.pop("metadata_json", None)
-    payload["remaining_count"] = max(0, int(payload.get("original_count") or 0) - int(payload.get("ai_count") or 0))
+    payload["english_count"] = int(payload.get("english_count") if payload.get("english_count") is not None else payload.get("ai_count") or 0)
+    payload["missing_original_count"] = max(0, int(payload.get("chapter_count") or 0) - int(payload.get("original_count") or 0))
+    payload["missing_english_count"] = max(0, int(payload.get("chapter_count") or 0) - int(payload.get("english_count") or 0))
+    payload["missing_reference_count"] = max(0, int(payload.get("chapter_count") or 0) - int(payload.get("reference_count") or 0))
+    payload["remaining_count"] = max(0, int(payload.get("original_count") or 0) - int(payload.get("english_count") or 0))
+    payload["translation_coverage"] = coverage_percent(payload.get("english_count"), payload.get("original_count"))
+    payload["reading_coverage"] = coverage_percent(payload.get("english_count"), payload.get("chapter_count"))
     return payload
 
 
@@ -2315,6 +3038,143 @@ def optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def normalized_import_options(payload: dict[str, Any] | None) -> dict[str, Any]:
+    payload = payload if isinstance(payload, dict) else {}
+    mode = str(payload.get("mode") or payload.get("import_mode") or "add_missing").replace("-", "_").lower()
+    overwrite = bool(payload.get("overwrite_existing") or payload.get("overwrite")) or mode == "overwrite"
+    skip_existing = not overwrite and bool(payload.get("skip_existing", True))
+    add_missing = not overwrite and bool(payload.get("add_missing", True))
+    return {
+        "skip_existing": skip_existing,
+        "overwrite_existing": overwrite,
+        "add_missing": add_missing,
+        "merge_metadata": bool(payload.get("merge_metadata", True)),
+        "import_titles": bool(payload.get("import_titles", True)),
+        "dry_run": bool(payload.get("dry_run", False)),
+    }
+
+
+def normalized_content_import_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    raw_items = payload.get("items") if isinstance(payload.get("items"), list) else None
+    if raw_items is None:
+        raw_items = payload.get("chapters") if isinstance(payload.get("chapters"), list) else []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        item = normalized_content_import_item(raw, payload)
+        if item:
+            items.append(item)
+    content = payload.get("content") if isinstance(payload.get("content"), dict) else {}
+    for content_type, rows in content.items():
+        if isinstance(rows, list):
+            for raw in rows:
+                if isinstance(raw, dict):
+                    item = normalized_content_import_item({**raw, "content_type": content_type}, payload)
+                    if item:
+                        items.append(item)
+    for sidecar in ("metadata", "cover", "glossary"):
+        if sidecar in payload and not isinstance(payload.get(sidecar), (list, dict)):
+            item = normalized_content_import_item({"content_type": sidecar, "text": str(payload.get(sidecar) or "")}, payload)
+            if item:
+                items.append(item)
+        elif sidecar == "metadata" and isinstance(payload.get("metadata"), dict):
+            item = normalized_content_import_item({"content_type": "metadata", "text": json.dumps(payload["metadata"], ensure_ascii=False)}, payload)
+            if item:
+                items.append(item)
+    return items
+
+
+def normalized_content_import_item(raw: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any] | None:
+    content_type = normalize_content_type(raw.get("content_type") or raw.get("target_mode") or raw.get("type") or payload.get("content_type") or payload.get("target_mode") or "english")
+    if content_type not in CONTENT_TYPES:
+        return None
+    text = str(raw.get("text") if raw.get("text") is not None else raw.get("content") if raw.get("content") is not None else "")
+    if content_type in {"original", "english", "reference", "ai", "metadata", "glossary"} and not readable(text):
+        return None
+    chapter_number = optional_int(raw.get("chapter_number") or raw.get("chapter") or raw.get("number"))
+    if content_type in {"original", "english", "reference", "ai"} and chapter_number is None:
+        return None
+    edition_type = normalize_edition_type(raw.get("edition_type") or raw.get("source") or ("AI" if content_type == "ai" else "Imported"))
+    normalized_type = "english" if content_type == "ai" else content_type
+    sha = raw.get("sha256") or hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return {
+        "chapter_number": chapter_number,
+        "content_type": normalized_type,
+        "edition_type": edition_type,
+        "language": str(raw.get("language") or payload.get("language") or ("en" if normalized_type == "english" else "")).strip() or None,
+        "title": normalize_title_text(raw.get("title")),
+        "source_url": str(raw.get("source_url") or raw.get("url") or "").strip() or None,
+        "filename": str(raw.get("filename") or raw.get("file") or "").strip() or None,
+        "text": text,
+        "sha256": sha,
+        "character_count": len(text),
+    }
+
+
+def normalize_content_type(value: Any) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    aliases = {
+        "ai": "ai",
+        "translation": "english",
+        "translated": "english",
+        "english_chapter": "english",
+        "original_chapter": "original",
+        "reference_chapter": "reference",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def normalize_edition_type(value: Any) -> str:
+    normalized = str(value or "Imported").strip().lower().replace("_", " ")
+    canonical = {
+        "ai": "AI",
+        "human": "Human",
+        "official": "Official",
+        "edited": "Edited",
+        "imported": "Imported",
+        "machine": "Machine",
+        "community": "Community",
+    }
+    return canonical.get(normalized, title_case(normalized or "Imported"))
+
+
+def edition_key_for(edition_type: str, source_label: str | None = None) -> str:
+    base = f"{edition_type}-{source_label or ''}".strip("-")
+    key = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")
+    return key[:80] or "imported"
+
+
+def parse_json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(str(value or "{}"))
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def coverage_percent(numerator: Any, denominator: Any) -> int:
+    denominator = int(denominator or 0)
+    if denominator <= 0:
+        return 0
+    return round(int(numerator or 0) / denominator * 100)
+
+
+def title_case(value: Any) -> str:
+    return str(value or "").replace("-", " ").replace("_", " ").title()
+
+
+def titleCase(value: Any) -> str:
+    return title_case(value)
+
+
+def slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug[:80]
 
 
 SPEED_PRESETS: dict[str, dict[str, Any]] = {

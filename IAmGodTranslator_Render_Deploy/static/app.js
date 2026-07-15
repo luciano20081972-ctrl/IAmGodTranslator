@@ -19,7 +19,7 @@ const state = {
   chapterSearch: "",
   chapterOffset: 0,
   pageSize: 50,
-  source: ["ai", "original"].includes(localStorage.getItem("gt-reader-source")) ? localStorage.getItem("gt-reader-source") : "ai",
+  source: ["english", "ai", "original"].includes(localStorage.getItem("gt-reader-source")) ? (localStorage.getItem("gt-reader-source") === "ai" ? "english" : localStorage.getItem("gt-reader-source")) : "english",
   fontSize: Number(localStorage.getItem("gt-reader-font") || 19),
   zen: false,
   admin: false,
@@ -35,8 +35,8 @@ const state = {
   cache: new Map(),
 };
 
-const sourceLabels = {ai: "AI", reference: "Reference", original: "Original"};
-const APP_VERSION = "10.3.0";
+const sourceLabels = {english: "English", ai: "English", reference: "Reference", original: "Original"};
+const APP_VERSION = "10.5.0";
 const chapterViews = [
   ["all", "All"],
   ["translated", "Translated"],
@@ -279,7 +279,7 @@ async function openHome() {
           <div class="home-metrics">
             ${metric("Novels", activeNovels.length)}
             ${metric("Chapters", sum(activeNovels, "chapter_count"))}
-            ${metric("AI Ready", sum(activeNovels, "ai_count"))}
+            ${metric("English Ready", sum(activeNovels, "english_count"))}
             ${metric("Needs Translation", sum(activeNovels, "remaining_count"))}
           </div>
         </div>
@@ -305,7 +305,7 @@ function renderLibrarySpotlight(novel) {
     <h2>Library Spotlight</h2>
     <div class="spotlight-row">
       <a class="mini-cover" href="#/novel/${encodeURIComponent(novel.id)}">${novel.cover_url ? `<img src="${escapeAttr(novel.cover_url)}" alt="">` : `<span>${escapeHtml(initials(novel.title || novel.id))}</span>`}</a>
-      <div><h3>${escapeHtml(novel.title || novel.id)}</h3>${novel.author ? `<p class="muted">${escapeHtml(novel.author)}</p>` : ""}<div class="mini-progress"><span style="width:${pct}%"></span></div><p class="muted">${novel.ai_count || 0} AI chapters from ${novel.original_count || 0} readable originals.</p><div class="actions"><a class="button primary" href="#/novel/${encodeURIComponent(novel.id)}">Open Novel</a><a class="button" href="#/reader/${encodeURIComponent(novel.id)}/1/${safeReaderSource()}">Start Reading</a></div></div>
+      <div><h3>${escapeHtml(novel.title || novel.id)}</h3>${novel.author ? `<p class="muted">${escapeHtml(novel.author)}</p>` : ""}<div class="mini-progress"><span style="width:${pct}%"></span></div><p class="muted">${novel.english_count ?? novel.ai_count ?? 0} English chapters from ${novel.original_count || 0} readable originals.</p><div class="actions"><a class="button primary" href="#/novel/${encodeURIComponent(novel.id)}">Open Novel</a><a class="button" href="#/reader/${encodeURIComponent(novel.id)}/1/${safeReaderSource()}">Start Reading</a></div></div>
     </div>
   </section>`;
 }
@@ -318,7 +318,7 @@ function renderRecentlyRead(items) {
 }
 
 function renderRecentUpdates(novels) {
-  return `<section class="panel"><h2>Recent Updates</h2><div class="stack-list">${novels.map((novel) => `<a class="list-row" href="#/novel/${encodeURIComponent(novel.id)}"><strong>${escapeHtml(novel.title || novel.id)}</strong><span>${novel.ai_count || 0} AI / ${novel.original_count || 0} Original · ${timeAgo(novel.updated_at)}</span></a>`).join("") || `<p class="empty-state">No catalog updates yet.</p>`}</div></section>`;
+  return `<section class="panel"><h2>Recent Updates</h2><div class="stack-list">${novels.map((novel) => `<a class="list-row" href="#/novel/${encodeURIComponent(novel.id)}"><strong>${escapeHtml(novel.title || novel.id)}</strong><span>${novel.english_count ?? novel.ai_count ?? 0} English / ${novel.original_count || 0} Original · ${timeAgo(novel.updated_at)}</span></a>`).join("") || `<p class="empty-state">No catalog updates yet.</p>`}</div></section>`;
 }
 
 function renderNextAction(continueItem, spotlight) {
@@ -364,11 +364,11 @@ function activityLabel() {
 
 function safeReaderSource(source = state.source) {
   if (source === "reference" && state.admin) return "reference";
-  return source === "original" ? "original" : "ai";
+  return source === "original" ? "original" : "english";
 }
 
 function readerSourceOptions() {
-  return state.admin ? ["ai", "original", "reference"] : ["ai", "original"];
+  return canTranslate() ? ["english", "original", "reference"] : ["english", "original"];
 }
 
 async function openLibrary() {
@@ -494,7 +494,7 @@ function renderNovelCard(novel) {
         ${novel.cover_url ? `<img src="${escapeAttr(novel.cover_url)}" alt="">` : `<span class="cover-fallback">${escapeHtml(initials(novel.title || novel.id))}</span>`}
       </a>
       <div class="novel-card-body">
-        <div class="status-row"><span class="badge ok">${novel.is_archived ? "Archived" : "Active"}</span>${state.account ? `<button class="ghost-btn" data-favorite="${escapeAttr(novel.id)}">${favorite ? "Favorited" : "Favorite"}</button>` : ""}<span>${pct}% AI</span></div>
+        <div class="status-row"><span class="badge ok">${novel.is_archived ? "Archived" : "Active"}</span>${state.account ? `<button class="ghost-btn" data-favorite="${escapeAttr(novel.id)}">${favorite ? "Favorited" : "Favorite"}</button>` : ""}<span>${pct}% English</span></div>
         <h2>${escapeHtml(novel.title || novel.id)}</h2>
         ${novel.author ? `<p class="muted">${escapeHtml(novel.author)}</p>` : ""}
         <div class="mini-progress"><span style="width:${pct}%"></span></div>
@@ -502,8 +502,8 @@ function renderNovelCard(novel) {
           ${metric("Chapters", novel.chapter_count)}
           ${metric("Original", novel.original_count)}
           ${state.admin ? metric("Reference", novel.reference_count) : ""}
-          ${metric("AI", novel.ai_count)}
-          ${metric("Remaining", novel.remaining_count)}
+          ${metric("English", novel.english_count ?? novel.ai_count)}
+          ${metric("Missing English", novel.missing_english_count ?? novel.remaining_count)}
         </div>
         <div class="actions">
           <a class="button primary" href="#/novel/${encodeURIComponent(novel.id)}">Open</a>
@@ -520,7 +520,7 @@ function libraryStats(novels) {
     ["Novels", novels.length],
     ["Chapters", sum(novels, "chapter_count")],
     ["Original", sum(novels, "original_count")],
-    ["AI", sum(novels, "ai_count")],
+    ["English", sum(novels, "english_count")],
   ];
   if (state.admin) stats.splice(3, 0, ["Reference", sum(novels, "reference_count")]);
   return stats;
@@ -543,6 +543,10 @@ async function openNovelDetail(novelId) {
       original_count: detailCounts.original ?? baseNovel.original_count,
       reference_count: detailCounts.reference ?? baseNovel.reference_count,
       ai_count: detailCounts.ai ?? baseNovel.ai_count,
+      english_count: detailCounts.english ?? baseNovel.english_count ?? baseNovel.ai_count,
+      missing_original_count: baseNovel.missing_original_count,
+      missing_english_count: baseNovel.missing_english_count ?? detailCounts.needs_translation ?? baseNovel.remaining_count,
+      missing_reference_count: baseNovel.missing_reference_count,
       remaining_count: detailCounts.needs_translation ?? baseNovel.remaining_count,
     };
     const pct = progress(novel);
@@ -552,8 +556,10 @@ async function openNovelDetail(novelId) {
       metric("Chapters", novel.chapter_count),
       metric("Original", novel.original_count),
       state.admin ? metric("Reference", novel.reference_count) : "",
-      metric("AI", novel.ai_count),
-      metric("Remaining", novel.remaining_count),
+      metric("English", novel.english_count ?? novel.ai_count),
+      metric("Missing Original", novel.missing_original_count ?? 0),
+      metric("Missing English", novel.missing_english_count ?? novel.remaining_count),
+      state.admin ? metric("Missing Reference", novel.missing_reference_count ?? 0) : "",
     ].join("");
     rememberRecent("novels", {id: novelId, label: novel.title || novelId, href: `#/novel/${encodeURIComponent(novelId)}`, at: new Date().toISOString()});
     app.innerHTML = `
@@ -576,7 +582,7 @@ async function openNovelDetail(novelId) {
       </section>
       <nav class="section-tabs"><a class="active" href="#/novel/${encodeURIComponent(novel.id)}">Overview</a><a href="#/chapters/${encodeURIComponent(novel.id)}">Chapters</a>${canTranslate() ? `<a href="#/translate/${encodeURIComponent(novel.id)}">Translation</a>` : ""}${state.admin ? `<a href="#/admin/novels">Admin Tools</a>` : ""}</nav>
       <section class="split-panels">
-        <div class="panel"><h2>Overview</h2><p>AI progress is ${pct}% based on readable Original and AI chapter text.</p>${Array.isArray(novel.metadata?.tags) && novel.metadata.tags.length ? `<p class="tag-row">${novel.metadata.tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</p>` : ""}</div>
+        <div class="panel"><h2>Overview</h2><p>Reading coverage is ${novel.reading_coverage ?? pct}% and translation coverage is ${novel.translation_coverage ?? pct}% based on readable Original and English chapter text.</p>${Array.isArray(novel.metadata?.tags) && novel.metadata.tags.length ? `<p class="tag-row">${novel.metadata.tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</p>` : ""}</div>
         <div class="panel"><h2>Recent Chapters</h2>${(library.chapters || []).map((chapter) => `<a class="chapter-link" href="#/reader/${novel.id}/${chapter.chapter_number}/${safeReaderSource()}"><strong>Chapter ${chapter.chapter_number}</strong><span>${escapeHtml(chapter.title)}</span></a>`).join("") || `<p class="empty-state">No chapters found.</p>`}</div>
       </section>`;
     bindCopyLinks(app);
@@ -616,7 +622,7 @@ function renderNovelManagement(novels, mode = "") {
       const pct = progress(novel);
       return `<article class="management-card">
         <div class="mini-cover">${novel.cover_url ? `<img src="${escapeAttr(novel.cover_url)}" alt="">` : `<span>${escapeHtml(initials(novel.title || novel.id))}</span>`}</div>
-        <div class="management-card-copy"><div><h3>${escapeHtml(novel.title || novel.id)}</h3>${novel.author ? `<p class="muted">${escapeHtml(novel.author)}</p>` : ""}<p><span class="badge ${novel.is_archived ? "missing" : "ok"}">${novel.is_archived ? "Archived" : "Active"}</span></p></div><div><div class="mini-progress"><span style="width:${pct}%"></span></div><p class="muted">AI progress: ${pct}% · ${novel.ai_count || 0}/${novel.original_count || 0} readable chapters translated.</p><p class="muted">${novel.chapter_count || 0} chapters · updated ${timeAgo(novel.updated_at)}</p></div><div class="actions management-card-actions"><a class="button primary" href="#/novel/${encodeURIComponent(novel.id)}">Open</a><a class="button" href="#/novels/add">Edit</a><button data-archive="${novel.id}" data-value="${novel.is_archived ? "false" : "true"}">${novel.is_archived ? "Unarchive" : "Archive"}</button><a class="button" href="#/admin/novels">Admin Tools</a></div></div>
+        <div class="management-card-copy"><div><h3>${escapeHtml(novel.title || novel.id)}</h3>${novel.author ? `<p class="muted">${escapeHtml(novel.author)}</p>` : ""}<p><span class="badge ${novel.is_archived ? "missing" : "ok"}">${novel.is_archived ? "Archived" : "Active"}</span></p></div><div><div class="mini-progress"><span style="width:${pct}%"></span></div><p class="muted">English coverage: ${pct}% · ${novel.english_count ?? novel.ai_count ?? 0}/${novel.original_count || 0} readable chapters available.</p><p class="muted">${novel.chapter_count || 0} chapters · updated ${timeAgo(novel.updated_at)}</p></div><div class="actions management-card-actions"><a class="button primary" href="#/novel/${encodeURIComponent(novel.id)}">Open</a><a class="button" href="#/novels/add">Edit</a><button data-archive="${novel.id}" data-value="${novel.is_archived ? "false" : "true"}">${novel.is_archived ? "Unarchive" : "Archive"}</button><a class="button" href="#/admin/novels">Admin Tools</a></div></div>
       </article>`;
     }).join("") || `<p class="empty-state">No novels exist yet.</p>`}</section>`;
 }
@@ -694,7 +700,7 @@ function renderChapters(payload) {
     ["Chapters", counts.total_chapter_rows],
     ["Original", counts.original_readable],
     ...(showReference ? [["Reference", counts.reference_readable]] : []),
-    ["AI", counts.ai_readable],
+    ["English", counts.english_readable ?? counts.ai_readable],
     ["Needs Translation", counts.needs_translation],
   ];
   rememberRecent("novels", {id: novel.id, label: novel.title || novel.id, href: `#/chapters/${encodeURIComponent(novel.id)}`, at: new Date().toISOString()});
@@ -708,8 +714,8 @@ function renderChapters(payload) {
     </section>
     <section class="table-card">
       <div class="table-meta">Showing ${state.chapterTotal ? state.chapterOffset + 1 : 0}-${Math.min(state.chapterOffset + state.pageSize, state.chapterTotal)} of ${state.chapterTotal} chapters</div>
-      <table class="responsive-table"><thead><tr><th>Chapter</th><th>Original</th>${showReference ? "<th>Reference</th>" : ""}<th>AI</th><th>Status</th><th></th></tr></thead><tbody>
-        ${state.chapters.map((chapter) => `<tr><td data-label="Chapter"><strong>Chapter ${chapter.chapter_number}</strong><br><span>${escapeHtml(chapter.title)}</span></td><td data-label="Original">${badge("Original", chapter.has_original)}</td>${showReference ? `<td data-label="Reference">${badge("Reference", chapter.has_reference)}</td>` : ""}<td data-label="AI">${badge("AI", chapter.has_ai)}</td><td data-label="Status">${escapeHtml(chapter.translation_status || "")}</td><td data-label="Actions" class="row-actions"><a class="button" href="#/reader/${novel.id}/${chapter.chapter_number}/${safeReaderSource()}">Read</a><button type="button" data-copy-link="#/reader/${novel.id}/${chapter.chapter_number}/${safeReaderSource()}">Copy Link</button>${canTranslate() ? `<a class="button" href="#/translate/${novel.id}?chapter=${chapter.chapter_number}">Translate</a><a class="button" href="#/compare/${novel.id}/${chapter.chapter_number}">Compare</a>` : ""}</td></tr>`).join("") || `<tr><td colspan="${showReference ? 6 : 5}">No chapters match this view.</td></tr>`}
+      <table class="responsive-table"><thead><tr><th>Chapter</th><th>Original</th>${showReference ? "<th>Reference</th>" : ""}<th>English</th><th>Status</th><th></th></tr></thead><tbody>
+        ${state.chapters.map((chapter) => `<tr><td data-label="Chapter"><strong>Chapter ${chapter.chapter_number}</strong><br><span>${escapeHtml(chapter.title)}</span></td><td data-label="Original">${badge("Original", chapter.has_original)}</td>${showReference ? `<td data-label="Reference">${badge("Reference", chapter.has_reference)}</td>` : ""}<td data-label="English">${badge("English", chapter.has_english || chapter.has_ai)}</td><td data-label="Status">${escapeHtml(chapter.translation_status || "")}</td><td data-label="Actions" class="row-actions"><a class="button" href="#/reader/${novel.id}/${chapter.chapter_number}/${safeReaderSource()}">Read</a><button type="button" data-copy-link="#/reader/${novel.id}/${chapter.chapter_number}/${safeReaderSource()}">Copy Link</button>${canTranslate() ? `<a class="button" href="#/translate/${novel.id}?chapter=${chapter.chapter_number}">Translate</a><a class="button" href="#/compare/${novel.id}/${chapter.chapter_number}">Compare</a>` : ""}</td></tr>`).join("") || `<tr><td colspan="${showReference ? 6 : 5}">No chapters match this view.</td></tr>`}
       </tbody></table>
       <div class="pager"><button id="prevPage" ${state.chapterOffset <= 0 ? "disabled" : ""}>Previous</button><button id="nextPage" ${state.chapterOffset + state.pageSize >= state.chapterTotal ? "disabled" : ""}>Next</button></div>
     </section>`;
@@ -737,7 +743,7 @@ async function openReader(novelId, chapterNumber, requestedSource) {
       await cachedApi(`/api/novels/${novelId}/library?limit=5000`, 120_000).then((payload) => { state.chapters = payload.chapters || []; });
     }
     const chapter = state.chapters.find((item) => item.chapter_number === chapterNumber);
-    const requested = ["ai", "reference", "original"].includes(requestedSource) ? requestedSource : preferredSource(chapter);
+    const requested = ["english", "ai", "reference", "original"].includes(requestedSource) ? (requestedSource === "ai" ? "english" : requestedSource) : preferredSource(chapter);
     const source = readerSourceOptions().includes(requested) ? requested : safeReaderSource(preferredSource(chapter));
     state.source = source;
     localStorage.setItem("gt-reader-source", source);
@@ -797,7 +803,7 @@ function renderChapterDrawer(novelId, chapterNumber, source) {
   return `<section class="chapter-drawer" id="chapterDrawer" hidden>
     <div class="sheet-header"><div><p class="eyebrow">Chapter List</p><h2>Choose a chapter</h2></div><button id="closeChapterDrawer" type="button">Close</button></div>
     <input id="chapterSearch" type="search" placeholder="Search chapters">
-    <div class="chapter-drawer-list">${state.chapters.map((chapter) => `<a class="${chapter.chapter_number === chapterNumber ? "current" : ""}" href="#/reader/${novelId}/${chapter.chapter_number}/${source}" data-chapter-row><strong>Chapter ${chapter.chapter_number}</strong><span>${escapeHtml(chapter.title || "")}</span><small>${chapter.has_ai ? "AI" : chapter.has_original ? "Original" : "Missing"}</small></a>`).join("")}</div>
+    <div class="chapter-drawer-list">${state.chapters.map((chapter) => `<a class="${chapter.chapter_number === chapterNumber ? "current" : ""}" href="#/reader/${novelId}/${chapter.chapter_number}/${source}" data-chapter-row><strong>Chapter ${chapter.chapter_number}</strong><span>${escapeHtml(chapter.title || "")}</span><small>${chapter.has_english || chapter.has_ai ? "English" : chapter.has_original ? "Original" : "Missing"}</small></a>`).join("")}</div>
   </section>`;
 }
 
@@ -923,6 +929,8 @@ async function openTranslate(novelId, params = new URLSearchParams()) {
     const novel = state.novels.find((item) => item.id === novelId) || {};
     const models = modelRegistry.models || [];
     const draft = translateDraft(novelId);
+    const englishReady = Number(novel.english_count ?? novel.ai_count ?? 0);
+    const translationOptional = englishReady > 0 && Number(novel.remaining_count || 0) === 0;
     const form = params.get("chapter") ? {...draft, selection_mode: "specific", chapters: params.get("chapter"), all_untranslated: false} : draft;
     const mode = form.translation_mode || "simple";
     const selectionMode = form.selection_mode || (form.all_untranslated ? "all-untranslated" : "next-untranslated");
@@ -934,17 +942,19 @@ async function openTranslate(novelId, params = new URLSearchParams()) {
         <div>
           <p class="eyebrow">Translation Workspace</p>
           <h1>Translate</h1>
-          <p>Plan controlled AI translation jobs from Original text, with Reference as optional guidance when available.</p>
+          <p>${translationOptional ? "Translation is not required because a readable English edition already exists. You can still create an alternative edition or retranslate selected chapters." : "Plan controlled translation jobs from Original text, with Reference as optional guidance when available."}</p>
         </div>
         <div class="translate-hero-summary">
           <span class="badge ok">Current novel</span>
           <strong>${escapeHtml(novel.title || novelId)}</strong>
           <div class="metric-grid">
             ${metric("Default model", novel.model || "gpt-4o-mini")}
-            ${metric("Needs AI", novel.remaining_count || 0)}
+            ${metric("English Ready", englishReady)}
+            ${metric("Missing English", novel.missing_english_count ?? novel.remaining_count ?? 0)}
           </div>
         </div>
       </section>
+      ${translationOptional ? `<section class="panel"><h2>Translation Not Required</h2><p class="muted">English edition already exists for this novel. Use this workspace only when you want to retranslate selected chapters, create an alternative edition, or replace the active edition.</p></section>` : ""}
       <section class="draft-bar"><span id="draftStatus">${draft.saved_at ? `Draft saved ${timeAgo(draft.saved_at)}` : "No saved draft"}</span><div class="actions"><button id="restoreTranslateDraft" type="button" ${draft.saved_at ? "" : "disabled"}>Restore Draft</button><button id="discardTranslateDraft" type="button" ${draft.saved_at ? "" : "disabled"}>Discard Draft</button></div></section>
       <section class="translate-workspace">
         <div class="translate-steps" id="translateForm">
@@ -1020,7 +1030,7 @@ function renderChapterPreview() {
   if (chapterLabel) chapterLabel.hidden = mode !== "specific";
   if (nextLabel) nextLabel.hidden = mode !== "next-untranslated";
   if (mode === "all-untranslated") {
-    target.textContent = "Preview: all chapters with readable Original text and missing AI translation.";
+    target.textContent = "Preview: all chapters with readable Original text and missing English edition.";
     return;
   }
   if (mode === "next-untranslated") {
@@ -1203,13 +1213,13 @@ async function openCompare(novelId, chapterNumber) {
   setLoading("Loading comparison...");
   try {
     const payload = await api(`/api/novels/${encodeURIComponent(novelId)}/compare/${chapterNumber}`);
-    app.innerHTML = `${pageHeader("Compare", "Inspect Original, Reference, and AI text side by side.", [["Chapter", chapterNumber]])}
+    app.innerHTML = `${pageHeader("Compare", "Inspect Original, Reference, and English text side by side.", [["Chapter", chapterNumber]])}
       <section class="compare-grid">
         ${renderComparePanel("Original", payload.original)}
         ${renderComparePanel("Reference", payload.reference)}
-        ${renderComparePanel("AI Translation", payload.ai)}
+        ${renderComparePanel("English", payload.english || payload.ai)}
       </section>
-      <div class="actions"><a class="button" href="#/reader/${novelId}/${chapterNumber}/ai">Open Reader</a><a class="button" href="#/chapters/${novelId}">Back to Chapters</a></div>`;
+      <div class="actions"><a class="button" href="#/reader/${novelId}/${chapterNumber}/english">Open Reader</a><a class="button" href="#/chapters/${novelId}">Back to Chapters</a></div>`;
   } catch (error) {
     setError(error.message);
   }
@@ -1270,9 +1280,9 @@ async function openAdmin(tab = "overview") {
       api("/api/admin/users"),
       api(`/api/admin/translation/performance?novel_id=${encodeURIComponent(state.currentNovelId)}`),
     ]);
-    const tabs = [["overview", "Overview"], ["novels", "Novels"], ["translation", "Translation"], ["performance", "Performance"], ["jobs", "Jobs"], ["backups", "Backups & Recovery"], ["recovery", "Novel Recovery"], ["database", "Database"], ["users", "Users & Roles"], ["diagnostics", "Diagnostics"]];
+    const tabs = [["overview", "Overview"], ["content", "Content"], ["imports", "Imports"], ["editions", "Editions"], ["novels", "Novels"], ["translation", "Translation"], ["performance", "Performance"], ["jobs", "Jobs"], ["backups", "Backups & Recovery"], ["recovery", "Novel Recovery"], ["database", "Database"], ["users", "Users & Roles"], ["diagnostics", "Diagnostics"]];
     app.innerHTML = `
-      ${pageHeader("Admin", "Operational workspace for novels, translation, backups, recovery, users, and diagnostics.", [["Version", APP_VERSION], ["Schema", overview.overview.schema], ["Chapters", overview.overview.chapters], ["Needs Translation", overview.overview.needs_translation]])}
+      ${pageHeader("Admin", "Operational workspace for content, translation, backups, recovery, users, and diagnostics.", [["Version", APP_VERSION], ["Schema", overview.overview.schema], ["Chapters", overview.overview.chapters], ["Missing English", overview.overview.needs_translation]])}
       <section class="admin-workspace">
         <nav class="admin-tabs">${tabs.map(([key, label]) => `<a class="${tab === key ? "active" : ""}" href="#/admin/${key}">${label}</a>`).join("")}</nav>
         <div class="admin-content">${renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupManifest, users, performance)}</div>
@@ -1290,8 +1300,11 @@ async function openAdmin(tab = "overview") {
 
 function renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupManifest, users, performance) {
   const data = overview.overview || {};
+  if (tab === "content") return renderContentAdmin(data);
+  if (tab === "imports") return renderContentImportCenter();
+  if (tab === "editions") return renderEditionManager();
   if (tab === "novels") return renderNovelManagement(state.novels, "");
-  if (tab === "translation") return `<section class="dashboard-grid"><div class="panel"><h2>Translation Workspace</h2><p class="muted">Configure jobs in the dedicated workspace while Admin keeps operational context here.</p><div class="actions"><a class="button primary" href="#/translate/${state.currentNovelId}">Open Translate</a><a class="button" href="#/admin/jobs">Open Jobs</a></div></div><div class="panel">${metric("Needs Translation", data.needs_translation)}${metric("AI Translations", data.ai)}${metric("Active Jobs", (jobs.jobs || []).filter((job) => ["queued", "running", "paused"].includes(job.status)).length)}</div></section>`;
+  if (tab === "translation") return `<section class="dashboard-grid"><div class="panel"><h2>Translation Workspace</h2><p class="muted">Configure jobs in the dedicated workspace while Admin keeps operational context here.</p><div class="actions"><a class="button primary" href="#/translate/${state.currentNovelId}">Open Translate</a><a class="button" href="#/admin/jobs">Open Jobs</a></div></div><div class="panel">${metric("Missing English", data.needs_translation)}${metric("English Editions", data.english ?? data.ai)}${metric("Active Jobs", (jobs.jobs || []).filter((job) => ["queued", "running", "paused"].includes(job.status)).length)}</div></section>`;
   if (tab === "performance") return renderTranslationPerformance(performance);
   if (tab === "database") {
     return `<section class="dashboard-grid"><div class="panel">${metric("Database", dbHealth.health?.reachable ? "Healthy" : "Needs Attention")}${metric("Schema", data.schema)}${metric("Expected Tables", dbHealth.health?.v10_chapters_table_exists ? "Healthy" : "Needs Attention")}${metric("Chapters", data.chapters)}</div><div class="panel"><h2>Technical Details</h2><details><summary>Show details</summary><pre>${escapeHtml(JSON.stringify(dbHealth.health, null, 2))}</pre></details></div></section>`;
@@ -1302,6 +1315,127 @@ function renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupM
   if (tab === "users") return `<section class="table-card"><h2>Users & Roles</h2><table class="responsive-table"><thead><tr><th>User</th><th>Role</th><th>Updated</th></tr></thead><tbody>${(users.users || []).map((user) => `<tr><td data-label="User"><strong>${escapeHtml(user.display_name || user.email || user.user_id)}</strong><br><span>${escapeHtml(user.email || user.user_id)}</span></td><td data-label="Role">${escapeHtml(user.role || "user")}</td><td data-label="Updated">${timeAgo(user.updated_at)}</td></tr>`).join("") || `<tr><td colspan="3">No application profiles yet.</td></tr>`}</tbody></table></section>`;
   if (tab === "diagnostics") return `<section class="dashboard-grid"><div class="panel">${metric("Version", APP_VERSION)}${metric("DB", dbHealth.health?.ok === false ? "Unhealthy" : "Healthy")}${metric("Schema", data.schema)}${metric("Auth", state.authConfig?.configured ? "Configured" : "Missing")}${metric("OpenAI", "Configured/Missing hidden")}</div><div class="panel"><h2>Details</h2><details><summary>Show sanitized JSON</summary><pre>${escapeHtml(JSON.stringify({overview: data, db: dbHealth.health}, null, 2))}</pre></details></div></section>`;
   return renderAdminOverview(data, dbHealth, jobs, imports, backupManifest.manifest);
+}
+
+function renderContentAdmin(data) {
+  return `<section class="dashboard-grid">
+    <div class="panel"><h2>Content</h2><p class="muted">Official onboarding starts with Content Import Center: create or select a novel, import content, validate, preview, execute, then read or translate only if needed.</p><div class="actions"><a class="button primary" href="#/admin/imports">Open Import Center</a><a class="button" href="#/admin/editions">Edition Manager</a><a class="button" href="#/admin/recovery">Recovery</a></div></div>
+    <div class="panel">${metric("Original", data.original)}${metric("English", data.english ?? data.ai)}${metric("Reference", data.reference)}${metric("Missing English", data.needs_translation)}</div>
+    <div class="panel"><h2>Sections</h2><div class="stack-list"><a class="list-row" href="#/admin/imports"><strong>Imports</strong><span>Original, English, Reference, metadata, cover, glossary</span></a><a class="list-row" href="#/admin/editions"><strong>Edition Manager</strong><span>Default English editions</span></a><a class="list-row" href="#/admin/recovery"><strong>Recovery</strong><span>Fill missing data only</span></a></div></div>
+  </section>`;
+}
+
+function renderContentImportCenter() {
+  return `<section class="studio-panel content-import-center">
+    <div class="studio-heading"><h2>Content Import Center</h2><span>Create Novel -> Import Content -> Validate -> Preview -> Import -> Read -> Translate Optional</span></div>
+    <div class="form-grid">
+      <label>1. Select Novel<select id="importNovel"><option value="">Create New Novel</option>${state.novels.map((novel) => `<option value="${escapeAttr(novel.id)}" ${novel.id === state.currentNovelId ? "selected" : ""}>${escapeHtml(novel.title || novel.id)}</option>`).join("")}</select></label>
+      <label>New Novel Title<input id="importNovelTitle" placeholder="Required when creating a new novel"></label>
+      <label>Author<input id="importAuthor" placeholder="Optional"></label>
+      <label>Source URL<input id="importSourceUrl" placeholder="Optional"></label>
+      <label class="wide">2. Choose Import Type<div class="choice-grid">${["original", "english", "reference", "metadata", "cover", "glossary"].map((type) => `<label class="choice-card"><input type="checkbox" name="importType" value="${type}" ${["original", "english"].includes(type) ? "checked" : ""}><strong>${titleCase(type)}</strong><span>${type === "english" ? "Readable edition" : "Import content"}</span></label>`).join("")}</div></label>
+      <label>3. Choose Source<select id="importSourceType"><option value="godtranslator-pack">GodTranslator Pack JSON</option><option value="zip">ZIP / Downloader Pack Preview</option><option value="folder">Folder manifest JSON</option><option value="reference-pack">Reference Pack</option></select></label>
+      <label>Pack ZIP or JSON<input id="importPackFile" type="file" accept=".zip,.json"></label>
+      <label class="wide">Content Items JSON<textarea id="importItemsJson" rows="8" placeholder='[{"chapter_number":1,"content_type":"original","title":"Chapter 1","text":"..."},{"chapter_number":1,"content_type":"english","edition_type":"Official","text":"..."}]'></textarea></label>
+      <label class="inline-check"><input id="importSkipExisting" type="checkbox" checked> Skip existing text</label>
+      <label class="inline-check"><input id="importOverwrite" type="checkbox"> Overwrite existing text</label>
+      <label class="inline-check"><input id="importAddMissing" type="checkbox" checked> Add only missing</label>
+      <label class="inline-check"><input id="importMergeMetadata" type="checkbox" checked> Merge metadata</label>
+      <label class="inline-check"><input id="importTitles" type="checkbox" checked> Import titles</label>
+      <label class="inline-check"><input id="importDryRun" type="checkbox"> Dry run</label>
+    </div>
+    <div class="actions"><button id="previewContentImport" class="primary" type="button">Preview</button><button id="executeContentImport" type="button" disabled>Execute Import</button><a class="button" href="#/admin/editions">Edition Manager</a></div>
+    <section id="contentImportPreview"></section>
+  </section>`;
+}
+
+function renderEditionManager() {
+  const novel = state.novels.find((item) => item.id === state.currentNovelId) || state.novels[0] || {};
+  return `<section class="studio-panel"><div class="studio-heading"><h2>Edition Manager</h2><span>Choose default English editions without exposing implementation details to readers.</span></div>
+    <label>Novel<select id="editionNovel">${state.novels.map((item) => `<option value="${escapeAttr(item.id)}" ${item.id === (novel.id || state.currentNovelId) ? "selected" : ""}>${escapeHtml(item.title || item.id)}</option>`).join("")}</select></label>
+    <div class="actions"><button id="loadEditions" class="primary" type="button">Load Editions</button><a class="button" href="#/admin/imports">Import Content</a></div>
+    <section id="editionManagerResult"><p class="muted">Load editions to review default English choices.</p></section>
+  </section>`;
+}
+
+function contentImportPayloadFromForm() {
+  let items = [];
+  const rawItems = document.querySelector("#importItemsJson")?.value.trim();
+  if (rawItems) {
+    const parsed = JSON.parse(rawItems);
+    items = Array.isArray(parsed) ? parsed : parsed.items || [];
+  }
+  const selectedNovel = document.querySelector("#importNovel")?.value || "";
+  const title = document.querySelector("#importNovelTitle")?.value.trim();
+  const importTypes = [...document.querySelectorAll("input[name='importType']:checked")].map((item) => item.value);
+  return {
+    novel_id: selectedNovel,
+    novel: {
+      id: selectedNovel || title,
+      title: title || state.novels.find((novel) => novel.id === selectedNovel)?.title || selectedNovel,
+      author: document.querySelector("#importAuthor")?.value.trim(),
+      source_url: document.querySelector("#importSourceUrl")?.value.trim(),
+    },
+    import_types: importTypes,
+    source_type: document.querySelector("#importSourceType")?.value,
+    items,
+    options: {
+      skip_existing: document.querySelector("#importSkipExisting")?.checked,
+      overwrite_existing: document.querySelector("#importOverwrite")?.checked,
+      add_missing: document.querySelector("#importAddMissing")?.checked,
+      merge_metadata: document.querySelector("#importMergeMetadata")?.checked,
+      import_titles: document.querySelector("#importTitles")?.checked,
+      dry_run: document.querySelector("#importDryRun")?.checked,
+    },
+  };
+}
+
+async function previewContentImport() {
+  const target = document.querySelector("#contentImportPreview");
+  try {
+    const file = document.querySelector("#importPackFile")?.files?.[0];
+    let preview;
+    if (file && document.querySelector("#importSourceType")?.value === "zip") {
+      const form = new FormData();
+      form.append("files", file);
+      preview = await api(`/api/admin/content/import/preview-pack?novel_id=${encodeURIComponent(document.querySelector("#importNovel")?.value || "")}`, {method: "POST", body: form, headers: {}});
+    } else {
+      preview = await api("/api/admin/content/import/preview", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(contentImportPayloadFromForm())});
+    }
+    target.innerHTML = renderContentImportPreview(preview);
+    document.querySelector("#executeContentImport").disabled = !preview.can_execute || Boolean(file && document.querySelector("#importSourceType")?.value === "zip");
+  } catch (error) {
+    target.innerHTML = `<section class="state-card error"><p>${escapeHtml(error.message)}</p></section>`;
+  }
+}
+
+async function executeContentImport() {
+  const target = document.querySelector("#contentImportPreview");
+  try {
+    const result = await api("/api/admin/content/import/execute", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(contentImportPayloadFromForm())});
+    invalidateCache("/api/novels");
+    await loadNovels(true);
+    target.innerHTML = `<section class="panel"><h2>Import Summary</h2><div class="metric-grid">${metric("Imported", result.summary?.imported || 0)}${metric("Updated", result.summary?.updated || 0)}${metric("Skipped", result.summary?.skipped || 0)}${metric("Errors", result.summary?.errors || 0)}</div><div class="actions"><a class="button primary" href="#/novel/${encodeURIComponent(result.novel_id)}">Open Novel</a><a class="button" href="#/reader/${encodeURIComponent(result.novel_id)}/1/english">Open Reader</a><a class="button" href="#/translate/${encodeURIComponent(result.novel_id)}">Open Translate</a></div>${objectDetails("Errors", result.errors || [])}</section>`;
+  } catch (error) {
+    target.innerHTML = `<section class="state-card error"><p>${escapeHtml(error.message)}</p></section>`;
+  }
+}
+
+function renderContentImportPreview(preview) {
+  return `<section class="panel"><h2>Import Preview</h2><div class="metric-grid">${metric("Novel", preview.create_new_novel ? "Create New" : "Existing")}${metric("Chapters", preview.chapter_count || 0)}${metric("Would import", preview.estimated_import?.would_import || 0)}${metric("Would update", preview.estimated_import?.would_update || 0)}${metric("Would skip", preview.estimated_import?.would_skip || 0)}${metric("Duplicates", preview.duplicate_count || 0)}</div>${objectDetails("Content Types", preview.content_type_counts || {})}${objectDetails("Missing", preview.missing_chapters || {})}${objectDetails("Warnings", [...(preview.warnings || []), ...(preview.pack_warnings || [])])}${objectDetails("Preview Items", preview.items || [])}</section>`;
+}
+
+async function loadEditionManager() {
+  const novelId = document.querySelector("#editionNovel")?.value || state.currentNovelId;
+  const target = document.querySelector("#editionManagerResult");
+  if (!novelId || !target) return;
+  try {
+    const payload = await api(`/api/admin/content/editions/${encodeURIComponent(novelId)}`);
+    const rows = payload.editions || [];
+    target.innerHTML = `<section class="table-card"><h2>English Editions</h2><table class="responsive-table"><thead><tr><th>Chapter</th><th>Edition</th><th>Default</th><th>Characters</th></tr></thead><tbody>${rows.map((edition) => `<tr><td data-label="Chapter">${edition.chapter_number}</td><td data-label="Edition"><strong>${escapeHtml(edition.edition_type)}</strong><br><span>${escapeHtml(edition.source_label || edition.edition_key)}</span></td><td data-label="Default">${edition.is_default ? "Yes" : "No"}</td><td data-label="Characters">${edition.character_count || 0}</td></tr>`).join("") || `<tr><td colspan="4">No English editions found.</td></tr>`}</tbody></table></section>`;
+  } catch (error) {
+    target.innerHTML = `<section class="state-card error"><p>${escapeHtml(error.message)}</p></section>`;
+  }
 }
 
 function renderTranslationPerformance(performance) {
@@ -1344,7 +1478,7 @@ function renderAdminOverview(data, dbHealth, jobs, imports, manifest) {
     <div class="overview-metrics">
       ${metric("Novels", data.novels)}
       ${metric("Chapters", data.chapters)}
-      ${metric("AI Translations", data.ai)}
+      ${metric("English", data.english ?? data.ai)}
       ${metric("Needs Translation", data.needs_translation)}
       ${metric("Active Jobs", activeJobs.length)}
       ${metric("Failed Jobs", failedJobs.length)}
@@ -1392,6 +1526,14 @@ function bindAdminWorkspace() {
   });
   document.querySelectorAll("#createBackupBtn").forEach((button) => button.addEventListener("click", createBackupFromAdmin));
   document.querySelector("#restorePreviewBtn")?.addEventListener("click", restorePreviewFromFile);
+  document.querySelector("#previewContentImport")?.addEventListener("click", previewContentImport);
+  document.querySelector("#executeContentImport")?.addEventListener("click", executeContentImport);
+  document.querySelector("#loadEditions")?.addEventListener("click", loadEditionManager);
+  document.querySelector("#editionNovel")?.addEventListener("change", (event) => {
+    state.currentNovelId = event.target.value;
+    localStorage.setItem("gt-current-novel", state.currentNovelId);
+    loadEditionManager();
+  });
 }
 
 async function createBackupFromAdmin() {
@@ -1745,7 +1887,7 @@ function validateTranslateForm() {
 }
 
 function preferredSource(chapter) {
-  if (chapter?.has_ai) return "ai";
+  if (chapter?.has_english || chapter?.has_ai) return "english";
   if (state.admin && chapter?.has_reference) return "reference";
   return "original";
 }
@@ -1762,7 +1904,7 @@ function paragraphs(text) {
 
 function progress(novel) {
   const original = Number(novel.original_count || 0);
-  return original ? Math.round(Number(novel.ai_count || 0) / original * 100) : 0;
+  return original ? Math.round(Number(novel.english_count ?? novel.ai_count ?? 0) / original * 100) : 0;
 }
 
 function sum(rows, key) {

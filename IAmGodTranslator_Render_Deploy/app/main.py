@@ -24,10 +24,11 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.db import Database, model_pricing
-from app.recovery import parse_uploads, recovery_request, reference_diagnostic
+from app.content_import import payload_from_uploads
+from app.recovery import parse_uploads, recovery_request, recovery_diagnostic, reference_diagnostic
 
 
-VERSION = "10.3.0"
+VERSION = "10.5.0"
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_COOKIE = "gt_admin_session"
 SESSION_TTL_SECONDS = 60 * 60 * 12
@@ -541,6 +542,47 @@ def update_novel(novel_id: str, payload: dict[str, Any] = Body(...), _: None = D
     return {"ok": True, "novel": database.save_novel_metadata(novel_id, merged)}
 
 
+@app.post("/api/admin/content/import/preview")
+def preview_content_import(payload: dict[str, Any] = Body(...), _: None = Depends(require_admin)) -> dict[str, object]:
+    return database.content_import_preview(payload)
+
+
+@app.post("/api/admin/content/import/execute")
+def execute_content_import(payload: dict[str, Any] = Body(...), _: None = Depends(require_admin)) -> dict[str, object]:
+    return database.apply_content_import_payload(payload)
+
+
+@app.post("/api/admin/content/import/preview-pack")
+async def preview_content_pack(
+    files: list[UploadFile] = File(...),
+    novel_id: str | None = Query(None),
+    content_type: str | None = Query(None),
+    _: None = Depends(require_admin),
+) -> dict[str, object]:
+    payloads: list[tuple[str, bytes]] = []
+    for upload in files:
+        payloads.append((upload.filename or "upload.zip", await upload.read()))
+    payload = payload_from_uploads(payloads, {"novel_id": novel_id or "", "content_type": content_type or ""})
+    preview = database.content_import_preview(payload)
+    return {**preview, "pack_warnings": payload.get("warnings", [])}
+
+
+@app.get("/api/admin/content/editions/{novel_id}")
+def list_english_editions(novel_id: str, chapter_number: int | None = None, _: None = Depends(require_admin)) -> dict[str, object]:
+    if database.novel(novel_id) is None:
+        raise HTTPException(status_code=404, detail="novel_not_found")
+    return {"ok": True, "novel_id": novel_id, "editions": database.english_editions(novel_id, chapter_number=chapter_number)}
+
+
+@app.post("/api/admin/content/editions/{novel_id}/{chapter_number}/default")
+def set_default_english_edition(novel_id: str, chapter_number: int, payload: dict[str, Any] = Body(...), _: None = Depends(require_admin)) -> dict[str, object]:
+    try:
+        result = database.set_default_english_edition(novel_id, chapter_number, str(payload.get("edition_key") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, **result}
+
+
 @app.post("/api/novels/{novel_id}/archive")
 def archive_novel(novel_id: str, payload: dict[str, Any] = Body(default={}), _: None = Depends(require_admin)) -> dict[str, object]:
     return {"ok": True, "novel": database.archive_novel(novel_id, bool(payload.get("archived", True)))}
@@ -598,7 +640,7 @@ def library(
 
 @app.get("/api/novels/{novel_id}/chapters/{chapter_number}/{mode}")
 def chapter_text(request: Request, novel_id: str, chapter_number: int, mode: str) -> dict[str, object]:
-    if mode not in {"original", "reference", "ai"}:
+    if mode not in {"original", "reference", "english", "ai"}:
         raise HTTPException(status_code=404, detail="chapter_mode_not_found")
     if mode == "reference":
         require_translator(request)
@@ -613,6 +655,7 @@ def compare_chapter(novel_id: str, chapter_number: int, _: None = Depends(requir
         "chapter_number": chapter_number,
         "original": database.chapter_text(novel_id, chapter_number, "original"),
         "reference": database.chapter_text(novel_id, chapter_number, "reference"),
+        "english": database.chapter_text(novel_id, chapter_number, "english"),
         "ai": database.chapter_text(novel_id, chapter_number, "ai"),
     }
 
@@ -683,29 +726,43 @@ def reference_recovery_diagnostic(novel_id: str, _: None = Depends(require_admin
     return {"ok": True, **reference_diagnostic(database, novel_id)}
 
 
+@app.get("/api/novels/{novel_id}/recovery/diagnostic/{target_mode}")
+def generic_recovery_diagnostic(novel_id: str, target_mode: str, _: None = Depends(require_admin)) -> dict[str, object]:
+    if database.novel(novel_id) is None:
+        raise HTTPException(status_code=404, detail="novel_not_found")
+    if target_mode not in {"original", "reference", "english"}:
+        raise HTTPException(status_code=404, detail="recovery_mode_not_found")
+    return {"ok": True, **recovery_diagnostic(database, novel_id, target_mode)}
+
+
 @app.get("/api/novels/{novel_id}/recovery/request")
 def download_recovery_request(
     novel_id: str,
     source_url: str = Query(""),
     chapter_url_template: str = Query(""),
+    target_mode: str = Query("reference"),
     _: None = Depends(require_admin),
 ) -> JSONResponse:
     novel = database.novel(novel_id)
     if novel is None:
         raise HTTPException(status_code=404, detail="novel_not_found")
+    if target_mode not in {"original", "reference", "english"}:
+        raise HTTPException(status_code=404, detail="recovery_mode_not_found")
     source_url = source_url or str(novel.get("reference_source_url") or novel.get("source_url") or "")
-    payload = recovery_request(database, novel_id, source_url=source_url, chapter_url_template=chapter_url_template)
-    return JSONResponse(payload, headers={"Content-Disposition": f'attachment; filename="{novel_id}-reference-recovery-request.json"'})
+    payload = recovery_request(database, novel_id, source_url=source_url, chapter_url_template=chapter_url_template, target_mode=target_mode)
+    return JSONResponse(payload, headers={"Content-Disposition": f'attachment; filename="{novel_id}-{target_mode}-recovery-request.json"'})
 
 
 @app.post("/api/novels/{novel_id}/recovery/preview")
-async def preview_reference_import(novel_id: str, files: list[UploadFile] = File(...), _: None = Depends(require_admin)) -> dict[str, object]:
+async def preview_reference_import(novel_id: str, files: list[UploadFile] = File(...), target_mode: str = Query("reference"), _: None = Depends(require_admin)) -> dict[str, object]:
     if database.novel(novel_id) is None:
         raise HTTPException(status_code=404, detail="novel_not_found")
+    if target_mode not in {"original", "reference", "english"}:
+        raise HTTPException(status_code=404, detail="recovery_mode_not_found")
     payloads: list[tuple[str, bytes]] = []
     for upload in files:
         payloads.append((upload.filename or "upload.txt", await upload.read()))
-    return parse_uploads(payloads, novel_id, database)
+    return parse_uploads(payloads, novel_id, database, target_mode=target_mode)
 
 
 @app.get("/api/import-jobs/{job_id}")
