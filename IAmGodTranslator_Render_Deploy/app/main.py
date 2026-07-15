@@ -27,7 +27,7 @@ from app.db import Database, model_pricing
 from app.recovery import parse_uploads, recovery_request, reference_diagnostic
 
 
-VERSION = "10.3.0"
+VERSION = "10.5.0"
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_COOKIE = "gt_admin_session"
 SESSION_TTL_SECONDS = 60 * 60 * 12
@@ -606,15 +606,117 @@ def chapter_text(request: Request, novel_id: str, chapter_number: int, mode: str
 
 
 @app.get("/api/novels/{novel_id}/compare/{chapter_number}")
-def compare_chapter(novel_id: str, chapter_number: int, _: None = Depends(require_translator)) -> dict[str, object]:
+def compare_chapter(request: Request, novel_id: str, chapter_number: int) -> dict[str, object]:
+    require_translator(request)
+    reference = database.chapter_text(novel_id, chapter_number, "reference")
+    if not is_admin_request(request):
+        reference = {"ok": False, "available": bool(reference.get("ok")), "hidden": bool(reference.get("ok")), "text": ""}
     return {
         "ok": True,
         "novel_id": novel_id,
         "chapter_number": chapter_number,
         "original": database.chapter_text(novel_id, chapter_number, "original"),
-        "reference": database.chapter_text(novel_id, chapter_number, "reference"),
+        "reference": reference,
         "ai": database.chapter_text(novel_id, chapter_number, "ai"),
     }
+
+
+@app.get("/api/translation/profiles")
+def translation_profiles(request: Request) -> dict[str, object]:
+    require_translator(request)
+    user = current_user(request)
+    return {"ok": True, "profiles": database.translation_profiles(user.user_id if user else None)}
+
+
+@app.post("/api/translation/profiles")
+def save_translation_profile(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, object]:
+    require_translator(request)
+    user = current_user(request)
+    try:
+        profile = database.save_translation_profile(payload, user_id=user.user_id if user else None, shared=is_admin_request(request) and bool(payload.get("is_shared")))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "profile": profile}
+
+
+@app.post("/api/translation/profiles/{profile_id}/duplicate")
+def duplicate_translation_profile(profile_id: str, request: Request) -> dict[str, object]:
+    require_translator(request)
+    user = current_user(request)
+    try:
+        profile = database.duplicate_translation_profile(profile_id, user_id=user.user_id if user else None)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, "profile": profile}
+
+
+@app.get("/api/novels/{novel_id}/glossary")
+def glossary_entries(novel_id: str, request: Request) -> dict[str, object]:
+    require_translator(request)
+    return {"ok": True, "novel_id": novel_id, "entries": database.glossary_entries(novel_id)}
+
+
+@app.post("/api/novels/{novel_id}/glossary")
+def save_glossary_entry(novel_id: str, request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, object]:
+    require_translator(request)
+    try:
+        entry = database.save_glossary_entry(novel_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "entry": entry, "entries": database.glossary_entries(novel_id)}
+
+
+@app.post("/api/novels/{novel_id}/glossary/import")
+def import_glossary_entries(novel_id: str, request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, object]:
+    require_translator(request)
+    rows = payload.get("entries") if isinstance(payload.get("entries"), list) else []
+    return database.import_glossary_entries(novel_id, rows)
+
+
+@app.delete("/api/novels/{novel_id}/glossary/{entry_id}")
+def delete_glossary_entry(novel_id: str, entry_id: str, request: Request) -> dict[str, object]:
+    require_translator(request)
+    database.delete_glossary_entry(novel_id, entry_id)
+    return {"ok": True, "entries": database.glossary_entries(novel_id)}
+
+
+@app.get("/api/novels/{novel_id}/quality")
+def translation_quality_workspace(novel_id: str, request: Request, limit: int = Query(500, ge=1, le=5000)) -> dict[str, object]:
+    require_translator(request)
+    return database.translation_quality_workspace(novel_id, limit=limit)
+
+
+@app.get("/api/novels/{novel_id}/quality/{chapter_number}")
+def translation_quality_detail(novel_id: str, chapter_number: int, request: Request) -> dict[str, object]:
+    require_translator(request)
+    return database.translation_quality_detail(novel_id, chapter_number, include_reference=is_admin_request(request))
+
+
+@app.put("/api/novels/{novel_id}/quality/{chapter_number}/review")
+def save_translation_quality_review(novel_id: str, chapter_number: int, request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, object]:
+    require_translator(request)
+    user = current_user(request)
+    return {"ok": True, "quality": database.save_quality_review(novel_id, chapter_number, payload, reviewer_id=user.user_id if user else None)}
+
+
+@app.get("/api/novels/{novel_id}/translation-history/{chapter_number}")
+def translation_history(novel_id: str, chapter_number: int, request: Request) -> dict[str, object]:
+    require_translator(request)
+    return {"ok": True, "history": database.translation_history(novel_id, chapter_number)}
+
+
+@app.post("/api/novels/{novel_id}/translation-history/{chapter_number}/restore")
+def restore_translation_history(novel_id: str, chapter_number: int, request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, object]:
+    require_translator(request)
+    history_id = str(payload.get("history_id") or "")
+    if not history_id:
+        raise HTTPException(status_code=400, detail="history_id_required")
+    user = current_user(request)
+    try:
+        detail = database.restore_translation_history(novel_id, chapter_number, history_id, user_id=user.user_id if user else None)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, "detail": detail}
 
 
 @app.post("/api/translation/estimate")
@@ -629,6 +731,35 @@ def create_translation_job(payload: dict[str, Any] = Body(...), _: None = Depend
     novel_id = payload.get("novel_id") or default_novel_id()
     chapters = selected_chapters(novel_id, payload)
     job = database.create_translation_job(novel_id, chapters, payload)
+    translation_runner.start(str(job["id"]))
+    return {"ok": True, "job": job}
+
+
+@app.post("/api/translation/retranslation/preview")
+def retranslation_preview(payload: dict[str, Any] = Body(...), _: None = Depends(require_translator)) -> dict[str, object]:
+    novel_id = payload.get("novel_id") or default_novel_id()
+    selected = selected_chapters(novel_id, payload)
+    chapters = database.retranslation_chapters(novel_id, payload, selected)
+    settings = {**payload, "selection_mode": "specific", "chapters": ",".join(str(chapter) for chapter in chapters), "only_untranslated": False}
+    if payload.get("without_reference"):
+        settings["use_reference"] = False
+    estimate = database.estimate_translation(novel_id, chapters, settings)
+    return {"ok": True, "novel_id": novel_id, "chapters": chapters, "estimate": estimate, "overwrite_existing_ai": False}
+
+
+@app.post("/api/translation/retranslation/jobs")
+def create_retranslation_job(payload: dict[str, Any] = Body(...), _: None = Depends(require_translator)) -> dict[str, object]:
+    if not payload.get("confirm_retranslation") or not payload.get("overwrite_existing_ai"):
+        raise HTTPException(status_code=400, detail="explicit_retranslation_confirmation_required")
+    novel_id = payload.get("novel_id") or default_novel_id()
+    selected = selected_chapters(novel_id, payload)
+    chapters = database.retranslation_chapters(novel_id, payload, selected)
+    if not chapters:
+        raise HTTPException(status_code=400, detail="no_retranslation_chapters_selected")
+    settings = {**payload, "selection_mode": "specific", "chapters": ",".join(str(chapter) for chapter in chapters), "only_untranslated": False}
+    if payload.get("without_reference"):
+        settings["use_reference"] = False
+    job = database.create_translation_job(novel_id, chapters, settings)
     translation_runner.start(str(job["id"]))
     return {"ok": True, "job": job}
 
@@ -763,6 +894,76 @@ def admin_translation_performance(novel_id: str | None = None, _: None = Depends
         "scheduler_location": "FastAPI web process",
     }
     return diagnostics
+
+
+@app.get("/api/admin/translation/monitor")
+def admin_translation_monitor(novel_id: str | None = None, _: None = Depends(require_admin)) -> dict[str, object]:
+    monitor = database.translation_monitor(novel_id=novel_id)
+    monitor["runtime"] = {
+        "global_worker_cap": translation_global_concurrency_limit(),
+        "lease_seconds": translation_lease_seconds(),
+        "benchmark_enabled": benchmark_enabled(),
+    }
+    return monitor
+
+
+@app.get("/api/admin/translation/costs")
+def admin_translation_costs(novel_id: str | None = None, _: None = Depends(require_admin)) -> dict[str, object]:
+    return database.translation_cost_analysis(novel_id=novel_id)
+
+
+@app.post("/api/admin/translation/prompt-inspector")
+def admin_prompt_inspector(payload: dict[str, Any] = Body(default={}), _: None = Depends(require_admin)) -> dict[str, object]:
+    novel_id = str(payload.get("novel_id") or default_novel_id())
+    chapters = selected_chapters(novel_id, payload)
+    if not chapters:
+        raise HTTPException(status_code=400, detail="chapter_required")
+    chapter_number = int(chapters[0])
+    original = database.chapter_text(novel_id, chapter_number, "original")
+    if not original.get("ok"):
+        raise HTTPException(status_code=400, detail="original_text_required")
+    settings = database.settings_with_profile(payload)
+    settings["use_reference"] = bool(settings.get("use_reference", True))
+    reference_text = None
+    if settings["use_reference"]:
+        reference = database.chapter_text(novel_id, chapter_number, "reference")
+        reference_text = str(reference.get("text") or "") if reference.get("ok") else None
+    if bool(settings.get("smart_glossary_enabled", True)):
+        settings = dict(settings)
+        settings["glossary"] = database.relevant_glossary_for_text(
+            novel_id,
+            str(original.get("text") or ""),
+            str(settings.get("glossary") or ""),
+            update_usage=False,
+        )
+    prompt_payload = build_prompt_payload(str(original.get("text") or ""), reference_text, settings)
+    estimate = database.estimate_translation(novel_id, [chapter_number], {**settings, "only_untranslated": False})
+    return {
+        "ok": True,
+        "admin_only": True,
+        "novel_id": novel_id,
+        "chapter_number": chapter_number,
+        "profile_name": settings.get("profile_name") or settings.get("profile") or "Default",
+        "model": settings.get("model") or estimate.get("model"),
+        "prompt": prompt_payload["prompt"],
+        "sections": prompt_payload["sections"],
+        "statistics": {
+            **prompt_payload["metrics"],
+            "estimated_total_tokens": sum(int(prompt_payload["metrics"].get(key) or 0) for key in prompt_payload["metrics"] if key.endswith("_tokens")),
+            "prompt_characters": len(prompt_payload["prompt"]),
+        },
+        "estimate": {
+            "estimated_cost": estimate.get("estimated_cost"),
+            "approx_input_tokens": estimate.get("approx_input_tokens"),
+            "approx_output_tokens": estimate.get("approx_output_tokens"),
+            "pricing_note": estimate.get("pricing_note"),
+        },
+        "privacy": {
+            "api_keys_exposed": False,
+            "provider_request_sent": False,
+            "provider_response_stored": False,
+        },
+    }
 
 
 @app.post("/api/admin/translation/benchmark/estimate")
@@ -1089,6 +1290,20 @@ def build_prompt_payload(original: str, reference: str | None, settings: dict[st
         "Do not summarize, skip, or add events.",
         "Return only the translated chapter text unless this job explicitly asks for notes.",
     ]
+    profile_name = settings.get("profile_name") or settings.get("profile")
+    if profile_name:
+        guidance.append(f"Translation profile: {profile_name}.")
+    for key, label in (
+        ("writing_style", "Writing style"),
+        ("tense", "Tense"),
+        ("quote_style", "Quote style"),
+        ("glossary_behavior", "Glossary behavior"),
+        ("reference_preference", "Reference preference"),
+        ("chapter_title_behavior", "Title behavior"),
+        ("paragraph_preservation", "Paragraph preservation"),
+    ):
+        if settings.get(key):
+            guidance.append(f"{label}: {settings[key]}")
     if reference:
         guidance.append("Use the reference translation only as style guidance when it helps; never translate the reference instead of the original.")
     if settings.get("style_guide"):
@@ -1099,8 +1314,15 @@ def build_prompt_payload(original: str, reference: str | None, settings: dict[st
     prompt = "\n".join(guidance) + "\n\nChinese original:\n" + original
     if reference:
         prompt += "\n\nReference translation:\n" + reference
+    sections = [
+        {"name": "profile_rules_glossary", "characters": len(instructions), "estimated_tokens": estimate_text_tokens(instructions)},
+        {"name": "original", "characters": len(original or ""), "estimated_tokens": estimate_text_tokens(original)},
+        {"name": "reference", "characters": len(reference or ""), "estimated_tokens": estimate_text_tokens(reference or "")},
+        {"name": "estimated_output", "characters": max(1, len(original or "")), "estimated_tokens": max(1, len(original or "") // 5)},
+    ]
     return {
         "prompt": prompt,
+        "sections": sections,
         "metrics": {
             "prompt_instruction_tokens": estimate_text_tokens(instructions),
             "prompt_original_tokens": estimate_text_tokens(original),

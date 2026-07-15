@@ -1,8 +1,8 @@
-# GodTranslator v10.2 Product Spec
+# GodTranslator v10 Product Spec
 
 ## Architecture
 
-GodTranslator v10.2 keeps the v10 database-first architecture. PostgreSQL in `godtranslator_v10` is the live source of truth for novels, chapters, translation jobs, import jobs, accounts, preferences, reading progress, bookmarks, favorites, and history.
+GodTranslator v10 keeps the database-first architecture. PostgreSQL in `godtranslator_v10` is the live source of truth for novels, chapters, translation jobs, translation quality reviews, translation history, glossary entries, import jobs, accounts, preferences, reading progress, bookmarks, favorites, and history.
 
 Storage is not used as a live reader source. The app does not use v9 `chapter_index.json`, `counts.json`, hydration, path guessing, startup restore, or startup sync.
 
@@ -12,10 +12,11 @@ Storage is not used as a live reader source. The app does not use v9 `chapter_in
 - Novel Detail: cover hero, metadata, progress, quick actions, and recent chapters.
 - Chapters: metadata-only chapter list with availability badges and authorized actions.
 - Reader: AI, Reference, and Original modes, chapter navigation, bookmark, reader settings, Zen mode, and keyboard shortcuts.
-- Translate: staged workspace for chapter selection, profile notes, model/reference choices, budget safety, estimate, and launch.
+- Translate: staged workspace for chapter selection, reusable profile selection, smart glossary, model/reference choices, budget safety, estimate, and launch.
 - Job Center: translation jobs and admin import jobs.
-- Compare: side-by-side Original, Reference, and AI review.
-- Admin: Overview, Database, Jobs, Imports, Missing Data, Backups, Diagnostics.
+- Quality: completed translation scoring, AI/Original/Reference comparison, review marks, warnings, profile/model/cost/timing metadata, and version restore.
+- Compare: side-by-side Original and AI review, with Reference text restricted to Admin visibility.
+- Admin: Overview, Quality, Monitor, Costs, Prompt Inspector, Profiles, Glossary, Database, Jobs, Imports, Missing Data, Backups, Diagnostics.
 - Recovery: admin-only safe Reference diagnostic, request export, preview, and explicit import.
 
 ## Design System
@@ -66,9 +67,9 @@ The Translate workspace is staged:
 
 Chapter syntax supports single chapters, comma-separated lists, and ranges. The frontend previews parsed selection before estimate.
 
-Translation Profile in v10.2 is a workspace-level selector with style guide and glossary notes that are passed into estimate/job settings. Full saved profile CRUD is reserved for a later milestone.
+Translation Profiles are database-backed and reusable. Shared defaults are Natural English Novel, Faithful Translation, Reference Guided, Fast Draft, and Publication Quality. Translators/admins can duplicate profiles and create custom profiles with writing style, tense, quote style, glossary behavior, Reference preference, title behavior, paragraph preservation, and style guide settings.
 
-Glossary in v10.2 is implemented as glossary notes in the Translate workspace. A full category-based glossary editor and JSON import/export are not part of this release.
+Smart Glossary entries are novel-scoped with categories for Characters, Locations, Organizations, Abilities, Items, Titles, and Aliases. Entries include preferred translation, aliases, notes, locked status, usage count, and last-used metadata. Prompt construction includes only relevant entries that match the chapter Original text plus any ad hoc glossary notes.
 
 The model registry is server-side via `/api/models`. Pricing is approximate when configured; unknown pricing is displayed as not configured.
 
@@ -77,6 +78,10 @@ The model registry is server-side via `/api/models`. Pricing is approximate when
 Translation jobs are persisted in PostgreSQL and support queued, running, paused, completed, failed, cancelled, and retry-failed flows. The Job Center summarizes jobs and valid actions.
 
 Comparison mode shows Original, Reference, and AI panels side by side for translator/admin review. Missing panels show an unavailable state instead of crashing.
+
+Translation Quality adds score/status review for completed chapters. Review marks are Excellent, Good, Needs Review, and Needs Retranslation. AI text is never automatically overwritten by review actions. Retranslation flows require explicit overwrite confirmation and preserve prior AI versions in translation history.
+
+Admin Prompt Inspector previews prompt sections, estimated tokens, sizes, and approximate cost without calling OpenAI. It does not display API keys, auth headers, provider bodies, or secrets.
 
 ## Admin And Operations
 

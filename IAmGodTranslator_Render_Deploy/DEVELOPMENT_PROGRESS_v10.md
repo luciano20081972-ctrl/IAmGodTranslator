@@ -769,3 +769,31 @@ Checkpoint 8 QA:
 - No OpenAI call was made.
 - No production database was modified.
 - Production was not deployed.
+
+## v10.5.0 Checkpoint 1 - Translation Quality Platform
+
+Completed:
+
+- Created branch `v10.5.0-translation-quality-and-production-experience` from `origin/main`.
+- Added additive tables for `translation_quality_reviews`, `translation_history`, and `glossary_entries`.
+- Seeded shared Translation Profiles: Natural English Novel, Faithful Translation, Reference Guided, Fast Draft, and Publication Quality.
+- Added profile selection, duplicate/create flows, and profile metadata persistence in translation job settings.
+- Added Smart Glossary with categories, aliases, locked terms, usage counts, and relevant-entry-only prompt injection.
+- Added Translation Quality workspace with score/status, warnings, Reference availability, profile/model/cost/timing metadata, review marks, AI/Original/Reference comparison, and history restore.
+- Kept Reference text admin-only in quality and compare views.
+- Preserved AI version history before retranslation overwrite and after successful translation completion.
+- Added Admin Prompt Inspector, Live Translation Monitor, Cost Analysis, Profiles, and Glossary tabs.
+- Added retranslation preview and explicit-confirmation job creation so existing AI is not overwritten by default.
+- Added focused QA script `tools/qa_v10_5_translation_quality.py`.
+- Updated README, product spec, and v10.5 release notes.
+
+Checkpoint 1 QA:
+
+- Python compile passed for `app/main.py`, `app/db.py`, `app/recovery.py`, and v10.3/v10.4/v10.5 QA tools.
+- JavaScript syntax check passed for `static/app.js`.
+- v10.5 focused QA passed against disposable SQLite with existing local FastAPI dependencies.
+- QA verified default profiles, Smart Glossary relevant filtering, translation history, quality review marks, admin-only Reference visibility, prompt inspector privacy, monitor/cost APIs, and retranslation preview safety.
+- `DATABASE_URL` and `OPENAI_API_KEY` were removed from the QA environment.
+- No OpenAI call was made.
+- No production database was modified.
+- Production was not deployed.

@@ -1,6 +1,6 @@
-# GodTranslator v10.3.0 Product Experience Rebuild
+# GodTranslator v10.5.0 Translation Quality Platform
 
-GodTranslator v10.3.0 evolves the restored v10 product shell into a polished, responsive novel-reading and translation application on top of the v10 database-first foundation.
+GodTranslator v10.5.0 builds on the v10.4 translation-performance release with reusable translation profiles, smart glossary prompting, translation quality review, version history, prompt inspection, live monitoring, and cost analysis.
 
 PostgreSQL remains the live source of truth:
 
@@ -8,8 +8,12 @@ PostgreSQL remains the live source of truth:
 - `godtranslator_v10.chapters`
 - `godtranslator_v10.translation_jobs`
 - `godtranslator_v10.translation_job_items`
+- `godtranslator_v10.translation_quality_reviews`
+- `godtranslator_v10.translation_history`
+- `godtranslator_v10.glossary_entries`
 - `godtranslator_v10.import_jobs`
 - `godtranslator_v10.import_job_items`
+- `godtranslator_v10.translation_profiles`
 
 The app does not use v9 chapter indexes, counts files, hydration, startup restore, startup storage sync, path guessing, or Supabase Storage as the live reader source.
 
@@ -23,10 +27,18 @@ Routes:
 - `#/chapters/i-am-god`
 - `#/reader/i-am-god/1/ai`
 - `#/compare/i-am-god/1`
+- `#/quality/i-am-god`
+- `#/quality/i-am-god/1`
 - `#/translate/i-am-god`
 - `#/jobs`
 - `#/recovery/i-am-god`
 - `#/admin/overview`
+- `#/admin/quality`
+- `#/admin/monitor`
+- `#/admin/costs`
+- `#/admin/prompt`
+- `#/admin/profiles`
+- `#/admin/glossary`
 - `#/admin/database`
 - `#/admin/missing`
 - `#/settings/appearance`
@@ -42,6 +54,11 @@ Restored workflows:
 - Chapter Library with search, status filters, pagination, availability badges, Reader links, and Translate links.
 - Reader with AI / Reference / Original modes, previous/next, chapter selector, and font control.
 - Translate workspace with estimates, budget controls, persistent jobs, pause/resume/stop/retry, and explicit run-next execution.
+- Reusable Translation Profiles: Natural English Novel, Faithful Translation, Reference Guided, Fast Draft, and Publication Quality, with duplicate/edit support.
+- Smart Glossary with categories, aliases, locked terms, usage counts, import endpoint, and relevant-entry-only prompt inclusion.
+- Translation Quality workspace with score, status, warnings, profile/model/cost/timing metadata, AI/Original comparison, admin-only Reference visibility, review marks, and version restore.
+- Admin Prompt Inspector with estimated prompt sections/tokens/costs and no provider request.
+- Live Translation Monitor and Cost Analysis dashboards using v10.4 performance instrumentation.
 - Admin-protected Recovery workspace from v10.0.6 for safe Reference diagnostic, request export, preview/import.
 - Admin dashboard with system overview, database health, missing data, translation jobs, import jobs, and database-first backup export.
 - v10.3 shell with authorization-aware navigation, global search/command palette, activity/account/settings controls, and local guest personalization.
@@ -56,6 +73,10 @@ Chinese `original_text` is always the translation source.
 `reference_text` is optional style guidance only. A chapter with Original text and no Reference text remains eligible for translation.
 
 OpenAI is called only when an authenticated translator/admin explicitly runs a real translation item. Automated QA should use `POST /api/translation/jobs/{job_id}/run-next?mock=true`.
+
+Prompt Inspector previews prompt text and token estimates but does not send provider requests. Prompt diagnostics do not expose API keys, auth headers, provider responses, or secrets.
+
+Retranslation requires explicit confirmation before existing AI is overwritten. Previous AI versions are preserved in `translation_history`.
 
 ## Admin Auth
 

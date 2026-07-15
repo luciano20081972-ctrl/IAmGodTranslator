@@ -36,7 +36,7 @@ const state = {
 };
 
 const sourceLabels = {ai: "AI", reference: "Reference", original: "Original"};
-const APP_VERSION = "10.3.0";
+const APP_VERSION = "10.5.0";
 const chapterViews = [
   ["all", "All"],
   ["translated", "Translated"],
@@ -121,6 +121,7 @@ function route() {
   if (parts[0] === "reader" && parts[1] && parts[2]) return openReader(parts[1], Number(parts[2]), parts[3] || state.source);
   if (parts[0] === "novel" && parts[1]) return openNovelDetail(parts[1]);
   if (parts[0] === "compare" && parts[1] && parts[2]) return openCompare(parts[1], Number(parts[2]));
+  if (parts[0] === "quality" && parts[1]) return openQualityWorkspace(parts[1], parts[2] ? Number(parts[2]) : 0);
   if (parts[0] === "activity") return openActivityCenter(parts[1] || "");
   if (parts[0] === "jobs") return openJobCenter(parts[1] || "");
   if (parts[0] === "chapters" && parts[1]) return openChapters(parts[1]);
@@ -151,6 +152,7 @@ function renderNav() {
     ["home", "Home", "#/home", true],
     ["library", "Library", "#/library", true],
     ["continue", "Continue Reading", continueHref, true],
+    ["quality", "Quality", `#/quality/${state.currentNovelId}`, canTranslate() && Boolean(state.currentNovelId)],
   ];
   nav.innerHTML = links.filter(([, , , allowed]) => allowed).map(([key, label, href]) => `<a data-nav="${key}" href="${href}">${label}</a>`).join("");
   if (accountBtn) {
@@ -761,6 +763,7 @@ function renderReader(novelId, chapterNumber, source, payload) {
     <section class="reader-panel ${state.zen ? "zen" : ""}">
       <div class="reader-nav"><a class="button" href="#/novel/${novelId}">Novel</a><button id="openChapterDrawer" type="button">Chapters</button><div class="spacer"></div><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous</button><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next</button><button id="bookmarkChapter" type="button">Bookmark</button><button id="zenToggle" type="button">${state.zen ? "Exit Focus" : "Focus"}</button></div>
       <div class="reader-tabs"><div class="segmented reader-source-switch">${options.map((item) => `<button data-source="${item}" class="${item === source ? "active" : ""}">${sourceLabels[item]}</button>`).join("")}</div><label class="font-control">Text size<input id="fontSize" type="range" min="16" max="25" value="${state.fontSize}"></label><button id="readerSettingsToggle" type="button">Reader Settings</button><button type="button" data-copy-link="#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}">Copy Link</button></div>
+      <div class="reader-progress"><span id="readerProgressFill"></span></div>
       ${renderChapterDrawer(novelId, chapterNumber, source)}
       ${renderReaderSettingsSheet()}
       <header class="reader-heading"><span>${escapeHtml(novel.title || sourceLabels[source])} · ${sourceLabels[source]}</span><h1>Chapter ${chapterNumber}</h1><p>${escapeHtml(payload.title || `Chapter ${chapterNumber}`)}</p></header>
@@ -916,14 +919,21 @@ async function openTranslate(novelId, params = new URLSearchParams()) {
     await refreshSession();
     await loadNovels();
     if (!canTranslate()) return renderAdminGate("Translate");
-    const [jobs, modelRegistry] = await Promise.all([
+    const [jobs, modelRegistry, profilePayload, glossaryPayload] = await Promise.all([
       api(`/api/translation/jobs?novel_id=${encodeURIComponent(novelId)}`),
       api("/api/models"),
+      api("/api/translation/profiles"),
+      api(`/api/novels/${encodeURIComponent(novelId)}/glossary`),
     ]);
     const novel = state.novels.find((item) => item.id === novelId) || {};
     const models = modelRegistry.models || [];
+    const profiles = profilePayload.profiles || [];
+    const glossaryEntries = glossaryPayload.entries || [];
     const draft = translateDraft(novelId);
     const form = params.get("chapter") ? {...draft, selection_mode: "specific", chapters: params.get("chapter"), all_untranslated: false} : draft;
+    const defaultProfile = profiles.find((profile) => profile.is_default) || profiles[0] || null;
+    const selectedProfileId = form.profile_id || defaultProfile?.id || "";
+    const selectedProfile = profiles.find((profile) => profile.id === selectedProfileId) || defaultProfile || {};
     const mode = form.translation_mode || "simple";
     const selectionMode = form.selection_mode || (form.all_untranslated ? "all-untranslated" : "next-untranslated");
     const speedPreset = form.speed_preset || (mode === "economy" ? "careful" : "balanced");
@@ -949,7 +959,7 @@ async function openTranslate(novelId, params = new URLSearchParams()) {
       <section class="translate-workspace">
         <div class="translate-steps" id="translateForm">
           <section class="workspace-panel form-grid"><div class="wide"><h2>1. Mode & Chapters</h2><p class="muted">Simple mode keeps the required choices visible and leaves performance controls hidden.</p></div><label>Mode<select id="translationMode"><option value="simple" ${mode === "simple" ? "selected" : ""}>Simple</option><option value="fast" ${mode === "fast" ? "selected" : ""}>Fast</option><option value="advanced" ${mode === "advanced" ? "selected" : ""}>Advanced</option><option value="economy" ${mode === "economy" ? "selected" : ""}>Economy / Overnight</option></select></label><label>Novel<select id="translateNovel">${state.novels.map((n) => `<option value="${n.id}" ${n.id === novelId ? "selected" : ""}>${escapeHtml(n.title)}</option>`).join("")}</select></label><label>What to translate<select id="selectionMode"><option value="next-untranslated" ${selectionMode === "next-untranslated" ? "selected" : ""}>Next untranslated chapters</option><option value="specific" ${selectionMode === "specific" ? "selected" : ""}>Specific chapters</option><option value="all-untranslated" ${selectionMode === "all-untranslated" ? "selected" : ""}>All untranslated</option></select></label><label id="nextCountLabel">Next count<select id="nextCount"><option value="25" ${Number(form.next_count || 25) === 25 ? "selected" : ""}>Next 25</option><option value="50" ${Number(form.next_count) === 50 ? "selected" : ""}>Next 50</option><option value="100" ${Number(form.next_count) === 100 ? "selected" : ""}>Next 100</option></select></label><label id="chapterInputLabel">Chapters<input id="translateChapters" value="${escapeAttr(form.chapters || "")}" placeholder="26,53,60-70"><span class="field-error" id="chapterError"></span></label><p class="muted wide" id="chapterPreview">Choose what to translate.</p></section>
-          <section class="workspace-panel form-grid"><div class="wide"><h2>2. Translation Profile</h2><p class="muted">Optional style and glossary notes shape the job without changing source data.</p></div><label>Profile<select id="profile"><option ${form.profile === "Default literary translation" ? "selected" : ""}>Default literary translation</option><option ${form.profile === "Reference-guided polish" ? "selected" : ""}>Reference-guided polish</option></select></label><label class="wide">Style guide<textarea id="styleGuide" rows="3">${escapeHtml(form.style_guide || "")}</textarea></label><label class="wide">Glossary notes<textarea id="glossary" rows="3">${escapeHtml(form.glossary || "")}</textarea></label></section>
+          <section class="workspace-panel form-grid"><div class="wide"><h2>2. Translation Profile</h2><p class="muted">Reusable profiles define style, tense, quote handling, Reference preference, titles, and paragraph rules.</p></div><label>Profile<select id="profileId">${profiles.map((profile) => `<option value="${escapeAttr(profile.id)}" ${profile.id === selectedProfileId ? "selected" : ""}>${escapeHtml(profile.name)}${profile.is_default ? " - Default" : ""}</option>`).join("")}</select></label><label class="inline-check"><input id="smartGlossaryEnabled" type="checkbox" ${form.smart_glossary_enabled === false ? "" : "checked"}> Smart Glossary</label><div class="profile-preview wide" id="profilePreview">${renderProfilePreview(selectedProfile)}</div><div class="actions wide"><button id="duplicateProfileBtn" type="button">Duplicate Profile</button><a class="button" href="#/admin/profiles">Manage Profiles</a><a class="button" href="#/admin/glossary">Manage Glossary</a></div><label class="wide">Job style notes<textarea id="styleGuide" rows="3">${escapeHtml(form.style_guide || "")}</textarea></label><label class="wide">Ad hoc glossary notes<textarea id="glossary" rows="3">${escapeHtml(form.glossary || "")}</textarea></label><p class="muted wide">${glossaryEntries.length} glossary entries available. Only entries matching the selected chapter text are sent to the provider prompt.</p></section>
           <section class="workspace-panel form-grid"><div class="wide"><h2>3. Speed & Model</h2><p class="muted">Auto optimization keeps Simple mode focused while still using the selected speed intent.</p></div><label>Speed preset<select id="speedPreset"><option value="careful" ${speedPreset === "careful" ? "selected" : ""}>Careful - lowest pressure</option><option value="balanced" ${speedPreset === "balanced" ? "selected" : ""}>Balanced - recommended</option><option value="fast" ${speedPreset === "fast" ? "selected" : ""}>Fast - higher parallel processing</option><option value="maximum-safe" ${speedPreset === "maximum-safe" ? "selected" : ""}>Maximum Safe - highest safe throughput</option></select></label><label>Model<select id="model">${models.map((model) => `<option value="${escapeAttr(model.id)}" ${model.id === (form.model || novel.model || "gpt-4o-mini") ? "selected" : ""}>${escapeHtml(model.display_name)} - ${escapeHtml(model.pricing?.note || "Pricing not configured")}</option>`).join("")}</select></label><label class="inline-check"><input id="autoOptimizeSpeed" type="checkbox" ${form.auto_optimize_speed === false ? "" : "checked"}> Auto Optimize Speed</label><p class="muted wide" id="speedDescription">Speed is being optimized automatically.</p></section>
           <section class="workspace-panel form-grid"><div class="wide"><h2>4. Budget & Safety</h2><p class="muted">Budget caps are optional; launch stays locked until this form has a current estimate.</p></div><label>Max total budget<input id="maxTotalBudget" type="number" step="0.01" value="${escapeAttr(form.max_total_budget ?? "")}"><span class="field-error" id="budgetError"></span></label><label>Max cost per chapter<input id="maxPerChapterBudget" type="number" step="0.001" value="${escapeAttr(form.max_per_chapter_budget ?? "")}"></label><label class="inline-check"><input id="useReference" type="checkbox" ${form.use_reference === false ? "" : "checked"}> Use Reference when available</label><label class="inline-check"><input id="onlyUntranslated" type="checkbox" ${form.only_untranslated === false ? "" : "checked"}> Only untranslated</label><div class="advanced-settings wide"><h3>Advanced Performance</h3><div class="form-grid"><label>Retry limit<input id="retryCount" type="number" min="0" max="5" value="${escapeAttr(form.retry_count ?? 2)}"></label><label>Queue depth<input id="batchSize" type="number" min="1" max="5000" value="${escapeAttr(form.batch_size ?? 25)}"></label><label>Maximum workers<select id="translationConcurrency"><option value="" ${form.concurrency ? "" : "selected"}>Auto</option><option value="1" ${Number(form.concurrency) === 1 ? "selected" : ""}>1 worker</option><option value="2" ${Number(form.concurrency) === 2 ? "selected" : ""}>2 workers</option><option value="3" ${Number(form.concurrency) === 3 ? "selected" : ""}>3 workers</option><option value="4" ${Number(form.concurrency) === 4 ? "selected" : ""}>4 workers</option><option value="6" ${Number(form.concurrency) === 6 ? "selected" : ""}>6 workers</option><option value="8" ${Number(form.concurrency) === 8 ? "selected" : ""}>8 workers</option></select></label><label>Priority<select id="jobPriority"><option value="normal" ${form.priority === "high" ? "" : "selected"}>Normal</option><option value="high" ${form.priority === "high" ? "selected" : ""}>High</option></select></label><label class="inline-check"><input id="stopOnBudget" type="checkbox" ${form.stop_on_budget === false ? "" : "checked"}> Stop on budget</label></div></div></section>
         </div>
@@ -963,6 +973,8 @@ async function openTranslate(novelId, params = new URLSearchParams()) {
     document.querySelector("#translationMode").addEventListener("change", toggleTranslationMode);
     document.querySelector("#speedPreset").addEventListener("change", updateSpeedDescription);
     document.querySelector("#autoOptimizeSpeed").addEventListener("change", updateSpeedDescription);
+    document.querySelector("#profileId")?.addEventListener("change", () => updateProfilePreview(profiles));
+    document.querySelector("#duplicateProfileBtn")?.addEventListener("click", duplicateSelectedProfile);
     document.querySelector("#estimateBtn").addEventListener("click", estimateTranslation);
     document.querySelector("#createJobBtn").addEventListener("click", createTranslationJob);
     document.querySelector("#restoreTranslateDraft").addEventListener("click", () => openTranslate(novelId));
@@ -1005,10 +1017,44 @@ function translatePayload() {
     use_reference: document.querySelector("#useReference").checked,
     only_untranslated: document.querySelector("#onlyUntranslated").checked,
     priority: document.querySelector("#jobPriority")?.value || "normal",
-    profile: document.querySelector("#profile")?.value || "Default literary translation",
+    profile_id: document.querySelector("#profileId")?.value || "",
+    smart_glossary_enabled: document.querySelector("#smartGlossaryEnabled")?.checked !== false,
     style_guide: document.querySelector("#styleGuide").value,
     glossary: document.querySelector("#glossary")?.value || "",
   };
+}
+
+function renderProfilePreview(profile) {
+  const settings = profile?.settings || {};
+  if (!profile?.id) return `<p class="muted">No translation profiles are available.</p>`;
+  const rows = [
+    ["Style", settings.writing_style],
+    ["Tense", settings.tense],
+    ["Quotes", settings.quote_style],
+    ["Glossary", settings.glossary_behavior],
+    ["Reference", settings.reference_preference],
+    ["Titles", settings.chapter_title_behavior],
+    ["Paragraphs", settings.paragraph_preservation],
+  ];
+  return `<div class="profile-preview-grid">${rows.map(([label, value]) => `<span><strong>${escapeHtml(label)}</strong>${escapeHtml(value || "Default")}</span>`).join("")}</div>`;
+}
+
+function updateProfilePreview(profiles) {
+  const selected = document.querySelector("#profileId")?.value || "";
+  const profile = (profiles || []).find((item) => item.id === selected);
+  const target = document.querySelector("#profilePreview");
+  if (target) target.innerHTML = renderProfilePreview(profile);
+}
+
+async function duplicateSelectedProfile() {
+  const profileId = document.querySelector("#profileId")?.value;
+  if (!profileId) return toast("Choose a profile first.");
+  const payload = await api(`/api/translation/profiles/${encodeURIComponent(profileId)}/duplicate`, {method: "POST"});
+  const novelId = document.querySelector("#translateNovel")?.value || state.currentNovelId;
+  const draft = {...translatePayload(), profile_id: payload.profile?.id || profileId, saved_at: new Date().toISOString()};
+  writeStored(translateDraftKey(novelId), draft);
+  toast("Profile duplicated.");
+  openTranslate(novelId);
 }
 
 function renderChapterPreview() {
@@ -1216,7 +1262,66 @@ async function openCompare(novelId, chapterNumber) {
 }
 
 function renderComparePanel(label, payload) {
+  if (payload?.hidden) return `<article class="panel compare-panel"><h2>${escapeHtml(label)}</h2><p class="empty-state">Reference is available but hidden outside Admin.</p></article>`;
   return `<article class="panel compare-panel"><h2>${escapeHtml(label)}</h2>${payload?.ok ? paragraphs(payload.text).map((line) => `<p>${escapeHtml(line)}</p>`).join("") : `<p class="empty-state">${escapeHtml(label)} not available.</p>`}</article>`;
+}
+
+async function openQualityWorkspace(novelId, chapterNumber = 0) {
+  if (!canTranslate()) return openSettings("account");
+  setLoading("Loading quality workspace...");
+  try {
+    await refreshSession();
+    if (chapterNumber) {
+      await openQualityDetail(novelId, chapterNumber);
+      return;
+    }
+    const payload = await api(`/api/novels/${encodeURIComponent(novelId)}/quality`);
+    const chapters = payload.chapters || [];
+    const summary = payload.summary || {};
+    app.innerHTML = `${pageHeader("Translation Quality", "Review completed AI chapters without automatically overwriting translations.", [["Translated", summary.translated || 0], ["Avg Score", summary.average_score ?? "n/a"], ["Needs Review", summary.needs_review || 0], ["Reference Available", summary.reference_available || 0]])}
+      <section class="toolbar"><a class="button" href="#/translate/${encodeURIComponent(novelId)}">Translate</a><a class="button" href="#/admin/monitor">Monitor</a><a class="button" href="#/admin/costs">Costs</a></section>
+      <section class="table-card"><h2>Completed Chapters</h2><table class="responsive-table quality-table"><thead><tr><th>Chapter</th><th>Score</th><th>Reference</th><th>Profile</th><th>Prompt</th><th>Cost</th><th>Duration</th><th>Warnings</th><th></th></tr></thead><tbody>
+      ${chapters.map((item) => `<tr><td data-label="Chapter"><strong>Chapter ${item.chapter_number}</strong><span>${escapeHtml(item.title || "")}</span></td><td data-label="Score">${qualityBadge(item.status, item.score)}</td><td data-label="Reference">${item.reference_available ? "Available" : "Missing"}</td><td data-label="Profile">${escapeHtml(item.profile_name || "Default")}<span>${escapeHtml(item.model || "")}</span></td><td data-label="Prompt">${numberMetric(item.prompt_tokens)}</td><td data-label="Cost">$${Number(item.actual_cost || 0).toFixed(4)}</td><td data-label="Duration">${item.duration_seconds ? formatDuration(item.duration_seconds) : "n/a"}</td><td data-label="Warnings">${(item.warnings || []).map((warning) => `<span class="badge warn">${escapeHtml(warning)}</span>`).join(" ") || "None"}</td><td data-label="Actions"><a class="button" href="#/quality/${encodeURIComponent(novelId)}/${item.chapter_number}">Review</a></td></tr>`).join("") || `<tr><td colspan="9">No completed AI chapters yet.</td></tr>`}
+      </tbody></table></section>`;
+  } catch (error) {
+    setError(error.message);
+  }
+}
+
+async function openQualityDetail(novelId, chapterNumber) {
+  const payload = await api(`/api/novels/${encodeURIComponent(novelId)}/quality/${chapterNumber}`);
+  const quality = payload.quality || {};
+  app.innerHTML = `${pageHeader("Chapter Review", "Compare text, mark quality, and restore prior AI versions when needed.", [["Chapter", chapterNumber], ["Score", quality.score ?? "n/a"], ["Status", titleCase(String(quality.status || "").replaceAll("_", " "))]])}
+    <section class="quality-detail-actions"><a class="button" href="#/quality/${encodeURIComponent(novelId)}">Back to Quality</a><a class="button" href="#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/ai">Open Reader</a><a class="button" href="#/compare/${encodeURIComponent(novelId)}/${chapterNumber}">Compare</a></section>
+    <section class="quality-review-panel panel">
+      <h2>Review Mark</h2>
+      <div class="segmented">${["excellent", "good", "needs_review", "needs_retranslation"].map((status) => `<button type="button" data-quality-status="${status}" class="${quality.status === status ? "active" : ""}">${titleCase(status.replaceAll("_", " "))}</button>`).join("")}</div>
+      <label>Notes<textarea id="qualityNotes" rows="3">${escapeHtml(quality.review?.notes || "")}</textarea></label>
+      <p class="muted">${(quality.warnings || []).length ? `Warnings: ${(quality.warnings || []).join(", ")}` : "No automatic warnings for this chapter."}</p>
+    </section>
+    <section class="compare-grid">
+      ${renderComparePanel("Original", payload.original)}
+      ${renderComparePanel("Reference", payload.reference)}
+      ${renderComparePanel("AI Translation", payload.ai)}
+    </section>
+    <section class="table-card"><h2>Version History</h2><table class="responsive-table"><thead><tr><th>Version</th><th>Model</th><th>Profile</th><th>Cost</th><th>Created</th><th></th></tr></thead><tbody>${(payload.history || []).map((version) => `<tr><td data-label="Version">v${version.version_number}<br><span>${escapeHtml(version.notes || "")}</span></td><td data-label="Model">${escapeHtml(version.model || "")}</td><td data-label="Profile">${escapeHtml(version.profile_name || "Default")}</td><td data-label="Cost">$${Number(version.actual_cost || 0).toFixed(4)}</td><td data-label="Created">${timeAgo(version.created_at)}</td><td data-label="Actions"><button type="button" data-restore-history="${escapeAttr(version.id)}">Restore</button></td></tr>`).join("") || `<tr><td colspan="6">No history recorded yet.</td></tr>`}</tbody></table></section>`;
+  document.querySelectorAll("[data-quality-status]").forEach((button) => button.addEventListener("click", async () => {
+    await api(`/api/novels/${encodeURIComponent(novelId)}/quality/${chapterNumber}/review`, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({status: button.dataset.qualityStatus, notes: document.querySelector("#qualityNotes")?.value || ""})});
+    toast("Review saved.");
+    openQualityDetail(novelId, chapterNumber);
+  }));
+  document.querySelectorAll("[data-restore-history]").forEach((button) => button.addEventListener("click", async () => {
+    if (!confirm("Restore this AI version? Current AI text will be preserved in history.")) return;
+    await api(`/api/novels/${encodeURIComponent(novelId)}/translation-history/${chapterNumber}/restore`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({history_id: button.dataset.restoreHistory})});
+    toast("Version restored.");
+    openQualityDetail(novelId, chapterNumber);
+  }));
+}
+
+function qualityBadge(status, score) {
+  const label = `${score ?? "n/a"} · ${titleCase(String(status || "needs_review").replaceAll("_", " "))}`;
+  const stateName = status === "excellent" || status === "good" ? "ok" : "warn";
+  return `<span class="badge ${stateName}">${escapeHtml(label)}</span>`;
 }
 
 async function openRecovery(novelId) {
@@ -1260,7 +1365,7 @@ async function openAdmin(tab = "overview") {
     await loadNovels(true);
     rememberRecent("admin", {label: titleCase(tab), href: `#/admin/${tab}`, at: new Date().toISOString()});
     localStorage.setItem("gt-last-admin-tab", tab);
-    const [overview, dbHealth, missing, imports, jobs, backupManifest, users, performance] = await Promise.all([
+    const [overview, dbHealth, missing, imports, jobs, backupManifest, users, performance, monitor, costs, profiles, glossary, quality] = await Promise.all([
       api("/api/admin/overview"),
       api("/api/admin/db-health"),
       api(`/api/admin/missing/${state.currentNovelId}`),
@@ -1269,13 +1374,18 @@ async function openAdmin(tab = "overview") {
       api("/api/admin/backups/manifest"),
       api("/api/admin/users"),
       api(`/api/admin/translation/performance?novel_id=${encodeURIComponent(state.currentNovelId)}`),
+      api(`/api/admin/translation/monitor?novel_id=${encodeURIComponent(state.currentNovelId)}`),
+      api(`/api/admin/translation/costs?novel_id=${encodeURIComponent(state.currentNovelId)}`),
+      api("/api/translation/profiles"),
+      api(`/api/novels/${encodeURIComponent(state.currentNovelId)}/glossary`),
+      api(`/api/novels/${encodeURIComponent(state.currentNovelId)}/quality`),
     ]);
-    const tabs = [["overview", "Overview"], ["novels", "Novels"], ["translation", "Translation"], ["performance", "Performance"], ["jobs", "Jobs"], ["backups", "Backups & Recovery"], ["recovery", "Novel Recovery"], ["database", "Database"], ["users", "Users & Roles"], ["diagnostics", "Diagnostics"]];
+    const tabs = [["overview", "Overview"], ["novels", "Novels"], ["translation", "Translation"], ["quality", "Quality"], ["monitor", "Monitor"], ["costs", "Costs"], ["prompt", "Prompt Inspector"], ["profiles", "Profiles"], ["glossary", "Glossary"], ["performance", "Performance"], ["jobs", "Jobs"], ["backups", "Backups & Recovery"], ["recovery", "Novel Recovery"], ["database", "Database"], ["users", "Users & Roles"], ["diagnostics", "Diagnostics"]];
     app.innerHTML = `
       ${pageHeader("Admin", "Operational workspace for novels, translation, backups, recovery, users, and diagnostics.", [["Version", APP_VERSION], ["Schema", overview.overview.schema], ["Chapters", overview.overview.chapters], ["Needs Translation", overview.overview.needs_translation]])}
       <section class="admin-workspace">
         <nav class="admin-tabs">${tabs.map(([key, label]) => `<a class="${tab === key ? "active" : ""}" href="#/admin/${key}">${label}</a>`).join("")}</nav>
-        <div class="admin-content">${renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupManifest, users, performance)}</div>
+        <div class="admin-content">${renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupManifest, users, performance, monitor, costs, profiles, glossary, quality)}</div>
       </section>
       <div class="actions"><button id="logoutBtn">Exit Admin Mode</button></div>`;
     bindJobButtons();
@@ -1288,10 +1398,16 @@ async function openAdmin(tab = "overview") {
   }
 }
 
-function renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupManifest, users, performance) {
+function renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupManifest, users, performance, monitor, costs, profiles, glossary, quality) {
   const data = overview.overview || {};
   if (tab === "novels") return renderNovelManagement(state.novels, "");
-  if (tab === "translation") return `<section class="dashboard-grid"><div class="panel"><h2>Translation Workspace</h2><p class="muted">Configure jobs in the dedicated workspace while Admin keeps operational context here.</p><div class="actions"><a class="button primary" href="#/translate/${state.currentNovelId}">Open Translate</a><a class="button" href="#/admin/jobs">Open Jobs</a></div></div><div class="panel">${metric("Needs Translation", data.needs_translation)}${metric("AI Translations", data.ai)}${metric("Active Jobs", (jobs.jobs || []).filter((job) => ["queued", "running", "paused"].includes(job.status)).length)}</div></section>`;
+  if (tab === "translation") return `<section class="dashboard-grid"><div class="panel"><h2>Translation Workspace</h2><p class="muted">Configure jobs in the dedicated workspace while Admin keeps operational context here.</p><div class="actions"><a class="button primary" href="#/translate/${state.currentNovelId}">Open Translate</a><a class="button" href="#/quality/${state.currentNovelId}">Quality</a><a class="button" href="#/admin/jobs">Open Jobs</a></div></div><div class="panel">${metric("Needs Translation", data.needs_translation)}${metric("AI Translations", data.ai)}${metric("Active Jobs", (jobs.jobs || []).filter((job) => ["queued", "running", "paused"].includes(job.status)).length)}</div></section>`;
+  if (tab === "quality") return renderAdminQuality(quality);
+  if (tab === "monitor") return renderTranslationMonitor(monitor);
+  if (tab === "costs") return renderTranslationCosts(costs);
+  if (tab === "prompt") return renderPromptInspector(profiles.profiles || []);
+  if (tab === "profiles") return renderProfilesAdmin(profiles.profiles || []);
+  if (tab === "glossary") return renderGlossaryAdmin(glossary.entries || []);
   if (tab === "performance") return renderTranslationPerformance(performance);
   if (tab === "database") {
     return `<section class="dashboard-grid"><div class="panel">${metric("Database", dbHealth.health?.reachable ? "Healthy" : "Needs Attention")}${metric("Schema", data.schema)}${metric("Expected Tables", dbHealth.health?.v10_chapters_table_exists ? "Healthy" : "Needs Attention")}${metric("Chapters", data.chapters)}</div><div class="panel"><h2>Technical Details</h2><details><summary>Show details</summary><pre>${escapeHtml(JSON.stringify(dbHealth.health, null, 2))}</pre></details></div></section>`;
@@ -1302,6 +1418,56 @@ function renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupM
   if (tab === "users") return `<section class="table-card"><h2>Users & Roles</h2><table class="responsive-table"><thead><tr><th>User</th><th>Role</th><th>Updated</th></tr></thead><tbody>${(users.users || []).map((user) => `<tr><td data-label="User"><strong>${escapeHtml(user.display_name || user.email || user.user_id)}</strong><br><span>${escapeHtml(user.email || user.user_id)}</span></td><td data-label="Role">${escapeHtml(user.role || "user")}</td><td data-label="Updated">${timeAgo(user.updated_at)}</td></tr>`).join("") || `<tr><td colspan="3">No application profiles yet.</td></tr>`}</tbody></table></section>`;
   if (tab === "diagnostics") return `<section class="dashboard-grid"><div class="panel">${metric("Version", APP_VERSION)}${metric("DB", dbHealth.health?.ok === false ? "Unhealthy" : "Healthy")}${metric("Schema", data.schema)}${metric("Auth", state.authConfig?.configured ? "Configured" : "Missing")}${metric("OpenAI", "Configured/Missing hidden")}</div><div class="panel"><h2>Details</h2><details><summary>Show sanitized JSON</summary><pre>${escapeHtml(JSON.stringify({overview: data, db: dbHealth.health}, null, 2))}</pre></details></div></section>`;
   return renderAdminOverview(data, dbHealth, jobs, imports, backupManifest.manifest);
+}
+
+function renderAdminQuality(payload) {
+  const summary = payload?.summary || {};
+  const chapters = (payload?.chapters || []).slice(0, 25);
+  return `<section class="dashboard-grid">
+    <div class="panel"><h2>Quality Overview</h2><div class="metric-grid">${metric("Translated", summary.translated || 0)}${metric("Average Score", summary.average_score ?? "n/a")}${metric("Needs Review", summary.needs_review || 0)}${metric("Profiles Used", summary.profile_count || 0)}</div><div class="actions"><a class="button primary" href="#/quality/${state.currentNovelId}">Open Workspace</a></div></div>
+    <div class="table-card"><h2>Recent Review Targets</h2><table class="responsive-table"><tbody>${chapters.map((item) => `<tr><td data-label="Chapter">Chapter ${item.chapter_number}</td><td data-label="Score">${qualityBadge(item.status, item.score)}</td><td data-label="Profile">${escapeHtml(item.profile_name || "Default")}</td><td data-label="Action"><a class="button" href="#/quality/${state.currentNovelId}/${item.chapter_number}">Review</a></td></tr>`).join("") || `<tr><td>No completed translations yet.</td></tr>`}</tbody></table></div>
+  </section>`;
+}
+
+function renderTranslationMonitor(payload) {
+  const queue = payload?.queue || {};
+  return `<section class="dashboard-grid">
+    <div class="panel"><h2>Live Translation Monitor</h2><div class="metric-grid">${metric("Active Workers", payload?.active_workers ?? 0)}${metric("Utilization", `${payload?.worker_utilization ?? 0}%`)}${metric("Throughput", payload?.throughput_per_minute ? `${payload.throughput_per_minute}/min` : "Measuring")}${metric("Provider Latency", secondsMetric(payload?.average_provider_latency_seconds))}${metric("ETA", payload?.eta_seconds ? formatDuration(payload.eta_seconds) : "Unknown")}${metric("Current Chapters", (payload?.current_chapters || []).join(", ") || "Idle")}</div></div>
+    <div class="panel"><h2>Queue Health</h2><div class="metric-grid">${metric("Active Jobs", queue.active_jobs || 0)}${metric("Pending", queue.pending_items || 0)}${metric("Running", queue.running_items || 0)}${metric("Failed", queue.failed_items || 0)}${metric("Rate Limits", payload?.rate_limits || 0)}${metric("Timeouts", payload?.timeouts || 0)}</div></div>
+    <div class="table-card"><h2>Recent Failures</h2><table class="responsive-table"><tbody>${(payload?.recent_failures || []).map((item) => `<tr><td data-label="Chapter">Chapter ${item.chapter_number}</td><td data-label="Error">${escapeHtml(item.failure_category || item.error || "failed")}</td><td data-label="Attempts">${item.attempts || 0}</td></tr>`).join("") || `<tr><td>No recent failures.</td></tr>`}</tbody></table></div>
+  </section>`;
+}
+
+function renderTranslationCosts(payload) {
+  const summary = payload?.summary || {};
+  return `<section class="dashboard-grid">
+    <div class="panel"><h2>Cost Analysis</h2><div class="metric-grid">${metric("Translated", summary.translated_chapters || 0)}${metric("Total Cost", `$${Number(summary.total_cost || 0).toFixed(4)}`)}${metric("Avg / Chapter", `$${Number(summary.average_cost_per_chapter || 0).toFixed(4)}`)}${metric("Tokens", numberMetric(summary.total_tokens || 0))}</div></div>
+    <div class="table-card"><h2>Expensive Chapters</h2><table class="responsive-table"><tbody>${(payload?.expensive_chapters || []).map((item) => `<tr><td data-label="Chapter">Chapter ${item.chapter_number}</td><td data-label="Model">${escapeHtml(item.ai_model || "")}</td><td data-label="Tokens">${numberMetric(Number(item.input_tokens || 0) + Number(item.output_tokens || 0))}</td><td data-label="Cost">$${Number(item.actual_cost || 0).toFixed(4)}</td></tr>`).join("") || `<tr><td>No cost data yet.</td></tr>`}</tbody></table></div>
+    <div class="table-card"><h2>Monthly Usage</h2><table class="responsive-table"><tbody>${(payload?.monthly_usage || []).map((item) => `<tr><td data-label="Month">${escapeHtml(item.month)}</td><td data-label="Chapters">${item.chapters}</td><td data-label="Tokens">${numberMetric(item.tokens)}</td><td data-label="Cost">$${Number(item.cost || 0).toFixed(4)}</td></tr>`).join("") || `<tr><td>No monthly usage yet.</td></tr>`}</tbody></table></div>
+  </section>`;
+}
+
+function renderPromptInspector(profiles) {
+  return `<section class="dashboard-grid">
+    <form class="panel form-grid" id="promptInspectorForm"><div class="wide"><h2>Prompt Inspector</h2><p class="muted">Admin-only preview. This does not send a provider request and never displays API keys.</p></div><label>Novel<select id="promptNovel">${state.novels.map((novel) => `<option value="${novel.id}" ${novel.id === state.currentNovelId ? "selected" : ""}>${escapeHtml(novel.title || novel.id)}</option>`).join("")}</select></label><label>Chapter<input id="promptChapter" value="1"></label><label>Profile<select id="promptProfile">${profiles.map((profile) => `<option value="${escapeAttr(profile.id)}" ${profile.is_default ? "selected" : ""}>${escapeHtml(profile.name)}</option>`).join("")}</select></label><label class="inline-check"><input id="promptUseReference" type="checkbox" checked> Use Reference</label><button class="primary wide" type="submit">Preview Prompt</button></form>
+    <section class="panel" id="promptInspectorResult"><h2>Preview</h2><p class="empty-state">Run a preview to inspect section sizes, tokens, and cost estimate.</p></section>
+  </section>`;
+}
+
+function renderProfilesAdmin(profiles) {
+  const first = profiles[0] || {settings: {}};
+  return `<section class="dashboard-grid">
+    <form class="panel form-grid" id="profileEditorForm"><div class="wide"><h2>Translation Profiles</h2><p class="muted">Create or edit reusable job profiles.</p></div><label>Name<input id="profileName" value="${escapeAttr(first.name || "")}"></label><label>Base<select id="profileBase">${profiles.map((profile) => `<option value="${escapeAttr(profile.id)}">${escapeHtml(profile.name)}</option>`).join("")}</select></label><label class="wide">Writing style<textarea id="profileWritingStyle" rows="2">${escapeHtml(first.settings?.writing_style || "")}</textarea></label><label>Tense<input id="profileTense" value="${escapeAttr(first.settings?.tense || "")}"></label><label>Quote style<input id="profileQuoteStyle" value="${escapeAttr(first.settings?.quote_style || "")}"></label><label class="wide">Glossary behavior<textarea id="profileGlossaryBehavior" rows="2">${escapeHtml(first.settings?.glossary_behavior || "")}</textarea></label><label class="wide">Reference preference<textarea id="profileReferencePreference" rows="2">${escapeHtml(first.settings?.reference_preference || "")}</textarea></label><label>Title behavior<input id="profileTitleBehavior" value="${escapeAttr(first.settings?.chapter_title_behavior || "")}"></label><label>Paragraph preservation<input id="profileParagraphPreservation" value="${escapeAttr(first.settings?.paragraph_preservation || "")}"></label><div class="actions wide"><button class="primary" type="submit">Save as New Profile</button><button id="duplicateAdminProfile" type="button">Duplicate Selected</button></div></form>
+    <div class="table-card"><h2>Available Profiles</h2><table class="responsive-table"><tbody>${profiles.map((profile) => `<tr><td data-label="Profile"><strong>${escapeHtml(profile.name)}</strong><br><span>${profile.is_shared ? "Shared" : "Personal"}${profile.is_default ? " · Default" : ""}</span></td><td data-label="Style">${escapeHtml(profile.settings?.writing_style || "")}</td><td data-label="Reference">${escapeHtml(profile.settings?.reference_preference || "")}</td></tr>`).join("")}</tbody></table></div>
+  </section>`;
+}
+
+function renderGlossaryAdmin(entries) {
+  const categories = ["characters", "locations", "organizations", "abilities", "items", "titles", "aliases"];
+  return `<section class="dashboard-grid">
+    <form class="panel form-grid" id="glossaryForm"><div class="wide"><h2>Smart Glossary</h2><p class="muted">Only entries relevant to a chapter's Original text are included in prompts.</p></div><label>Category<select id="glossaryCategory">${categories.map((item) => `<option value="${item}">${titleCase(item)}</option>`).join("")}</select></label><label>Source term<input id="glossarySourceTerm" required></label><label>Preferred translation<input id="glossaryPreferred" required></label><label>Aliases<input id="glossaryAliases" placeholder="comma separated"></label><label class="inline-check"><input id="glossaryLocked" type="checkbox"> Locked</label><label class="wide">Notes<textarea id="glossaryNotes" rows="2"></textarea></label><button class="primary wide" type="submit">Save Entry</button></form>
+    <div class="table-card"><h2>Entries</h2><table class="responsive-table"><thead><tr><th>Term</th><th>Category</th><th>Translation</th><th>Usage</th><th></th></tr></thead><tbody>${entries.map((entry) => `<tr><td data-label="Term"><strong>${escapeHtml(entry.source_term)}</strong><br><span>${escapeHtml((entry.aliases || []).join(", "))}</span></td><td data-label="Category">${escapeHtml(titleCase(entry.category))}${entry.locked ? ` <span class="badge ok">Locked</span>` : ""}</td><td data-label="Translation">${escapeHtml(entry.preferred_translation)}<br><span>${escapeHtml(entry.notes || "")}</span></td><td data-label="Usage">${entry.usage_count || 0}<br><span>${entry.last_used_at ? timeAgo(entry.last_used_at) : "Never"}</span></td><td data-label="Actions"><button type="button" data-delete-glossary="${escapeAttr(entry.id)}">Delete</button></td></tr>`).join("") || `<tr><td colspan="5">No glossary entries yet.</td></tr>`}</tbody></table></div>
+  </section>`;
 }
 
 function renderTranslationPerformance(performance) {
@@ -1392,6 +1558,87 @@ function bindAdminWorkspace() {
   });
   document.querySelectorAll("#createBackupBtn").forEach((button) => button.addEventListener("click", createBackupFromAdmin));
   document.querySelector("#restorePreviewBtn")?.addEventListener("click", restorePreviewFromFile);
+  document.querySelector("#promptInspectorForm")?.addEventListener("submit", previewPromptInspector);
+  document.querySelector("#profileEditorForm")?.addEventListener("submit", saveAdminProfile);
+  document.querySelector("#duplicateAdminProfile")?.addEventListener("click", duplicateAdminProfile);
+  document.querySelector("#glossaryForm")?.addEventListener("submit", saveAdminGlossaryEntry);
+  document.querySelectorAll("[data-delete-glossary]").forEach((button) => button.addEventListener("click", deleteAdminGlossaryEntry));
+}
+
+async function previewPromptInspector(event) {
+  event.preventDefault();
+  const target = document.querySelector("#promptInspectorResult");
+  if (target) target.innerHTML = `<h2>Preview</h2><p class="muted">Inspecting prompt...</p>`;
+  try {
+    const payload = await api("/api/admin/translation/prompt-inspector", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        novel_id: document.querySelector("#promptNovel")?.value || state.currentNovelId,
+        selection_mode: "specific",
+        chapters: document.querySelector("#promptChapter")?.value || "1",
+        profile_id: document.querySelector("#promptProfile")?.value || "",
+        use_reference: document.querySelector("#promptUseReference")?.checked !== false,
+      }),
+    });
+    if (target) {
+      target.innerHTML = `<h2>Prompt Preview</h2><div class="metric-grid">${metric("Estimated tokens", payload.statistics?.estimated_total_tokens || 0)}${metric("Characters", numberMetric(payload.statistics?.prompt_characters || 0))}${metric("Cost", `$${Number(payload.estimate?.estimated_cost || 0).toFixed(4)}`)}${metric("Provider call", payload.privacy?.provider_request_sent ? "Sent" : "Not sent")}</div><table class="responsive-table"><tbody>${(payload.sections || []).map((section) => `<tr><td data-label="Section">${escapeHtml(section.name)}</td><td data-label="Characters">${numberMetric(section.characters)}</td><td data-label="Tokens">${numberMetric(section.estimated_tokens)}</td></tr>`).join("")}</tbody></table><details open><summary>Prompt text</summary><pre>${escapeHtml(payload.prompt || "")}</pre></details>`;
+    }
+  } catch (error) {
+    if (target) target.innerHTML = `<h2>Preview</h2><p class="empty-state">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function saveAdminProfile(event) {
+  event.preventDefault();
+  const payload = {
+    name: document.querySelector("#profileName")?.value || "Custom Profile",
+    settings: {
+      writing_style: document.querySelector("#profileWritingStyle")?.value || "",
+      tense: document.querySelector("#profileTense")?.value || "",
+      quote_style: document.querySelector("#profileQuoteStyle")?.value || "",
+      glossary_behavior: document.querySelector("#profileGlossaryBehavior")?.value || "",
+      reference_preference: document.querySelector("#profileReferencePreference")?.value || "",
+      chapter_title_behavior: document.querySelector("#profileTitleBehavior")?.value || "",
+      paragraph_preservation: document.querySelector("#profileParagraphPreservation")?.value || "",
+      use_reference: true,
+      smart_glossary_enabled: true,
+    },
+  };
+  await api("/api/translation/profiles", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
+  toast("Profile saved.");
+  openAdmin("profiles");
+}
+
+async function duplicateAdminProfile() {
+  const profileId = document.querySelector("#profileBase")?.value;
+  if (!profileId) return toast("Choose a profile first.");
+  await api(`/api/translation/profiles/${encodeURIComponent(profileId)}/duplicate`, {method: "POST"});
+  toast("Profile duplicated.");
+  openAdmin("profiles");
+}
+
+async function saveAdminGlossaryEntry(event) {
+  event.preventDefault();
+  const payload = {
+    category: document.querySelector("#glossaryCategory")?.value || "characters",
+    source_term: document.querySelector("#glossarySourceTerm")?.value || "",
+    preferred_translation: document.querySelector("#glossaryPreferred")?.value || "",
+    aliases: (document.querySelector("#glossaryAliases")?.value || "").split(",").map((item) => item.trim()).filter(Boolean),
+    locked: document.querySelector("#glossaryLocked")?.checked || false,
+    notes: document.querySelector("#glossaryNotes")?.value || "",
+  };
+  await api(`/api/novels/${encodeURIComponent(state.currentNovelId)}/glossary`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
+  toast("Glossary entry saved.");
+  openAdmin("glossary");
+}
+
+async function deleteAdminGlossaryEntry(event) {
+  const id = event.currentTarget.dataset.deleteGlossary;
+  if (!id || !confirm("Delete this glossary entry?")) return;
+  await api(`/api/novels/${encodeURIComponent(state.currentNovelId)}/glossary/${encodeURIComponent(id)}`, {method: "DELETE"});
+  toast("Glossary entry deleted.");
+  openAdmin("glossary");
 }
 
 async function createBackupFromAdmin() {
@@ -1658,16 +1905,23 @@ function bindReaderProgress(novelId, chapterNumber, source) {
   if (readerScrollHandler) window.removeEventListener("scroll", readerScrollHandler);
   readerScrollHandler = debounce(() => {
     const percent = readerScrollPercent();
+    updateReaderProgressBar(percent);
     localStorage.setItem(readerScrollKey(novelId, chapterNumber, source), String(percent));
     saveProgressDebounced(novelId, chapterNumber, source, percent);
     updateBackToTop();
   }, 700);
   window.addEventListener("scroll", readerScrollHandler, {passive: true});
+  updateReaderProgressBar(readerScrollPercent());
 }
 
 function updateBackToTop() {
   const button = document.querySelector("#backToTop");
   if (button) button.hidden = window.scrollY < 500;
+}
+
+function updateReaderProgressBar(percent) {
+  const fill = document.querySelector("#readerProgressFill");
+  if (fill) fill.style.width = `${Math.max(0, Math.min(100, Number(percent || 0)))}%`;
 }
 
 function readerScrollKey(novelId, chapterNumber, source) {

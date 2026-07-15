@@ -32,6 +32,95 @@ def readable(value: str | None) -> bool:
 MAX_TITLE_LENGTH = 72
 MAX_TITLE_WORDS = 10
 CHAPTER_TITLE_RE = re.compile(r"^(?:chapter|chap|ch)\s*0*\d+\b|^第\s*0*\d+\s*章", re.IGNORECASE)
+DEFAULT_TRANSLATION_PROFILES: list[dict[str, Any]] = [
+    {
+        "id": "00000000-0000-0000-0000-000000001051",
+        "name": "Natural English Novel",
+        "settings": {
+            "writing_style": "Natural, immersive English web-novel prose with clean dialogue.",
+            "tense": "Preserve source tense unless English readability requires a local adjustment.",
+            "quote_style": "Use standard English double quotation marks.",
+            "glossary_behavior": "Follow locked glossary terms exactly; apply relevant glossary entries only.",
+            "reference_preference": "Use Reference as style guidance when it clarifies tone or names.",
+            "chapter_title_behavior": "Keep existing chapter titles unless a clear English title is present.",
+            "paragraph_preservation": "Preserve paragraph breaks and dialogue line structure.",
+            "style_guide": "Prioritize fluent English, readable pacing, and consistent character voice.",
+            "use_reference": True,
+            "smart_glossary_enabled": True,
+        },
+        "default": True,
+    },
+    {
+        "id": "00000000-0000-0000-0000-000000001052",
+        "name": "Faithful Translation",
+        "settings": {
+            "writing_style": "Close, faithful English translation with minimal interpretation.",
+            "tense": "Preserve tense and aspect as closely as English allows.",
+            "quote_style": "Use standard English double quotation marks.",
+            "glossary_behavior": "Prefer locked terms and avoid synonym drift.",
+            "reference_preference": "Use Reference only to resolve ambiguity.",
+            "chapter_title_behavior": "Translate titles literally when a title is present.",
+            "paragraph_preservation": "Keep source paragraphing intact.",
+            "style_guide": "Do not embellish, compress, or add unstated details.",
+            "use_reference": True,
+            "smart_glossary_enabled": True,
+        },
+        "default": False,
+    },
+    {
+        "id": "00000000-0000-0000-0000-000000001053",
+        "name": "Reference Guided",
+        "settings": {
+            "writing_style": "Polished English that follows the available Reference for naming and tone.",
+            "tense": "Prefer the source tense; follow Reference only when it improves continuity.",
+            "quote_style": "Use standard English double quotation marks.",
+            "glossary_behavior": "Combine locked glossary terms with Reference naming conventions.",
+            "reference_preference": "Strongly prefer Reference for names, titles, and established phrasing.",
+            "chapter_title_behavior": "Use Reference title wording when it is available and coherent.",
+            "paragraph_preservation": "Preserve source paragraphs unless Reference clearly fixes a split dialogue line.",
+            "style_guide": "Use Reference for continuity, but translate the Original as the source of truth.",
+            "use_reference": True,
+            "smart_glossary_enabled": True,
+        },
+        "default": False,
+    },
+    {
+        "id": "00000000-0000-0000-0000-000000001054",
+        "name": "Fast Draft",
+        "settings": {
+            "writing_style": "Clear draft English with simple sentence flow.",
+            "tense": "Preserve source tense where practical.",
+            "quote_style": "Use standard English double quotation marks.",
+            "glossary_behavior": "Use locked terms and only the highest relevance glossary matches.",
+            "reference_preference": "Use Reference only when already available in the prompt.",
+            "chapter_title_behavior": "Keep title handling simple and conservative.",
+            "paragraph_preservation": "Preserve paragraph breaks.",
+            "style_guide": "Optimize for speed and coherence; avoid heavy stylistic polishing.",
+            "use_reference": True,
+            "smart_glossary_enabled": True,
+            "speed_preset": "fast",
+        },
+        "default": False,
+    },
+    {
+        "id": "00000000-0000-0000-0000-000000001055",
+        "name": "Publication Quality",
+        "settings": {
+            "writing_style": "Elegant, publication-ready English prose with strong continuity.",
+            "tense": "Preserve tense consistently across chapters.",
+            "quote_style": "Use standard English double quotation marks and polished dialogue tags.",
+            "glossary_behavior": "Strictly apply locked glossary terms and maintain aliases consistently.",
+            "reference_preference": "Use Reference for continuity and naming, never as the source text.",
+            "chapter_title_behavior": "Prefer polished English chapter titles without inventing events.",
+            "paragraph_preservation": "Preserve paragraph structure and scene rhythm.",
+            "style_guide": "Polish readability while preserving every source event, relationship, and reveal.",
+            "use_reference": True,
+            "smart_glossary_enabled": True,
+            "speed_preset": "careful",
+        },
+        "default": False,
+    },
+]
 
 
 @dataclass(frozen=True)
@@ -106,6 +195,7 @@ class Database:
                 conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{self.config.schema}"')
             execute_script(conn, self._schema_sql())
             self._apply_additive_migrations(conn)
+            self.ensure_default_translation_profiles(conn)
 
     def ping(self) -> bool:
         with self.connect() as conn:
@@ -126,6 +216,9 @@ class Database:
         bookmarks = self.table("bookmarks")
         favorites = self.table("favorites")
         translation_profiles = self.table("translation_profiles")
+        translation_quality_reviews = self.table("translation_quality_reviews")
+        translation_history = self.table("translation_history")
+        glossary_entries = self.table("glossary_entries")
         chapters_novel_chapter = self.index("chapters_novel_chapter")
         chapters_missing_ai = self.index("chapters_missing_ai")
         if self.config.backend == "postgres":
@@ -353,6 +446,56 @@ class Database:
             created_at {ts_type} NOT NULL,
             updated_at {ts_type} NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS {translation_quality_reviews} (
+            id {uuid_type},
+            novel_id TEXT NOT NULL REFERENCES {novels}(id) ON DELETE CASCADE,
+            chapter_number INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            score INTEGER,
+            warnings_json TEXT NOT NULL DEFAULT '[]',
+            notes TEXT,
+            reviewer_id TEXT,
+            created_at {ts_type} NOT NULL,
+            updated_at {ts_type} NOT NULL,
+            UNIQUE (novel_id, chapter_number)
+        );
+
+        CREATE TABLE IF NOT EXISTS {translation_history} (
+            id {uuid_type},
+            novel_id TEXT NOT NULL REFERENCES {novels}(id) ON DELETE CASCADE,
+            chapter_number INTEGER NOT NULL,
+            version_number INTEGER NOT NULL,
+            ai_text TEXT NOT NULL,
+            model TEXT,
+            profile_id {job_ref_type},
+            profile_name TEXT,
+            reference_used INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            actual_cost {numeric_type},
+            duration_seconds {numeric_type},
+            notes TEXT,
+            created_by TEXT,
+            created_at {ts_type} NOT NULL,
+            UNIQUE (novel_id, chapter_number, version_number)
+        );
+
+        CREATE TABLE IF NOT EXISTS {glossary_entries} (
+            id {uuid_type},
+            novel_id TEXT NOT NULL REFERENCES {novels}(id) ON DELETE CASCADE,
+            category TEXT NOT NULL,
+            source_term TEXT NOT NULL,
+            preferred_translation TEXT NOT NULL,
+            aliases_json TEXT NOT NULL DEFAULT '[]',
+            notes TEXT,
+            locked INTEGER NOT NULL DEFAULT 0,
+            usage_count INTEGER NOT NULL DEFAULT 0,
+            last_used_at {ts_type},
+            created_at {ts_type} NOT NULL,
+            updated_at {ts_type} NOT NULL,
+            UNIQUE (novel_id, source_term)
+        );
         """
 
     def _apply_additive_migrations(self, conn: Any) -> None:
@@ -417,6 +560,39 @@ class Database:
             for column, definition in columns.items():
                 if column not in existing:
                     conn.execute(f"ALTER TABLE {self.table(table)} ADD COLUMN {column} {definition}")
+
+    def ensure_default_translation_profiles(self, conn: Any | None = None) -> None:
+        def write(target: Any) -> None:
+            now = utc_now()
+            for profile in DEFAULT_TRANSLATION_PROFILES:
+                target.execute(
+                    f"""
+                    INSERT INTO {self.table('translation_profiles')} (
+                        id, user_id, name, settings_json, is_shared, is_default, created_at, updated_at
+                    )
+                    VALUES (?, NULL, ?, ?, 1, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        name = excluded.name,
+                        settings_json = excluded.settings_json,
+                        is_shared = excluded.is_shared,
+                        is_default = excluded.is_default,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        profile["id"],
+                        profile["name"],
+                        json.dumps(profile["settings"], ensure_ascii=False),
+                        1 if profile.get("default") else 0,
+                        now,
+                        now,
+                    ),
+                )
+
+        if conn is not None:
+            write(conn)
+            return
+        with self.connect() as owned:
+            write(owned)
 
     def columns(self, conn: Any, table: str) -> set[str]:
         if self.config.backend == "postgres":
@@ -941,7 +1117,7 @@ class Database:
         }
 
     def estimate_translation(self, novel_id: str, chapters: list[int], settings: dict[str, Any]) -> dict[str, Any]:
-        settings = normalized_translation_settings(settings)
+        settings = normalized_translation_settings(self.settings_with_profile(settings))
         rows = self.translation_candidates(
             novel_id,
             chapters,
@@ -997,7 +1173,7 @@ class Database:
         }
 
     def create_translation_job(self, novel_id: str, chapters: list[int], settings: dict[str, Any]) -> dict[str, Any]:
-        settings = normalized_translation_settings(settings)
+        settings = normalized_translation_settings(self.settings_with_profile(settings))
         estimate = self.estimate_translation(novel_id, chapters, settings)
         eligible = [row for row in estimate["items"] if row["eligible"]]
         batch_size = int(settings.get("batch_size") or len(eligible) or 0)
@@ -1293,6 +1469,14 @@ class Database:
         use_reference = bool(settings.get("use_reference", True))
         original_text = chapter["original_text"] if chapter is not None else ""
         reference_text = chapter["reference_text"] if chapter is not None and use_reference else None
+        if original_text and bool(settings.get("smart_glossary_enabled", True)):
+            settings = dict(settings)
+            settings["glossary"] = self.relevant_glossary_for_text(
+                str(job["novel_id"]),
+                original_text,
+                str(settings.get("glossary") or ""),
+                update_usage=True,
+            )
         claim_duration_seconds = time.perf_counter() - claim_started
         return {
             "ok": True,
@@ -1361,7 +1545,12 @@ class Database:
             if job["status"] == "cancelled":
                 return {"ok": True, "status": "cancelled", "message": "Job was cancelled before save."}
             chapter = conn.execute(
-                f"SELECT original_text, reference_text FROM {self.table('chapters')} WHERE novel_id = ? AND chapter_number = ?",
+                f"""
+                SELECT original_text, reference_text, ai_text, ai_model,
+                    input_tokens, output_tokens, actual_cost, translated_at
+                FROM {self.table('chapters')}
+                WHERE novel_id = ? AND chapter_number = ?
+                """,
                 (job["novel_id"], item["chapter_number"]),
             ).fetchone()
             original_chars = len(chapter["original_text"] or "") if chapter else 0
@@ -1395,6 +1584,7 @@ class Database:
                 values = translation_result_values(result)
                 text = values["text"]
                 metrics.update(values.get("metrics") or {})
+                self._record_translation_history(conn, job, item, chapter, text, values, metrics, worker_id, now)
                 conn.execute(
                     f"""
                     UPDATE {self.table('chapters')}
@@ -1434,6 +1624,94 @@ class Database:
         if telemetry and not self.safe_record_translation_performance(*telemetry):
             refreshed["telemetry_warning"] = "performance_telemetry_failed"
         return refreshed
+
+    def _record_translation_history(
+        self,
+        conn: Any,
+        job: Any,
+        item: Any,
+        chapter: Any,
+        new_text: str,
+        values: dict[str, Any],
+        metrics: dict[str, Any],
+        worker_id: str,
+        now: str,
+    ) -> None:
+        if not readable(new_text):
+            return
+        settings = {}
+        try:
+            settings = json.loads(job["settings_json"] or "{}") if job["settings_json"] else {}
+        except Exception:
+            settings = {}
+        novel_id = str(job["novel_id"])
+        chapter_number = int(item["chapter_number"])
+        version_row = conn.execute(
+            f"""
+            SELECT COALESCE(MAX(version_number), 0) AS max_version, COUNT(*) AS total
+            FROM {self.table('translation_history')}
+            WHERE novel_id = ? AND chapter_number = ?
+            """,
+            (novel_id, chapter_number),
+        ).fetchone()
+        next_version = int(version_row["max_version"] or 0) + 1
+        existing_text = chapter["ai_text"] if chapter is not None else None
+        reference_used = 1 if chapter is not None and readable(chapter["reference_text"]) and bool(settings.get("use_reference", True)) else 0
+        profile_id = str(settings.get("profile_id") or "").strip() or None
+        profile_name = str(settings.get("profile_name") or settings.get("profile") or "").strip() or None
+
+        def insert_version(text: str, version: int, note: str, model: str | None, input_tokens: Any, output_tokens: Any, cost: Any, duration: Any) -> None:
+            conn.execute(
+                f"""
+                INSERT INTO {self.table('translation_history')} (
+                    id, novel_id, chapter_number, version_number, ai_text, model,
+                    profile_id, profile_name, reference_used, input_tokens, output_tokens,
+                    actual_cost, duration_seconds, notes, created_by, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    novel_id,
+                    chapter_number,
+                    version,
+                    text,
+                    model,
+                    profile_id,
+                    profile_name,
+                    reference_used,
+                    optional_int(input_tokens),
+                    optional_int(output_tokens),
+                    optional_float(cost),
+                    optional_float(duration),
+                    note,
+                    worker_id,
+                    now,
+                ),
+            )
+
+        if int(version_row["total"] or 0) == 0 and readable(existing_text) and existing_text.strip() != new_text.strip():
+            insert_version(
+                existing_text,
+                next_version,
+                "Existing AI text before v10.5 retranslation.",
+                chapter["ai_model"] if chapter is not None else None,
+                chapter["input_tokens"] if chapter is not None else None,
+                chapter["output_tokens"] if chapter is not None else None,
+                chapter["actual_cost"] if chapter is not None else None,
+                None,
+            )
+            next_version += 1
+        insert_version(
+            new_text,
+            next_version,
+            "Translation completed.",
+            str(job["model"] or ""),
+            values.get("input_tokens"),
+            values.get("output_tokens"),
+            values.get("actual_cost"),
+            metrics.get("total_duration_seconds") or metrics.get("provider_wait_seconds"),
+        )
 
     def _store_translation_item_metrics(self, conn: Any, item_id: int, metrics: dict[str, Any]) -> None:
         allowed = {
@@ -1939,6 +2217,492 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def translation_profiles(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        params: list[Any] = []
+        where = "WHERE is_shared = 1"
+        if user_id:
+            where = "WHERE is_shared = 1 OR user_id = ?"
+            params.append(user_id)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM {self.table('translation_profiles')}
+                {where}
+                ORDER BY is_default DESC, is_shared DESC, LOWER(name)
+                """,
+                tuple(params),
+            ).fetchall()
+        return [public_translation_profile_row(row) for row in rows]
+
+    def translation_profile(self, profile_id: str | None = None, name: str | None = None) -> dict[str, Any] | None:
+        if not profile_id and not name:
+            return None
+        with self.connect() as conn:
+            if profile_id:
+                row = conn.execute(f"SELECT * FROM {self.table('translation_profiles')} WHERE id = ?", (profile_id,)).fetchone()
+            else:
+                row = conn.execute(
+                    f"SELECT * FROM {self.table('translation_profiles')} WHERE LOWER(name) = LOWER(?) ORDER BY is_shared DESC LIMIT 1",
+                    (name,),
+                ).fetchone()
+        return public_translation_profile_row(row) if row else None
+
+    def save_translation_profile(self, payload: dict[str, Any], user_id: str | None = None, shared: bool = False) -> dict[str, Any]:
+        now = utc_now()
+        profile_id = str(payload.get("id") or uuid.uuid4())
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise ValueError("profile_name_required")
+        settings = normalize_profile_settings(payload.get("settings") if isinstance(payload.get("settings"), dict) else payload)
+        with self.connect() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO {self.table('translation_profiles')} (
+                    id, user_id, name, settings_json, is_shared, is_default, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    name = excluded.name,
+                    settings_json = excluded.settings_json,
+                    is_shared = excluded.is_shared,
+                    updated_at = excluded.updated_at
+                """,
+                (profile_id, user_id, name, json.dumps(settings, ensure_ascii=False), 1 if shared else 0, now, now),
+            )
+        return self.translation_profile(profile_id=profile_id) or {}
+
+    def duplicate_translation_profile(self, profile_id: str, user_id: str | None = None) -> dict[str, Any]:
+        source = self.translation_profile(profile_id=profile_id)
+        if not source:
+            raise ValueError("translation_profile_not_found")
+        payload = {
+            "name": f"{source['name']} Copy",
+            "settings": source.get("settings") or {},
+        }
+        return self.save_translation_profile(payload, user_id=user_id, shared=False)
+
+    def settings_with_profile(self, settings: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(settings or {})
+        profile = self.translation_profile(profile_id=str(payload.get("profile_id") or "").strip() or None)
+        if profile is None and payload.get("profile"):
+            profile = self.translation_profile(name=str(payload.get("profile") or ""))
+        if not profile:
+            return payload
+        merged = {**(profile.get("settings") or {}), **payload}
+        merged["profile_id"] = profile["id"]
+        merged["profile_name"] = profile["name"]
+        merged["profile"] = profile["name"]
+        return merged
+
+    def glossary_entries(self, novel_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM {self.table('glossary_entries')}
+                WHERE novel_id = ?
+                ORDER BY locked DESC, category, LOWER(source_term)
+                """,
+                (novel_id,),
+            ).fetchall()
+        return [glossary_entry_row(row) for row in rows]
+
+    def save_glossary_entry(self, novel_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        now = utc_now()
+        entry_id = str(payload.get("id") or uuid.uuid4())
+        category = normalize_glossary_category(payload.get("category"))
+        source_term = str(payload.get("source_term") or payload.get("term") or "").strip()
+        preferred = str(payload.get("preferred_translation") or payload.get("translation") or "").strip()
+        if not source_term or not preferred:
+            raise ValueError("glossary_term_and_translation_required")
+        aliases = json.dumps(json_list(payload.get("aliases")), ensure_ascii=False)
+        with self.connect() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO {self.table('glossary_entries')} (
+                    id, novel_id, category, source_term, preferred_translation, aliases_json,
+                    notes, locked, usage_count, last_used_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)
+                ON CONFLICT(novel_id, source_term) DO UPDATE SET
+                    category = excluded.category,
+                    preferred_translation = excluded.preferred_translation,
+                    aliases_json = excluded.aliases_json,
+                    notes = excluded.notes,
+                    locked = excluded.locked,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    entry_id,
+                    novel_id,
+                    category,
+                    source_term,
+                    preferred,
+                    aliases,
+                    payload.get("notes"),
+                    1 if payload.get("locked") else 0,
+                    now,
+                    now,
+                ),
+            )
+        entries = self.glossary_entries(novel_id)
+        return next((entry for entry in entries if entry["source_term"] == source_term), entries[-1] if entries else {})
+
+    def delete_glossary_entry(self, novel_id: str, entry_id: str) -> None:
+        with self.connect() as conn:
+            conn.execute(f"DELETE FROM {self.table('glossary_entries')} WHERE novel_id = ? AND id = ?", (novel_id, entry_id))
+
+    def import_glossary_entries(self, novel_id: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+        saved = 0
+        invalid = 0
+        for row in rows:
+            try:
+                self.save_glossary_entry(novel_id, row)
+                saved += 1
+            except Exception:
+                invalid += 1
+        return {"ok": True, "saved": saved, "invalid": invalid, "entries": self.glossary_entries(novel_id)}
+
+    def relevant_glossary_for_text(
+        self,
+        novel_id: str,
+        original_text: str | None,
+        existing_text: str | None = "",
+        update_usage: bool = False,
+        max_entries: int = 80,
+    ) -> str:
+        text = original_text or ""
+        entries = self.glossary_entries(novel_id)
+        matched: list[dict[str, Any]] = []
+        for entry in entries:
+            probes = [entry.get("source_term") or "", *json_list(entry.get("aliases"))]
+            if any(term and term in text for term in probes):
+                matched.append(entry)
+        selected = matched[:max_entries]
+        if update_usage and selected:
+            now = utc_now()
+            with self.connect() as conn:
+                for entry in selected:
+                    conn.execute(
+                        f"""
+                        UPDATE {self.table('glossary_entries')}
+                        SET usage_count = usage_count + 1, last_used_at = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (now, now, entry["id"]),
+                    )
+        lines = [line.strip() for line in str(existing_text or "").splitlines() if line.strip()]
+        for entry in selected:
+            line = f"{entry['source_term']} => {entry['preferred_translation']} [{entry['category']}]"
+            if entry.get("locked"):
+                line += " locked"
+            if entry.get("notes"):
+                line += f" - {entry['notes']}"
+            lines.append(line)
+        return "\n".join(lines[:max_entries])
+
+    def translation_quality_workspace(self, novel_id: str, limit: int = 500) -> dict[str, Any]:
+        novel = self.novel(novel_id)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT chapter_number, title, original_char_count, reference_char_count, ai_char_count,
+                    ai_model, input_tokens, output_tokens, actual_cost, translated_at, ai_text, original_text, reference_text
+                FROM {self.table('chapters')}
+                WHERE novel_id = ?
+                    AND ai_text IS NOT NULL
+                    AND LENGTH(TRIM(ai_text)) > 0
+                ORDER BY chapter_number
+                LIMIT ?
+                """,
+                (novel_id, int(limit)),
+            ).fetchall()
+            chapters: list[dict[str, Any]] = []
+            for row in rows:
+                item = self._latest_completed_translation_item(conn, novel_id, int(row["chapter_number"]))
+                review = self._quality_review(conn, novel_id, int(row["chapter_number"]))
+                chapters.append(quality_chapter_row(row, item, review))
+        score_values = [item["score"] for item in chapters if item.get("score") is not None]
+        needs = [item for item in chapters if item.get("status") in {"needs_review", "needs_retranslation"}]
+        return {
+            "ok": True,
+            "novel": novel,
+            "chapters": chapters,
+            "summary": {
+                "translated": len(chapters),
+                "average_score": round(sum(score_values) / len(score_values), 1) if score_values else None,
+                "needs_review": len(needs),
+                "reference_available": sum(1 for item in chapters if item.get("reference_available")),
+                "profile_count": len({item.get("profile_name") for item in chapters if item.get("profile_name")}),
+            },
+        }
+
+    def translation_quality_detail(self, novel_id: str, chapter_number: int, include_reference: bool = False) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT *
+                FROM {self.table('chapters')}
+                WHERE novel_id = ? AND chapter_number = ?
+                """,
+                (novel_id, int(chapter_number)),
+            ).fetchone()
+            if row is None:
+                return {"ok": False, "detail": "chapter_not_found"}
+            item = self._latest_completed_translation_item(conn, novel_id, int(chapter_number))
+            review = self._quality_review(conn, novel_id, int(chapter_number))
+        quality = quality_chapter_row(row, item, review)
+        reference_available = readable(row["reference_text"])
+        return {
+            "ok": True,
+            "novel_id": novel_id,
+            "chapter_number": int(chapter_number),
+            "title": display_chapter_title(int(chapter_number), row["title"]),
+            "quality": quality,
+            "original": {"ok": readable(row["original_text"]), "text": row["original_text"] or ""},
+            "reference": {
+                "ok": bool(include_reference and reference_available),
+                "available": reference_available,
+                "hidden": bool(reference_available and not include_reference),
+                "text": row["reference_text"] if include_reference and reference_available else "",
+            },
+            "ai": {"ok": readable(row["ai_text"]), "text": row["ai_text"] or ""},
+            "history": self.translation_history(novel_id, int(chapter_number)),
+        }
+
+    def save_quality_review(self, novel_id: str, chapter_number: int, payload: dict[str, Any], reviewer_id: str | None = None) -> dict[str, Any]:
+        now = utc_now()
+        status = str(payload.get("status") or "needs_review").lower().replace("-", "_")
+        if status not in {"excellent", "good", "needs_review", "needs_retranslation"}:
+            status = "needs_review"
+        score = optional_int(payload.get("score"))
+        if score is not None:
+            score = max(0, min(100, score))
+        warnings = json.dumps(json_list(payload.get("warnings")), ensure_ascii=False)
+        with self.connect() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO {self.table('translation_quality_reviews')} (
+                    id, novel_id, chapter_number, status, score, warnings_json,
+                    notes, reviewer_id, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(novel_id, chapter_number) DO UPDATE SET
+                    status = excluded.status,
+                    score = excluded.score,
+                    warnings_json = excluded.warnings_json,
+                    notes = excluded.notes,
+                    reviewer_id = excluded.reviewer_id,
+                    updated_at = excluded.updated_at
+                """,
+                (str(uuid.uuid4()), novel_id, int(chapter_number), status, score, warnings, payload.get("notes"), reviewer_id, now, now),
+            )
+        return self.translation_quality_detail(novel_id, int(chapter_number), include_reference=False)["quality"]
+
+    def translation_history(self, novel_id: str, chapter_number: int) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM {self.table('translation_history')}
+                WHERE novel_id = ? AND chapter_number = ?
+                ORDER BY version_number DESC
+                """,
+                (novel_id, int(chapter_number)),
+            ).fetchall()
+        return [translation_history_row(row) for row in rows]
+
+    def restore_translation_history(self, novel_id: str, chapter_number: int, history_id: str, user_id: str | None = None) -> dict[str, Any]:
+        now = utc_now()
+        with self.connect() as conn:
+            history = conn.execute(
+                f"SELECT * FROM {self.table('translation_history')} WHERE id = ? AND novel_id = ? AND chapter_number = ?",
+                (history_id, novel_id, int(chapter_number)),
+            ).fetchone()
+            if history is None:
+                raise ValueError("translation_history_not_found")
+            conn.execute(
+                f"""
+                UPDATE {self.table('chapters')}
+                SET ai_text = ?, ai_char_count = ?, ai_model = COALESCE(?, ai_model),
+                    input_tokens = ?, output_tokens = ?, actual_cost = ?,
+                    translation_status = 'translated', translation_error = NULL,
+                    translated_at = ?, updated_at = ?
+                WHERE novel_id = ? AND chapter_number = ?
+                """,
+                (
+                    history["ai_text"],
+                    len(history["ai_text"] or ""),
+                    history["model"],
+                    history["input_tokens"],
+                    history["output_tokens"],
+                    history["actual_cost"],
+                    now,
+                    now,
+                    novel_id,
+                    int(chapter_number),
+                ),
+            )
+            version_row = conn.execute(
+                f"""
+                SELECT COALESCE(MAX(version_number), 0) + 1 AS next_version
+                FROM {self.table('translation_history')}
+                WHERE novel_id = ? AND chapter_number = ?
+                """,
+                (novel_id, int(chapter_number)),
+            ).fetchone()
+            conn.execute(
+                f"""
+                INSERT INTO {self.table('translation_history')} (
+                    id, novel_id, chapter_number, version_number, ai_text, model,
+                    profile_id, profile_name, reference_used, input_tokens, output_tokens,
+                    actual_cost, duration_seconds, notes, created_by, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    novel_id,
+                    int(chapter_number),
+                    int(version_row["next_version"] or 1),
+                    history["ai_text"],
+                    history["model"],
+                    history["profile_id"],
+                    history["profile_name"],
+                    int(history["reference_used"] or 0),
+                    history["input_tokens"],
+                    history["output_tokens"],
+                    history["actual_cost"],
+                    history["duration_seconds"],
+                    f"Restored version {history['version_number']}",
+                    user_id,
+                    now,
+                ),
+            )
+        return self.translation_quality_detail(novel_id, int(chapter_number), include_reference=False)
+
+    def translation_monitor(self, novel_id: str | None = None) -> dict[str, Any]:
+        diagnostics = self.translation_performance_diagnostics(novel_id=novel_id, limit=30)
+        jobs = [job for job in (diagnostics.get("jobs") or []) if job]
+        items = [item for job in jobs for item in job.get("items", [])]
+        active_jobs = [job for job in jobs if job.get("status") in {"queued", "running", "paused"}]
+        running = [item for item in items if item.get("status") == "running"]
+        pending = [item for item in items if item.get("status") == "pending"]
+        completed = sorted([item for item in items if item.get("status") == "completed"], key=lambda item: str(item.get("finished_at") or ""), reverse=True)
+        failed = sorted([item for item in items if item.get("status") == "failed"], key=lambda item: str(item.get("finished_at") or item.get("updated_at") or ""), reverse=True)
+        runtime = diagnostics.get("runtime") or {}
+        simple = diagnostics.get("simple") or {}
+        advanced = diagnostics.get("advanced") or {}
+        active_workers = int(simple.get("active_workers") or 0)
+        worker_cap = int(runtime.get("global_worker_cap") or 8)
+        return {
+            "ok": True,
+            "novel_id": novel_id,
+            "active_workers": active_workers,
+            "worker_utilization": round(active_workers / max(1, worker_cap) * 100, 1),
+            "current_chapters": [int(item.get("chapter_number") or 0) for item in running],
+            "average_provider_latency_seconds": advanced.get("average_provider_wait_seconds"),
+            "throughput_per_minute": simple.get("current_speed"),
+            "eta_seconds": simple.get("estimated_remaining_seconds"),
+            "queue": {
+                "active_jobs": len(active_jobs),
+                "pending_items": len(pending),
+                "running_items": len(running),
+                "failed_items": len(failed),
+            },
+            "rate_limits": advanced.get("rate_limited_count") or 0,
+            "timeouts": advanced.get("timeout_count") or 0,
+            "recent_completed": completed[:10],
+            "recent_failures": failed[:10],
+            "health": [job.get("health") for job in active_jobs if job.get("health")],
+        }
+
+    def translation_cost_analysis(self, novel_id: str | None = None) -> dict[str, Any]:
+        where = "WHERE ai_text IS NOT NULL AND LENGTH(TRIM(ai_text)) > 0"
+        params: list[Any] = []
+        if novel_id:
+            where += " AND novel_id = ?"
+            params.append(novel_id)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT novel_id, chapter_number, ai_model, input_tokens, output_tokens, actual_cost, translated_at
+                FROM {self.table('chapters')}
+                {where}
+                ORDER BY translated_at DESC
+                """,
+                tuple(params),
+            ).fetchall()
+        chapters = [dict(row) for row in rows]
+        total_cost = sum(float(item.get("actual_cost") or 0) for item in chapters)
+        token_total = sum(int(item.get("input_tokens") or 0) + int(item.get("output_tokens") or 0) for item in chapters)
+        monthly: dict[str, dict[str, Any]] = {}
+        for item in chapters:
+            month = str(item.get("translated_at") or "unknown")[:7]
+            bucket = monthly.setdefault(month, {"month": month, "chapters": 0, "cost": 0.0, "tokens": 0})
+            bucket["chapters"] += 1
+            bucket["cost"] += float(item.get("actual_cost") or 0)
+            bucket["tokens"] += int(item.get("input_tokens") or 0) + int(item.get("output_tokens") or 0)
+        expensive = sorted(chapters, key=lambda item: float(item.get("actual_cost") or 0), reverse=True)[:10]
+        return {
+            "ok": True,
+            "novel_id": novel_id,
+            "summary": {
+                "translated_chapters": len(chapters),
+                "total_cost": round(total_cost, 6),
+                "total_tokens": token_total,
+                "average_cost_per_chapter": round(total_cost / len(chapters), 6) if chapters else 0,
+            },
+            "expensive_chapters": expensive,
+            "monthly_usage": [dict(bucket, cost=round(bucket["cost"], 6)) for bucket in sorted(monthly.values(), key=lambda row: row["month"], reverse=True)],
+        }
+
+    def retranslation_chapters(self, novel_id: str, payload: dict[str, Any], selected: list[int]) -> list[int]:
+        mode = str(payload.get("mode") or payload.get("retranslation_mode") or "selected").lower()
+        if mode == "failed":
+            with self.connect() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT DISTINCT chapter_number
+                    FROM {self.table('translation_job_items')}
+                    WHERE novel_id = ? AND status = 'failed'
+                    ORDER BY chapter_number
+                    """,
+                    (novel_id,),
+                ).fetchall()
+            return [int(row["chapter_number"]) for row in rows]
+        if mode == "low-quality":
+            workspace = self.translation_quality_workspace(novel_id, limit=5000)
+            return [int(item["chapter_number"]) for item in workspace["chapters"] if item.get("status") in {"needs_review", "needs_retranslation"} or int(item.get("score") or 0) < 72]
+        return selected
+
+    def _latest_completed_translation_item(self, conn: Any, novel_id: str, chapter_number: int) -> dict[str, Any] | None:
+        row = conn.execute(
+            f"""
+            SELECT i.*, j.settings_json, j.model AS job_model
+            FROM {self.table('translation_job_items')} i
+            JOIN {self.table('translation_jobs')} j ON j.id = i.job_id
+            WHERE i.novel_id = ? AND i.chapter_number = ? AND i.status = 'completed'
+            ORDER BY i.finished_at DESC
+            LIMIT 1
+            """,
+            (novel_id, int(chapter_number)),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def _quality_review(self, conn: Any, novel_id: str, chapter_number: int) -> dict[str, Any] | None:
+        row = conn.execute(
+            f"""
+            SELECT *
+            FROM {self.table('translation_quality_reviews')}
+            WHERE novel_id = ? AND chapter_number = ?
+            """,
+            (novel_id, int(chapter_number)),
+        ).fetchone()
+        return quality_review_row(row) if row else None
+
     def missing_data(self, novel_id: str) -> dict[str, Any]:
         reference_start, reference_end = self.reference_range(novel_id)
         with self.connect() as conn:
@@ -2018,6 +2782,9 @@ class Database:
             "bookmarks",
             "favorites",
             "translation_profiles",
+            "translation_quality_reviews",
+            "translation_history",
+            "glossary_entries",
         ]
         tables: dict[str, list[dict[str, Any]]] = {}
         errors: dict[str, str] = {}
@@ -2033,7 +2800,7 @@ class Database:
         table_counts = {name: len(rows) for name, rows in tables.items()}
         manifest = {
             "format_version": "godtranslator-v10-platform-backup.v1",
-            "app_version": "10.3.0",
+            "app_version": "10.5.0",
             "schema": self.config.schema,
             "created_at": utc_now(),
             "table_counts": table_counts,
@@ -2069,6 +2836,9 @@ class Database:
             "bookmarks": ["id"],
             "favorites": ["user_id", "novel_id"],
             "translation_profiles": ["id"],
+            "translation_quality_reviews": ["id"],
+            "translation_history": ["id"],
+            "glossary_entries": ["id"],
         }
         changes: dict[str, dict[str, Any]] = {}
         valid_tables = 0
@@ -2299,6 +3069,210 @@ def personal_bookmark_row(row: Any) -> dict[str, Any]:
     }
 
 
+def public_translation_profile_row(row: Any) -> dict[str, Any]:
+    payload = dict(row)
+    settings = safe_json(payload.get("settings_json"), {})
+    return {
+        "id": str(payload.get("id")),
+        "user_id": payload.get("user_id"),
+        "name": payload.get("name") or "",
+        "settings": settings,
+        "is_shared": bool(payload.get("is_shared")),
+        "is_default": bool(payload.get("is_default")),
+        "created_at": payload.get("created_at"),
+        "updated_at": payload.get("updated_at"),
+    }
+
+
+def normalize_profile_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    fields = [
+        "writing_style",
+        "tense",
+        "quote_style",
+        "glossary_behavior",
+        "reference_preference",
+        "chapter_title_behavior",
+        "paragraph_preservation",
+        "style_guide",
+        "speed_preset",
+    ]
+    settings: dict[str, Any] = {}
+    for field in fields:
+        value = payload.get(field)
+        if value is not None:
+            settings[field] = str(value).strip()
+    for field in ("use_reference", "smart_glossary_enabled"):
+        if field in payload:
+            settings[field] = bool(payload.get(field))
+    if payload.get("glossary"):
+        settings["glossary"] = str(payload.get("glossary") or "")
+    return settings
+
+
+def normalize_glossary_category(value: Any) -> str:
+    allowed = {"characters", "locations", "organizations", "abilities", "items", "titles", "aliases"}
+    category = str(value or "characters").strip().lower().replace(" ", "_")
+    aliases = {
+        "character": "characters",
+        "location": "locations",
+        "organization": "organizations",
+        "ability": "abilities",
+        "item": "items",
+        "title": "titles",
+        "alias": "aliases",
+    }
+    category = aliases.get(category, category)
+    return category if category in allowed else "characters"
+
+
+def glossary_entry_row(row: Any) -> dict[str, Any]:
+    payload = dict(row)
+    return {
+        "id": str(payload.get("id")),
+        "novel_id": payload.get("novel_id"),
+        "category": payload.get("category") or "characters",
+        "source_term": payload.get("source_term") or "",
+        "preferred_translation": payload.get("preferred_translation") or "",
+        "aliases": json_list(payload.get("aliases_json")),
+        "notes": payload.get("notes") or "",
+        "locked": bool(payload.get("locked")),
+        "usage_count": int(payload.get("usage_count") or 0),
+        "last_used_at": payload.get("last_used_at"),
+        "created_at": payload.get("created_at"),
+        "updated_at": payload.get("updated_at"),
+    }
+
+
+def quality_review_row(row: Any) -> dict[str, Any]:
+    payload = dict(row)
+    return {
+        "id": str(payload.get("id")),
+        "status": payload.get("status") or "needs_review",
+        "score": optional_int(payload.get("score")),
+        "warnings": json_list(payload.get("warnings_json")),
+        "notes": payload.get("notes") or "",
+        "reviewer_id": payload.get("reviewer_id"),
+        "created_at": payload.get("created_at"),
+        "updated_at": payload.get("updated_at"),
+    }
+
+
+def quality_chapter_row(row: Any, item: dict[str, Any] | None, review: dict[str, Any] | None) -> dict[str, Any]:
+    chapter = dict(row)
+    chapter_number = int(chapter.get("chapter_number") or 0)
+    original_chars = int(chapter.get("original_char_count") or len(chapter.get("original_text") or ""))
+    reference_chars = int(chapter.get("reference_char_count") or len(chapter.get("reference_text") or ""))
+    ai_chars = int(chapter.get("ai_char_count") or len(chapter.get("ai_text") or ""))
+    reference_available = reference_chars > 0 or readable(chapter.get("reference_text"))
+    warnings: list[str] = []
+    score = 88
+    if not ai_chars:
+        score = 0
+        warnings.append("missing_ai")
+    if not reference_available:
+        score -= 3
+        warnings.append("reference_missing")
+    if original_chars and ai_chars and ai_chars < max(80, original_chars * 0.18):
+        score -= 20
+        warnings.append("ai_much_shorter_than_original")
+    attempts = int(item.get("attempts") or 0) if item else 0
+    if attempts > 1:
+        score -= min(18, (attempts - 1) * 6)
+        warnings.append("retry_used")
+    prompt_tokens = sum(int(item.get(key) or 0) for key in ("prompt_instruction_tokens", "prompt_original_tokens", "prompt_reference_tokens")) if item else 0
+    if prompt_tokens > 12000:
+        score -= 8
+        warnings.append("large_prompt")
+    duration = optional_float(item.get("total_duration_seconds") if item else None)
+    if duration and duration > 300:
+        score -= 4
+        warnings.append("slow_provider_or_save")
+    if item is None:
+        score -= 5
+        warnings.append("translation_metrics_missing")
+    score = max(0, min(100, score))
+    settings = safe_json(item.get("settings_json") if item else None, {})
+    if review:
+        warnings.extend(item for item in review.get("warnings", []) if item not in warnings)
+        if review.get("score") is not None:
+            score = int(review["score"])
+        status = review.get("status") or "needs_review"
+    elif score >= 92:
+        status = "excellent"
+    elif score >= 78:
+        status = "good"
+    elif score >= 58:
+        status = "needs_review"
+    else:
+        status = "needs_retranslation"
+    return {
+        "chapter_number": chapter_number,
+        "title": display_chapter_title(chapter_number, chapter.get("title")),
+        "status": status,
+        "score": score,
+        "warnings": warnings,
+        "reference_available": reference_available,
+        "profile_id": settings.get("profile_id"),
+        "profile_name": settings.get("profile_name") or settings.get("profile") or "Default",
+        "model": item.get("model") if item else chapter.get("ai_model"),
+        "prompt_tokens": prompt_tokens,
+        "input_tokens": optional_int(item.get("input_tokens") if item else chapter.get("input_tokens")),
+        "output_tokens": optional_int(item.get("output_tokens") if item else chapter.get("output_tokens")),
+        "actual_cost": optional_float(item.get("actual_cost") if item else chapter.get("actual_cost")),
+        "duration_seconds": duration,
+        "retry_count": max(0, attempts - 1),
+        "translated_at": item.get("finished_at") if item else chapter.get("translated_at"),
+        "review": review,
+    }
+
+
+def translation_history_row(row: Any) -> dict[str, Any]:
+    payload = dict(row)
+    return {
+        "id": str(payload.get("id")),
+        "novel_id": payload.get("novel_id"),
+        "chapter_number": int(payload.get("chapter_number") or 0),
+        "version_number": int(payload.get("version_number") or 0),
+        "ai_text": payload.get("ai_text") or "",
+        "model": payload.get("model"),
+        "profile_id": str(payload.get("profile_id")) if payload.get("profile_id") else None,
+        "profile_name": payload.get("profile_name"),
+        "reference_used": bool(payload.get("reference_used")),
+        "input_tokens": optional_int(payload.get("input_tokens")),
+        "output_tokens": optional_int(payload.get("output_tokens")),
+        "actual_cost": optional_float(payload.get("actual_cost")),
+        "duration_seconds": optional_float(payload.get("duration_seconds")),
+        "notes": payload.get("notes") or "",
+        "created_by": payload.get("created_by"),
+        "created_at": payload.get("created_at"),
+    }
+
+
+def safe_json(value: Any, default: Any) -> Any:
+    if isinstance(value, (dict, list)):
+        return value
+    if not value:
+        return default
+    try:
+        return json.loads(str(value))
+    except Exception:
+        return default
+
+
+def json_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if value is None:
+        return []
+    text = str(value).strip()
+    if not text:
+        return []
+    parsed = safe_json(text, None)
+    if isinstance(parsed, list):
+        return [str(item).strip() for item in parsed if str(item).strip()]
+    return [item.strip() for item in re.split(r"[\n,]", text) if item.strip()]
+
+
 def optional_int(value: Any) -> int | None:
     if value is None or value == "":
         return None
@@ -2363,6 +3337,23 @@ def normalized_translation_settings(settings: dict[str, Any]) -> dict[str, Any]:
     payload["stop_on_budget"] = bool(payload.get("stop_on_budget", True))
     payload["max_total_budget"] = optional_float(payload.get("max_total_budget"))
     payload["max_per_chapter_budget"] = optional_float(payload.get("max_per_chapter_budget"))
+    payload["smart_glossary_enabled"] = bool(payload.get("smart_glossary_enabled", True))
+    for field in (
+        "profile_id",
+        "profile",
+        "profile_name",
+        "writing_style",
+        "tense",
+        "quote_style",
+        "glossary_behavior",
+        "reference_preference",
+        "chapter_title_behavior",
+        "paragraph_preservation",
+        "style_guide",
+        "glossary",
+    ):
+        if field in payload and payload[field] is not None:
+            payload[field] = str(payload[field])
     return payload
 
 
