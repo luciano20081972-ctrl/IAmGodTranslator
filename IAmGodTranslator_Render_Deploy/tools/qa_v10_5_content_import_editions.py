@@ -160,6 +160,122 @@ class ContentImportEditionTests(unittest.TestCase):
         self.assertEqual(editions[0]["edition_type"], "AI")
         self.assertEqual(db.chapter_text("legacy-ai", 1, "english")["text"], "Legacy English")
 
+    def test_legacy_ai_timestamp_migration_is_safe_and_idempotent(self) -> None:
+        db = self.make_db()
+        db.save_novel_metadata("timestamp-fixture", {"title": "Timestamp Fixture"})
+        cases = [
+            (1, "Valid timestamp", "2026-02-03T04:05:06+00:00", "2026-01-01T00:00:00+00:00", "2026-02-03T04:05:06+00:00"),
+            (2, "Null timestamp", None, "2026-01-02T00:00:00+00:00", "2026-01-02T00:00:00+00:00"),
+            (3, "Empty timestamp", "", "2026-01-03T00:00:00+00:00", "2026-01-03T00:00:00+00:00"),
+            (4, "Malformed timestamp", "not-a-timestamp", "2026-01-04T00:00:00+00:00", "2026-01-04T00:00:00+00:00"),
+            (5, "Partial migration", "bad-partial", "2026-01-05T00:00:00+00:00", "2026-01-05T00:00:00+00:00"),
+            (6, "Existing official default", None, "2026-01-06T00:00:00+00:00", "2026-01-06T00:00:00+00:00"),
+        ]
+        with db.connect() as conn:
+            for chapter_number, text, translated_at, created_at, _expected_created_at in cases:
+                conn.execute(
+                    f"""
+                    INSERT INTO {db.table('chapters')} (
+                        novel_id, chapter_number, title, ai_text, ai_char_count,
+                        translation_status, created_at, updated_at, translated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, 'translated', ?, ?, ?)
+                    """,
+                    (
+                        "timestamp-fixture",
+                        chapter_number,
+                        f"Chapter {chapter_number}",
+                        text,
+                        len(text),
+                        created_at,
+                        created_at,
+                        translated_at,
+                    ),
+                )
+            conn.execute(
+                f"""
+                INSERT INTO {db.table('chapter_editions')} (
+                    novel_id, chapter_number, edition_key, language, edition_type,
+                    source_label, text, character_count, is_default, metadata_json, created_at, updated_at
+                )
+                VALUES (?, 5, 'ai', 'en', 'AI', 'Legacy AI', 'Old partial text', 16, 1, '{{}}',
+                    '2026-01-05T00:00:00+00:00', '2026-01-05T00:00:00+00:00')
+                """,
+                ("timestamp-fixture",),
+            )
+            conn.execute(
+                f"""
+                INSERT INTO {db.table('chapter_editions')} (
+                    novel_id, chapter_number, edition_key, language, edition_type,
+                    source_label, text, character_count, is_default, metadata_json, created_at, updated_at
+                )
+                VALUES (?, 6, 'official', 'en', 'Official', 'Official import', 'Official text', 13, 1, '{{}}',
+                    '2026-01-06T00:00:00+00:00', '2026-01-06T00:00:00+00:00')
+                """,
+                ("timestamp-fixture",),
+            )
+
+        db.initialize()
+        db.initialize()
+
+        with db.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT chapter_number, edition_key, text, is_default, created_at
+                FROM {db.table('chapter_editions')}
+                WHERE novel_id = ?
+                ORDER BY chapter_number, edition_key
+                """,
+                ("timestamp-fixture",),
+            ).fetchall()
+            ai_texts = conn.execute(
+                f"""
+                SELECT chapter_number, ai_text
+                FROM {db.table('chapters')}
+                WHERE novel_id = ?
+                ORDER BY chapter_number
+                """,
+                ("timestamp-fixture",),
+            ).fetchall()
+
+        by_chapter = {}
+        for row in rows:
+            by_chapter.setdefault(row["chapter_number"], []).append(dict(row))
+        for chapter_number, text, _translated_at, _created_at, expected_created_at in cases[:5]:
+            editions = by_chapter[chapter_number]
+            self.assertEqual(len(editions), 1)
+            self.assertEqual(editions[0]["edition_key"], "ai")
+            self.assertEqual(editions[0]["text"], text)
+            self.assertEqual(editions[0]["created_at"], expected_created_at)
+            self.assertEqual(editions[0]["is_default"], 1)
+
+        chapter_six = by_chapter[6]
+        self.assertEqual(len(chapter_six), 2)
+        self.assertEqual(sum(edition["is_default"] for edition in chapter_six), 1)
+        self.assertEqual(next(edition for edition in chapter_six if edition["edition_key"] == "ai")["is_default"], 0)
+        self.assertEqual({row["ai_text"] for row in ai_texts}, {case[1] for case in cases})
+
+    def test_postgres_legacy_ai_migration_uses_safe_timestamp_helper(self) -> None:
+        class FakeConnection:
+            def __init__(self) -> None:
+                self.statements: list[str] = []
+
+            def execute(self, sql: str, params: tuple[object, ...] = ()) -> "FakeConnection":
+                self.statements.append(sql)
+                return self
+
+        db = Database("postgresql://fixture")
+        conn = FakeConnection()
+        db._migrate_ai_text_to_english_editions(conn)
+        combined = "\n".join(conn.statements)
+        insert_sql = conn.statements[-1]
+
+        self.assertIn('CREATE OR REPLACE FUNCTION "godtranslator_v10"."safe_timestamptz_from_text"', combined)
+        self.assertIn("EXCEPTION WHEN OTHERS THEN", combined)
+        self.assertIn('"godtranslator_v10"."safe_timestamptz_from_text"(legacy.translated_at, legacy.created_at)', insert_sql)
+        self.assertNotIn("COALESCE(translated_at, created_at)", insert_sql)
+        self.assertIn("existing_default.edition_key <> 'ai'", insert_sql)
+
     def test_import_pack_preview_and_execute(self) -> None:
         db = self.make_db()
         english = "Packed English"

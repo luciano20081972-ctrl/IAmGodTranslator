@@ -488,20 +488,82 @@ class Database:
                     conn.execute(f"ALTER TABLE {self.table(table)} ADD COLUMN {column} {definition}")
         self._migrate_ai_text_to_english_editions(conn)
 
+    def _ensure_postgres_timestamp_helpers(self, conn: Any) -> None:
+        if self.config.backend != "postgres":
+            return
+        conn.execute(
+            f"""
+            CREATE OR REPLACE FUNCTION {self.table("safe_timestamptz_from_text")}(
+                raw_value TEXT,
+                fallback_value TIMESTAMPTZ
+            )
+            RETURNS TIMESTAMPTZ
+            LANGUAGE plpgsql
+            AS $godtranslator_safe_timestamp$
+            DECLARE
+                parsed_value TIMESTAMPTZ;
+            BEGIN
+                IF raw_value IS NULL OR LENGTH(BTRIM(raw_value)) = 0 THEN
+                    RETURN fallback_value;
+                END IF;
+
+                BEGIN
+                    parsed_value := BTRIM(raw_value)::TIMESTAMPTZ;
+                EXCEPTION WHEN OTHERS THEN
+                    RETURN fallback_value;
+                END;
+
+                RETURN COALESCE(parsed_value, fallback_value);
+            END;
+            $godtranslator_safe_timestamp$
+            """
+        )
+
+    def _legacy_ai_edition_created_at_sql(self, table_alias: str = "legacy") -> str:
+        alias = validate_identifier(table_alias)
+        translated_at = f"{alias}.translated_at"
+        created_at = f"{alias}.created_at"
+        if self.config.backend == "postgres":
+            return f"{self.table('safe_timestamptz_from_text')}({translated_at}, {created_at})"
+        return (
+            "CASE "
+            f"WHEN {translated_at} IS NOT NULL "
+            f"AND LENGTH(TRIM({translated_at})) > 0 "
+            f"AND datetime({translated_at}) IS NOT NULL "
+            f"THEN {translated_at} "
+            f"ELSE {created_at} "
+            "END"
+        )
+
     def _migrate_ai_text_to_english_editions(self, conn: Any) -> None:
+        self._ensure_postgres_timestamp_helpers(conn)
         chapters = self.table("chapters")
         editions = self.table("chapter_editions")
+        created_at_expr = self._legacy_ai_edition_created_at_sql("legacy")
         conn.execute(
             f"""
             INSERT INTO {editions} (
                 novel_id, chapter_number, edition_key, language, edition_type, source_label,
                 text, character_count, is_default, metadata_json, created_at, updated_at
             )
-            SELECT novel_id, chapter_number, 'ai', 'en', 'AI', 'Legacy AI',
-                ai_text, LENGTH(ai_text), 1, '{{}}',
-                COALESCE(translated_at, created_at), updated_at
-            FROM {chapters}
-            WHERE ai_text IS NOT NULL AND LENGTH(TRIM(ai_text)) > 0
+            SELECT legacy.novel_id, legacy.chapter_number, 'ai', 'en', 'AI', 'Legacy AI',
+                legacy.ai_text, LENGTH(legacy.ai_text),
+                CASE
+                    WHEN EXISTS (
+                        SELECT 1
+                        FROM {editions} existing_default
+                        WHERE existing_default.novel_id = legacy.novel_id
+                        AND existing_default.chapter_number = legacy.chapter_number
+                        AND existing_default.language = 'en'
+                        AND existing_default.is_default = 1
+                        AND existing_default.edition_key <> 'ai'
+                    )
+                    THEN 0
+                    ELSE 1
+                END,
+                '{{}}', {created_at_expr}, legacy.updated_at
+            FROM {chapters} legacy
+            WHERE legacy.ai_text IS NOT NULL AND LENGTH(TRIM(legacy.ai_text)) > 0
             ON CONFLICT(novel_id, chapter_number, edition_key) DO UPDATE SET
                 text = excluded.text,
                 character_count = excluded.character_count,
