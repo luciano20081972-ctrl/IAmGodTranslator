@@ -1082,7 +1082,8 @@ async function estimateTranslation(event) {
   state.lastEstimate = estimate;
   const missingOriginal = Math.max(0, Number(estimate.selected_count || 0) - Number(estimate.original_readable || 0));
   const referenceMissing = Math.max(0, Number(estimate.selected_count || 0) - Number(estimate.reference_available || 0));
-  document.querySelector("#estimateResult").innerHTML = `<div class="metric-grid">${metric("Selected", estimate.selected_count)}${metric("Eligible", estimate.eligible_count)}${metric("Already translated", estimate.ai_existing || 0)}${metric("Missing Original", missingOriginal)}${metric("Reference available", estimate.reference_available || 0)}${metric("Reference missing", referenceMissing)}${metric("Speed mode", titleCase(estimate.speed_preset || "balanced"))}${metric("Expected workers", estimate.expected_workers || 1)}${metric("Approx time", durationEstimateText(estimate.duration_estimate))}${metric("Approx cost", `$${Number(estimate.estimated_cost || 0).toFixed(4)}`)}${metric("Budget margin", budgetMarginText(estimate))}</div><p class="muted">${escapeHtml(estimate.pricing_note)} ${estimate.auto_optimize_speed ? "Speed is being optimized automatically." : ""}</p>`;
+  const tokens = estimate.token_breakdown || {};
+  document.querySelector("#estimateResult").innerHTML = `<div class="metric-grid">${metric("Selected", estimate.selected_count)}${metric("Eligible", estimate.eligible_count)}${metric("Already translated", estimate.ai_existing || 0)}${metric("Missing Original", missingOriginal)}${metric("Reference available", estimate.reference_available || 0)}${metric("Reference missing", referenceMissing)}${metric("Speed mode", titleCase(estimate.speed_preset || "balanced"))}${metric("Expected workers", estimate.expected_workers || 1)}${metric("Approx time", durationEstimateText(estimate.duration_estimate))}${metric("Approx cost", `$${Number(estimate.estimated_cost || 0).toFixed(4)}`)}${metric("Budget margin", budgetMarginText(estimate))}${metric("Original tokens", tokens.original_tokens ?? estimate.approx_input_tokens ?? 0)}${metric("Reference tokens", tokens.reference_tokens ?? 0)}${metric("Rules/glossary", tokens.instruction_glossary_tokens ?? 0)}${metric("Output tokens", tokens.estimated_output_tokens ?? estimate.approx_output_tokens ?? 0)}</div><p class="muted">${escapeHtml(estimate.pricing_note)} ${estimate.auto_optimize_speed ? "Speed is being optimized automatically within the configured worker bounds." : ""}</p>`;
   validateTranslateForm();
 }
 
@@ -1107,7 +1108,7 @@ function renderJobsTable(jobs, focusedJobId = "") {
     const skipped = Math.max(0, Number(job.total_items || 0) - Number(job.completed_items || 0) - Number(job.failed_items || 0) - remaining);
     const pct = total ? Math.round(completed / total * 100) : 0;
     const title = jobNovelTitle(job);
-    return `<tr class="${focusedJobId === job.id ? "selected-row" : ""}"><td data-label="Work" class="job-work-cell"><a href="#/jobs/${job.id}"><strong title="${escapeAttr(title)}">${escapeHtml(title)}</strong></a><span class="technical-id" title="${escapeAttr(job.id)}">${escapeHtml(truncateMiddle(job.id, 18))}</span><span class="technical-id" title="${escapeAttr(job.model || "")}">${escapeHtml(truncateMiddle(job.model || "model pending", 26))}</span></td><td data-label="Status">${statusBadge(job.status)}<span class="subtle-line">${escapeHtml(job.priority || "normal")} priority</span></td><td data-label="Progress"><div class="mini-progress compact"><span style="width:${pct}%"></span></div><strong>${completed}/${total}</strong><span class="subtle-line">${failed} failed · ${remaining} remaining</span></td><td data-label="Now">${job.activity?.current_chapter ? `Chapter ${job.activity.current_chapter}` : "Idle"}<span class="subtle-line">${job.activity?.active_workers || 0} active workers</span></td><td data-label="Throughput">${escapeHtml(throughput.summary)}<span class="subtle-line">${escapeHtml(throughput.remaining)}</span></td><td data-label="Budget">$${Number(job.actual_cost || 0).toFixed(4)}<span class="subtle-line">est. $${Number(job.estimated_cost || 0).toFixed(4)} · ${timeAgo(job.updated_at)}</span></td><td data-label="Actions" class="row-actions"><div class="action-group">${jobActions(job)}<button type="button" data-copy-link="#/jobs/${job.id}">Copy Link</button></div><details class="job-row-details"><summary>Details</summary><p><strong>Novel ID</strong> ${escapeHtml(job.novel_id || "")}</p><p><strong>Skipped</strong> ${skipped}</p><p><strong>Model</strong> ${escapeHtml(job.model || "")}</p></details></td></tr>`;
+    return `<tr class="${focusedJobId === job.id ? "selected-row" : ""}"><td data-label="Work" class="job-work-cell"><a href="#/jobs/${job.id}"><strong title="${escapeAttr(title)}">${escapeHtml(title)}</strong></a><span class="technical-id" title="${escapeAttr(job.id)}">${escapeHtml(truncateMiddle(job.id, 18))}</span><span class="technical-id" title="${escapeAttr(job.model || "")}">${escapeHtml(truncateMiddle(job.model || "model pending", 26))}</span></td><td data-label="Status">${statusBadge(job.status)}<span class="subtle-line">${escapeHtml(job.health?.message || `${job.priority || "normal"} priority`)}</span></td><td data-label="Progress"><div class="mini-progress compact"><span style="width:${pct}%"></span></div><strong>${completed}/${total}</strong><span class="subtle-line">${failed} failed · ${remaining} remaining</span></td><td data-label="Now">${job.activity?.current_chapter ? `Chapter ${job.activity.current_chapter}` : "Idle"}<span class="subtle-line">${job.activity?.active_workers || 0} active workers</span></td><td data-label="Throughput">${escapeHtml(throughput.summary)}<span class="subtle-line">${escapeHtml(throughput.remaining)}</span></td><td data-label="Budget">$${Number(job.actual_cost || 0).toFixed(4)}<span class="subtle-line">est. $${Number(job.estimated_cost || 0).toFixed(4)} · ${timeAgo(job.updated_at)}</span></td><td data-label="Actions" class="row-actions"><div class="action-group">${jobActions(job)}<button type="button" data-copy-link="#/jobs/${job.id}">Copy Link</button></div><details class="job-row-details"><summary>Details</summary><p><strong>Novel ID</strong> ${escapeHtml(job.novel_id || "")}</p><p><strong>Skipped</strong> ${skipped}</p><p><strong>Model</strong> ${escapeHtml(job.model || "")}</p><p><strong>Health</strong> ${escapeHtml(job.health?.state || "unknown")}</p></details></td></tr>`;
   }).join("") || `<tr><td colspan="7">No translation jobs yet.</td></tr>`}</tbody></table>`;
 }
 
@@ -1259,7 +1260,7 @@ async function openAdmin(tab = "overview") {
     await loadNovels(true);
     rememberRecent("admin", {label: titleCase(tab), href: `#/admin/${tab}`, at: new Date().toISOString()});
     localStorage.setItem("gt-last-admin-tab", tab);
-    const [overview, dbHealth, missing, imports, jobs, backupManifest, users] = await Promise.all([
+    const [overview, dbHealth, missing, imports, jobs, backupManifest, users, performance] = await Promise.all([
       api("/api/admin/overview"),
       api("/api/admin/db-health"),
       api(`/api/admin/missing/${state.currentNovelId}`),
@@ -1267,13 +1268,14 @@ async function openAdmin(tab = "overview") {
       api(`/api/translation/jobs?novel_id=${state.currentNovelId}`),
       api("/api/admin/backups/manifest"),
       api("/api/admin/users"),
+      api(`/api/admin/translation/performance?novel_id=${encodeURIComponent(state.currentNovelId)}`),
     ]);
-    const tabs = [["overview", "Overview"], ["novels", "Novels"], ["translation", "Translation"], ["jobs", "Jobs"], ["backups", "Backups & Recovery"], ["recovery", "Novel Recovery"], ["database", "Database"], ["users", "Users & Roles"], ["diagnostics", "Diagnostics"]];
+    const tabs = [["overview", "Overview"], ["novels", "Novels"], ["translation", "Translation"], ["performance", "Performance"], ["jobs", "Jobs"], ["backups", "Backups & Recovery"], ["recovery", "Novel Recovery"], ["database", "Database"], ["users", "Users & Roles"], ["diagnostics", "Diagnostics"]];
     app.innerHTML = `
       ${pageHeader("Admin", "Operational workspace for novels, translation, backups, recovery, users, and diagnostics.", [["Version", APP_VERSION], ["Schema", overview.overview.schema], ["Chapters", overview.overview.chapters], ["Needs Translation", overview.overview.needs_translation]])}
       <section class="admin-workspace">
         <nav class="admin-tabs">${tabs.map(([key, label]) => `<a class="${tab === key ? "active" : ""}" href="#/admin/${key}">${label}</a>`).join("")}</nav>
-        <div class="admin-content">${renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupManifest, users)}</div>
+        <div class="admin-content">${renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupManifest, users, performance)}</div>
       </section>
       <div class="actions"><button id="logoutBtn">Exit Admin Mode</button></div>`;
     bindJobButtons();
@@ -1286,10 +1288,11 @@ async function openAdmin(tab = "overview") {
   }
 }
 
-function renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupManifest, users) {
+function renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupManifest, users, performance) {
   const data = overview.overview || {};
   if (tab === "novels") return renderNovelManagement(state.novels, "");
   if (tab === "translation") return `<section class="dashboard-grid"><div class="panel"><h2>Translation Workspace</h2><p class="muted">Configure jobs in the dedicated workspace while Admin keeps operational context here.</p><div class="actions"><a class="button primary" href="#/translate/${state.currentNovelId}">Open Translate</a><a class="button" href="#/admin/jobs">Open Jobs</a></div></div><div class="panel">${metric("Needs Translation", data.needs_translation)}${metric("AI Translations", data.ai)}${metric("Active Jobs", (jobs.jobs || []).filter((job) => ["queued", "running", "paused"].includes(job.status)).length)}</div></section>`;
+  if (tab === "performance") return renderTranslationPerformance(performance);
   if (tab === "database") {
     return `<section class="dashboard-grid"><div class="panel">${metric("Database", dbHealth.health?.reachable ? "Healthy" : "Needs Attention")}${metric("Schema", data.schema)}${metric("Expected Tables", dbHealth.health?.v10_chapters_table_exists ? "Healthy" : "Needs Attention")}${metric("Chapters", data.chapters)}</div><div class="panel"><h2>Technical Details</h2><details><summary>Show details</summary><pre>${escapeHtml(JSON.stringify(dbHealth.health, null, 2))}</pre></details></div></section>`;
   }
@@ -1299,6 +1302,27 @@ function renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupM
   if (tab === "users") return `<section class="table-card"><h2>Users & Roles</h2><table class="responsive-table"><thead><tr><th>User</th><th>Role</th><th>Updated</th></tr></thead><tbody>${(users.users || []).map((user) => `<tr><td data-label="User"><strong>${escapeHtml(user.display_name || user.email || user.user_id)}</strong><br><span>${escapeHtml(user.email || user.user_id)}</span></td><td data-label="Role">${escapeHtml(user.role || "user")}</td><td data-label="Updated">${timeAgo(user.updated_at)}</td></tr>`).join("") || `<tr><td colspan="3">No application profiles yet.</td></tr>`}</tbody></table></section>`;
   if (tab === "diagnostics") return `<section class="dashboard-grid"><div class="panel">${metric("Version", APP_VERSION)}${metric("DB", dbHealth.health?.ok === false ? "Unhealthy" : "Healthy")}${metric("Schema", data.schema)}${metric("Auth", state.authConfig?.configured ? "Configured" : "Missing")}${metric("OpenAI", "Configured/Missing hidden")}</div><div class="panel"><h2>Details</h2><details><summary>Show sanitized JSON</summary><pre>${escapeHtml(JSON.stringify({overview: data, db: dbHealth.health}, null, 2))}</pre></details></div></section>`;
   return renderAdminOverview(data, dbHealth, jobs, imports, backupManifest.manifest);
+}
+
+function renderTranslationPerformance(performance) {
+  const simple = performance?.simple || {};
+  const advanced = performance?.advanced || {};
+  const runtime = performance?.runtime || {};
+  const settings = advanced.effective_settings || {};
+  return `<section class="dashboard-grid">
+    <div class="panel">
+      <h2>Translation Performance</h2>
+      <div class="metric-grid">${metric("Current speed", simple.current_speed ? `${simple.current_speed}/min` : "Measuring")}${metric("Active workers", simple.active_workers ?? 0)}${metric("Peak workers", simple.peak_active_workers ?? 0)}${metric("Avg chapter", simple.average_chapter_time_seconds ? formatDuration(simple.average_chapter_time_seconds) : "Measuring")}${metric("ETA", simple.estimated_remaining_seconds ? formatDuration(simple.estimated_remaining_seconds) : "Unknown")}${metric("Recent failures", simple.recent_failures ?? 0)}</div>
+    </div>
+    <div class="panel">
+      <h2>Advanced Diagnostics</h2>
+      <div class="metric-grid">${metric("Queue wait", secondsMetric(advanced.average_queue_wait_seconds))}${metric("Claim", secondsMetric(advanced.average_claim_seconds))}${metric("Chapter load", secondsMetric(advanced.average_chapter_load_seconds))}${metric("Prompt build", secondsMetric(advanced.average_prompt_build_seconds))}${metric("Provider", secondsMetric(advanced.average_provider_wait_seconds))}${metric("Save", secondsMetric(advanced.average_save_seconds))}${metric("Retries", advanced.retry_count ?? 0)}${metric("429", advanced.rate_limited_count ?? 0)}${metric("Timeouts", advanced.timeout_count ?? 0)}${metric("Input tokens", numberMetric(advanced.average_input_tokens))}${metric("Output tokens", numberMetric(advanced.average_output_tokens))}${metric("Reference use", advanced.reference_usage_percent == null ? "Measuring" : `${advanced.reference_usage_percent}%`)}</div>
+    </div>
+    <div class="panel">
+      <h2>Effective Settings</h2>
+      <div class="metric-grid">${metric("Preset", titleCase(settings.speed_preset || "unknown"))}${metric("Starting workers", settings.starting_worker_count ?? "Auto")}${metric("Max workers", settings.maximum_worker_count ?? "Auto")}${metric("Global cap", runtime.global_worker_cap ?? settings.global_worker_cap ?? "Unknown")}${metric("Retry limit", settings.retry_limit ?? "Unknown")}${metric("Timeout", secondsMetric(settings.provider_timeout_seconds))}${metric("Benchmark", runtime.benchmark_enabled ? "Enabled" : "Disabled")}</div>
+    </div>
+  </section>`;
 }
 
 function renderAdminOverview(data, dbHealth, jobs, imports, manifest) {
@@ -1777,6 +1801,20 @@ function formatDuration(seconds) {
   if (value < 60) return `${Math.round(value)} sec`;
   if (value < 3600) return `${Math.round(value / 60)} min`;
   return `${Math.round(value / 3600)} hr`;
+}
+
+function secondsMetric(value) {
+  if (value === null || value === undefined || value === "") return "Measuring";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "Measuring";
+  return number < 1 ? `${number.toFixed(3)} sec` : formatDuration(number);
+}
+
+function numberMetric(value) {
+  if (value === null || value === undefined || value === "") return "Measuring";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "Measuring";
+  return number >= 100 ? Math.round(number) : number.toFixed(1);
 }
 
 function jobThroughput(job) {

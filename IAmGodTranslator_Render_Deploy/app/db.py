@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sqlite3
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def utc_now() -> str:
@@ -208,10 +213,31 @@ class Database:
             actual_cost {numeric_type},
             error TEXT,
             failure_category TEXT,
+            model TEXT,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
             worker_id TEXT,
             claimed_at {ts_type},
             heartbeat_at {ts_type},
             lease_expires_at {ts_type},
+            started_at {ts_type},
+            finished_at {ts_type},
+            provider_started_at {ts_type},
+            provider_finished_at {ts_type},
+            queue_wait_seconds {numeric_type},
+            claim_duration_seconds {numeric_type},
+            chapter_load_seconds {numeric_type},
+            prompt_build_seconds {numeric_type},
+            provider_wait_seconds {numeric_type},
+            save_duration_seconds {numeric_type},
+            total_duration_seconds {numeric_type},
+            retry_delay_seconds {numeric_type},
+            original_char_count INTEGER,
+            reference_char_count INTEGER,
+            prompt_instruction_tokens INTEGER,
+            prompt_original_tokens INTEGER,
+            prompt_reference_tokens INTEGER,
+            prompt_estimated_output_tokens INTEGER,
             created_at {ts_type} NOT NULL,
             updated_at {ts_type} NOT NULL,
             UNIQUE (job_id, chapter_number)
@@ -364,6 +390,22 @@ class Database:
             "claimed_at": ts_type,
             "heartbeat_at": ts_type,
             "lease_expires_at": ts_type,
+            "provider_started_at": ts_type,
+            "provider_finished_at": ts_type,
+            "queue_wait_seconds": "REAL",
+            "claim_duration_seconds": "REAL",
+            "chapter_load_seconds": "REAL",
+            "prompt_build_seconds": "REAL",
+            "provider_wait_seconds": "REAL",
+            "save_duration_seconds": "REAL",
+            "total_duration_seconds": "REAL",
+            "retry_delay_seconds": "REAL",
+            "original_char_count": "INTEGER",
+            "reference_char_count": "INTEGER",
+            "prompt_instruction_tokens": "INTEGER",
+            "prompt_original_tokens": "INTEGER",
+            "prompt_reference_tokens": "INTEGER",
+            "prompt_estimated_output_tokens": "INTEGER",
         }
         for table, columns in (
             ("novels", novel_columns),
@@ -913,6 +955,16 @@ class Database:
         input_chars = sum(row["original_chars"] + (row["reference_chars"] if use_reference and row["has_reference"] else 0) for row in eligible)
         input_tokens = max(1, input_chars // 4) if eligible else 0
         output_tokens = max(1, sum(row["original_chars"] for row in eligible) // 5) if eligible else 0
+        original_tokens = max(0, sum(row["original_chars"] for row in eligible) // 4)
+        reference_tokens = max(0, sum(row["reference_chars"] for row in eligible if use_reference and row["has_reference"]) // 4)
+        instruction_text = " ".join(
+            [
+                "Translate the Chinese source into natural professional English.",
+                str(settings.get("style_guide") or ""),
+                str(settings.get("glossary") or ""),
+            ]
+        )
+        instruction_tokens = max(0, len(instruction_text) // 4)
         estimated_cost = (input_tokens / 1_000_000 * pricing["input"]) + (output_tokens / 1_000_000 * pricing["output"])
         performance = self.performance_summary(model, novel_id)
         speed = speed_estimate(len(eligible), settings, performance)
@@ -934,6 +986,12 @@ class Database:
             "ai_existing": sum(1 for row in rows if row["has_ai"]),
             "approx_input_tokens": input_tokens,
             "approx_output_tokens": output_tokens,
+            "token_breakdown": {
+                "original_tokens": original_tokens,
+                "reference_tokens": reference_tokens,
+                "instruction_glossary_tokens": instruction_tokens,
+                "estimated_output_tokens": output_tokens,
+            },
             "estimated_cost": round(estimated_cost, 6),
             "items": rows,
         }
@@ -1014,13 +1072,14 @@ class Database:
                 payload = public_job_row(row)
                 items = conn.execute(
                     f"""
-                    SELECT chapter_number, status, worker_id, heartbeat_at, lease_expires_at
+                    SELECT chapter_number, status, worker_id, heartbeat_at, lease_expires_at, failure_category
                     FROM {self.table('translation_job_items')}
                     WHERE job_id = ? AND status = 'running'
                     """,
                     (payload["id"],),
                 ).fetchall()
                 payload["activity"] = job_activity([dict(item) for item in items])
+                payload["health"] = job_health(payload, payload["activity"])
                 jobs.append(payload)
         return jobs
 
@@ -1033,7 +1092,14 @@ class Database:
                 f"""
                 SELECT chapter_number, status, attempts, estimated_cost, actual_cost, error, failure_category, model,
                     input_tokens, output_tokens, started_at, finished_at,
-                    worker_id, claimed_at, heartbeat_at, lease_expires_at
+                    worker_id, claimed_at, heartbeat_at, lease_expires_at,
+                    provider_started_at, provider_finished_at,
+                    queue_wait_seconds, claim_duration_seconds, chapter_load_seconds,
+                    prompt_build_seconds, provider_wait_seconds, save_duration_seconds,
+                    total_duration_seconds, retry_delay_seconds,
+                    original_char_count, reference_char_count,
+                    prompt_instruction_tokens, prompt_original_tokens, prompt_reference_tokens,
+                    prompt_estimated_output_tokens
                 FROM {self.table('translation_job_items')}
                 WHERE job_id = ?
                 ORDER BY chapter_number
@@ -1044,6 +1110,7 @@ class Database:
         payload = public_job_row(job)
         payload["items"] = [dict(row) for row in items]
         payload["activity"] = job_activity(payload["items"])
+        payload["health"] = job_health(payload, payload["activity"], payload["items"])
         return payload
 
     def set_job_status(self, job_id: str, status: str) -> dict[str, Any]:
@@ -1108,8 +1175,10 @@ class Database:
         return [str(row["id"]) for row in rows]
 
     def claim_translation_item(self, job_id: str, worker_id: str, lease_seconds: int = 900) -> dict[str, Any]:
+        claim_started = time.perf_counter()
         now = utc_now()
         lease_expires = utc_after(lease_seconds)
+        chapter_load_seconds = 0.0
         with self.connect() as conn:
             job = conn.execute(f"SELECT * FROM {self.table('translation_jobs')} WHERE id = ?", (job_id,)).fetchone()
             if job is None:
@@ -1139,7 +1208,11 @@ class Database:
                             OR (status = 'failed' AND attempts <= ? AND (failure_category IS NULL OR failure_category IN ('rate_limited','timeout','provider_unavailable','network_error','unknown')))
                             OR (status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at < ?) AND attempts <= ?)
                         )
-                    ORDER BY chapter_number
+                    ORDER BY CASE
+                        WHEN status = 'pending' THEN 0
+                        WHEN status = 'running' THEN 1
+                        ELSE 2
+                    END, chapter_number
                     FOR UPDATE SKIP LOCKED
                     LIMIT 1
                     """,
@@ -1156,7 +1229,11 @@ class Database:
                             OR (status = 'failed' AND attempts <= ? AND (failure_category IS NULL OR failure_category IN ('rate_limited','timeout','provider_unavailable','network_error','unknown')))
                             OR (status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at < ?) AND attempts <= ?)
                         )
-                    ORDER BY chapter_number
+                    ORDER BY CASE
+                        WHEN status = 'pending' THEN 0
+                        WHEN status = 'running' THEN 1
+                        ELSE 2
+                    END, chapter_number
                     LIMIT 1
                     """,
                     (job_id, retry_count, now, retry_count),
@@ -1199,10 +1276,12 @@ class Database:
                 """,
                 (now, item["chapter_number"], now, job_id),
             )
+            chapter_load_started = time.perf_counter()
             chapter = conn.execute(
                 f"SELECT * FROM {self.table('chapters')} WHERE novel_id = ? AND chapter_number = ?",
                 (job["novel_id"], item["chapter_number"]),
             ).fetchone()
+            chapter_load_seconds = time.perf_counter() - chapter_load_started
 
         max_per_chapter_budget = job["max_per_chapter_budget"]
         if max_per_chapter_budget is not None and float(item["estimated_cost"] or 0) > float(max_per_chapter_budget):
@@ -1212,6 +1291,9 @@ class Database:
         else:
             skip_error = None
         use_reference = bool(settings.get("use_reference", True))
+        original_text = chapter["original_text"] if chapter is not None else ""
+        reference_text = chapter["reference_text"] if chapter is not None and use_reference else None
+        claim_duration_seconds = time.perf_counter() - claim_started
         return {
             "ok": True,
             "status": "claimed",
@@ -1221,9 +1303,16 @@ class Database:
             "chapter_number": int(item["chapter_number"]),
             "model": job["model"],
             "settings": settings,
-            "original_text": chapter["original_text"] if chapter is not None else "",
-            "reference_text": chapter["reference_text"] if chapter is not None and use_reference else None,
+            "original_text": original_text,
+            "reference_text": reference_text,
             "skip_error": skip_error,
+            "metrics": {
+                "queue_wait_seconds": seconds_between(item["created_at"], now),
+                "claim_duration_seconds": claim_duration_seconds,
+                "chapter_load_seconds": chapter_load_seconds,
+                "original_char_count": len(original_text or ""),
+                "reference_char_count": len(reference_text or ""),
+            },
         }
 
     def heartbeat_translation_item(self, job_id: str, item_id: int, worker_id: str, lease_seconds: int = 900) -> bool:
@@ -1248,8 +1337,12 @@ class Database:
         result: Any | None = None,
         error: str | None = None,
         skipped_error: str | None = None,
+        metrics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        save_started = time.perf_counter()
         now = utc_now()
+        metrics = dict(metrics or {})
+        telemetry: tuple[str, str, float, int, int, int, int, bool, str | None] | None = None
         with self.connect() as conn:
             item = conn.execute(
                 f"SELECT * FROM {self.table('translation_job_items')} WHERE job_id = ? AND id = ?",
@@ -1285,7 +1378,7 @@ class Database:
                     """,
                     (skipped_error, category, now, now, item_id),
                 )
-                self.record_translation_performance(conn, job["model"], job["novel_id"], duration_seconds, original_chars, 0, 0, 0, False, category)
+                telemetry = (job["model"], job["novel_id"], duration_seconds, original_chars, 0, 0, 0, False, category)
             elif error:
                 category = classify_failure_text(error)
                 conn.execute(
@@ -1297,10 +1390,11 @@ class Database:
                     """,
                     (error, category, now, now, item_id),
                 )
-                self.record_translation_performance(conn, job["model"], job["novel_id"], duration_seconds, original_chars, 0, 0, 0, False, category)
+                telemetry = (job["model"], job["novel_id"], duration_seconds, original_chars, 0, 0, 0, False, category)
             else:
                 values = translation_result_values(result)
                 text = values["text"]
+                metrics.update(values.get("metrics") or {})
                 conn.execute(
                     f"""
                     UPDATE {self.table('chapters')}
@@ -1332,36 +1426,86 @@ class Database:
                     """,
                     (values["input_tokens"], values["output_tokens"], values["actual_cost"], job["model"], now, now, item_id),
                 )
-                self.record_translation_performance(
-                    conn,
-                    job["model"],
-                    job["novel_id"],
-                    duration_seconds,
-                    original_chars,
-                    len(text),
-                    values["input_tokens"],
-                    values["output_tokens"],
-                    True,
-                )
-            return self._refresh_translation_job_counts(conn, job_id, now)
+                telemetry = (job["model"], job["novel_id"], duration_seconds, original_chars, len(text), values["input_tokens"], values["output_tokens"], True, None)
+            metrics.setdefault("total_duration_seconds", seconds_between(item["claimed_at"] or item["started_at"], now))
+            metrics["save_duration_seconds"] = time.perf_counter() - save_started
+            self._store_translation_item_metrics(conn, item_id, metrics)
+            refreshed = self._refresh_translation_job_counts(conn, job_id, now)
+        if telemetry and not self.safe_record_translation_performance(*telemetry):
+            refreshed["telemetry_warning"] = "performance_telemetry_failed"
+        return refreshed
+
+    def _store_translation_item_metrics(self, conn: Any, item_id: int, metrics: dict[str, Any]) -> None:
+        allowed = {
+            "provider_started_at",
+            "provider_finished_at",
+            "queue_wait_seconds",
+            "claim_duration_seconds",
+            "chapter_load_seconds",
+            "prompt_build_seconds",
+            "provider_wait_seconds",
+            "save_duration_seconds",
+            "total_duration_seconds",
+            "retry_delay_seconds",
+            "original_char_count",
+            "reference_char_count",
+            "prompt_instruction_tokens",
+            "prompt_original_tokens",
+            "prompt_reference_tokens",
+            "prompt_estimated_output_tokens",
+        }
+        assignments: list[str] = []
+        values: list[Any] = []
+        for key in sorted(allowed):
+            if key not in metrics:
+                continue
+            value = metrics.get(key)
+            if value is None:
+                continue
+            assignments.append(f"{key} = ?")
+            if key.endswith("_seconds"):
+                values.append(round(max(0.0, float(value)), 6))
+            elif key.endswith("_tokens") or key.endswith("_count"):
+                values.append(max(0, int(value)))
+            else:
+                values.append(str(value))
+        if not assignments:
+            return
+        values.append(item_id)
+        conn.execute(
+            f"UPDATE {self.table('translation_job_items')} SET {', '.join(assignments)} WHERE id = ?",
+            tuple(values),
+        )
 
     def _refresh_translation_job_counts(self, conn: Any, job_id: str, now: str | None = None) -> dict[str, Any]:
         now = now or utc_now()
+        job = conn.execute(f"SELECT * FROM {self.table('translation_jobs')} WHERE id = ?", (job_id,)).fetchone()
+        if job is None:
+            return {}
+        try:
+            settings = json.loads(job["settings_json"] or "{}") if job["settings_json"] else {}
+        except Exception:
+            settings = {}
+        retry_count = max(0, optional_int(settings.get("retry_count")) or 0)
         counts = conn.execute(
             f"""
             SELECT
                 SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
                 SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
-                SUM(CASE WHEN status IN ('pending','running') THEN 1 ELSE 0 END) AS remaining,
+                SUM(CASE
+                    WHEN status IN ('pending','running') THEN 1
+                    WHEN status = 'failed'
+                        AND attempts <= ?
+                        AND (failure_category IS NULL OR failure_category IN ('rate_limited','timeout','provider_unavailable','network_error','unknown'))
+                    THEN 1
+                    ELSE 0
+                END) AS remaining,
                 SUM(COALESCE(actual_cost, 0)) AS actual
             FROM {self.table('translation_job_items')}
             WHERE job_id = ?
             """,
-            (job_id,),
+            (retry_count, job_id),
         ).fetchone()
-        job = conn.execute(f"SELECT * FROM {self.table('translation_jobs')} WHERE id = ?", (job_id,)).fetchone()
-        if job is None:
-            return {}
         current_status = job["status"]
         remaining = int(counts["remaining"] or 0)
         failed = int(counts["failed"] or 0)
@@ -1384,6 +1528,41 @@ class Database:
         row = conn.execute(f"SELECT * FROM {self.table('translation_jobs')} WHERE id = ?", (job_id,)).fetchone()
         return public_job_row(row) if row else {}
 
+    def refresh_translation_job(self, job_id: str) -> dict[str, Any]:
+        with self.connect() as conn:
+            return self._refresh_translation_job_counts(conn, job_id, utc_now())
+
+    def safe_record_translation_performance(
+        self,
+        model: str,
+        novel_id: str,
+        duration_seconds: float,
+        input_chars: int,
+        output_chars: int,
+        input_tokens: int,
+        output_tokens: int,
+        success: bool,
+        failure_category: str | None = None,
+    ) -> bool:
+        try:
+            with self.connect() as conn:
+                self.record_translation_performance(
+                    conn,
+                    model,
+                    novel_id,
+                    duration_seconds,
+                    input_chars,
+                    output_chars,
+                    input_tokens,
+                    output_tokens,
+                    success,
+                    failure_category,
+                )
+            return True
+        except Exception as exc:
+            LOGGER.warning("translation_performance_telemetry_failed: %s", exc.__class__.__name__)
+            return False
+
     def record_translation_performance(
         self,
         conn: Any,
@@ -1400,10 +1579,11 @@ class Database:
         now = utc_now()
         rate_limited = 1 if failure_category == "rate_limited" else 0
         timeout = 1 if failure_category == "timeout" else 0
+        performance_table = self.table("translation_performance")
         for scoped_novel_id in (novel_id, "__all__"):
             conn.execute(
                 f"""
-                INSERT INTO {self.table('translation_performance')} (
+                INSERT INTO {performance_table} AS target (
                     model, novel_id, sample_count, success_count, failure_count,
                     total_duration_seconds, total_input_chars, total_output_chars,
                     total_input_tokens, total_output_tokens, rate_limited_count,
@@ -1411,17 +1591,17 @@ class Database:
                 )
                 VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(model, novel_id) DO UPDATE SET
-                    sample_count = sample_count + 1,
-                    success_count = success_count + excluded.success_count,
-                    failure_count = failure_count + excluded.failure_count,
-                    total_duration_seconds = total_duration_seconds + excluded.total_duration_seconds,
-                    total_input_chars = total_input_chars + excluded.total_input_chars,
-                    total_output_chars = total_output_chars + excluded.total_output_chars,
-                    total_input_tokens = total_input_tokens + excluded.total_input_tokens,
-                    total_output_tokens = total_output_tokens + excluded.total_output_tokens,
-                    rate_limited_count = rate_limited_count + excluded.rate_limited_count,
-                    timeout_count = timeout_count + excluded.timeout_count,
-                    updated_at = excluded.updated_at
+                    sample_count = target.sample_count + EXCLUDED.sample_count,
+                    success_count = target.success_count + EXCLUDED.success_count,
+                    failure_count = target.failure_count + EXCLUDED.failure_count,
+                    total_duration_seconds = target.total_duration_seconds + EXCLUDED.total_duration_seconds,
+                    total_input_chars = target.total_input_chars + EXCLUDED.total_input_chars,
+                    total_output_chars = target.total_output_chars + EXCLUDED.total_output_chars,
+                    total_input_tokens = target.total_input_tokens + EXCLUDED.total_input_tokens,
+                    total_output_tokens = target.total_output_tokens + EXCLUDED.total_output_tokens,
+                    rate_limited_count = target.rate_limited_count + EXCLUDED.rate_limited_count,
+                    timeout_count = target.timeout_count + EXCLUDED.timeout_count,
+                    updated_at = EXCLUDED.updated_at
                 """,
                 (
                     model,
@@ -1438,6 +1618,72 @@ class Database:
                     now,
                 ),
             )
+
+    def translation_performance_diagnostics(self, novel_id: str | None = None, limit: int = 20) -> dict[str, Any]:
+        jobs = self.translation_jobs(novel_id=novel_id, limit=limit)
+        detailed_jobs = [self.translation_job(str(job["id"])) for job in jobs]
+        detailed_jobs = [job for job in detailed_jobs if job]
+        items = [item for job in detailed_jobs for item in job.get("items", [])]
+        completed = [item for item in items if item.get("status") == "completed"]
+        failed = [item for item in items if item.get("status") == "failed"]
+        running = [item for item in items if item.get("status") == "running"]
+        active_jobs = [job for job in detailed_jobs if job.get("status") in {"queued", "running", "paused"}]
+        provider_latencies = [float(item.get("provider_wait_seconds") or 0) for item in completed if item.get("provider_wait_seconds") is not None]
+        total_latencies = [float(item.get("total_duration_seconds") or 0) for item in completed if item.get("total_duration_seconds") is not None]
+        save_latencies = [float(item.get("save_duration_seconds") or 0) for item in items if item.get("save_duration_seconds") is not None]
+        claim_latencies = [float(item.get("claim_duration_seconds") or 0) for item in items if item.get("claim_duration_seconds") is not None]
+        prompt_latencies = [float(item.get("prompt_build_seconds") or 0) for item in completed if item.get("prompt_build_seconds") is not None]
+        retry_count = sum(max(0, int(item.get("attempts") or 0) - 1) for item in items)
+        rate_limited = sum(1 for item in items if item.get("failure_category") == "rate_limited")
+        timeout_count = sum(1 for item in items if item.get("failure_category") == "timeout")
+        now = datetime.now(UTC)
+        recent_completed = [
+            item for item in completed
+            if parse_timestamp(item.get("finished_at")) and (now - parse_timestamp(item.get("finished_at"))).total_seconds() <= 900
+        ]
+        recent_minutes = 15 if recent_completed else 0
+        peak_workers = peak_provider_overlap(completed)
+        active_workers = sum(int(job.get("activity", {}).get("active_workers") or 0) for job in detailed_jobs)
+        avg_total = average(total_latencies)
+        remaining = sum(max(0, int(job.get("total_items") or 0) - int(job.get("completed_items") or 0) - int(job.get("failed_items") or 0)) for job in active_jobs)
+        worker_basis = max(1, peak_workers or active_workers or 1)
+        estimated_remaining_seconds = round(remaining * avg_total / worker_basis) if avg_total and remaining else None
+        settings_samples = [job.get("settings") or {} for job in detailed_jobs if job.get("settings")]
+        effective = effective_settings_summary(settings_samples)
+        return {
+            "ok": True,
+            "novel_id": novel_id,
+            "jobs_observed": len(detailed_jobs),
+            "items_observed": len(items),
+            "simple": {
+                "current_speed": chapters_per_minute(completed),
+                "active_workers": active_workers,
+                "peak_active_workers": peak_workers,
+                "average_chapter_time_seconds": round(avg_total, 3) if avg_total is not None else None,
+                "estimated_remaining_seconds": estimated_remaining_seconds,
+                "recent_failures": len(failed),
+            },
+            "advanced": {
+                "average_queue_wait_seconds": average_metric(items, "queue_wait_seconds"),
+                "average_claim_seconds": average(claim_latencies),
+                "average_chapter_load_seconds": average_metric(items, "chapter_load_seconds"),
+                "average_prompt_build_seconds": average(prompt_latencies),
+                "average_provider_wait_seconds": average(provider_latencies),
+                "average_save_seconds": average(save_latencies),
+                "retry_count": retry_count,
+                "rate_limited_count": rate_limited,
+                "timeout_count": timeout_count,
+                "failed_count": len(failed),
+                "average_input_tokens": average_metric(completed, "input_tokens"),
+                "average_output_tokens": average_metric(completed, "output_tokens"),
+                "average_original_chars": average_metric(items, "original_char_count"),
+                "average_reference_chars": average_metric(items, "reference_char_count"),
+                "reference_usage_percent": reference_usage_percent(items),
+                "chapters_per_minute_recent": round(len(recent_completed) / recent_minutes, 3) if recent_minutes else None,
+                "effective_settings": effective,
+            },
+            "jobs": detailed_jobs[:5],
+        }
 
     def admin_overview(self) -> dict[str, Any]:
         with self.connect() as conn:
@@ -2072,10 +2318,10 @@ def optional_float(value: Any) -> float | None:
 
 
 SPEED_PRESETS: dict[str, dict[str, Any]] = {
-    "careful": {"label": "Careful", "concurrency": 1, "retry_count": 2, "description": "Lowest server/API pressure."},
-    "balanced": {"label": "Balanced", "concurrency": 3, "retry_count": 2, "description": "Recommended for most translation jobs."},
-    "fast": {"label": "Fast", "concurrency": 4, "retry_count": 2, "description": "Higher parallel processing when capacity allows."},
-    "maximum-safe": {"label": "Maximum Safe", "concurrency": 6, "retry_count": 1, "description": "Highest safe adaptive throughput currently available."},
+    "careful": {"label": "Careful", "concurrency": 1, "max_workers": 2, "retry_count": 2, "timeout_seconds": 240, "description": "Lowest server/API pressure."},
+    "balanced": {"label": "Balanced", "concurrency": 3, "max_workers": 4, "retry_count": 2, "timeout_seconds": 180, "description": "Recommended for most translation jobs."},
+    "fast": {"label": "Fast", "concurrency": 4, "max_workers": 6, "retry_count": 2, "timeout_seconds": 150, "description": "Higher parallel processing when capacity allows."},
+    "maximum-safe": {"label": "Maximum Safe", "concurrency": 6, "max_workers": 8, "retry_count": 1, "timeout_seconds": 120, "description": "Highest safe adaptive throughput currently available."},
 }
 
 
@@ -2093,7 +2339,7 @@ def normalized_translation_settings(settings: dict[str, Any]) -> dict[str, Any]:
     concurrency = optional_int(payload.get("concurrency"))
     if mode != "advanced":
         concurrency = preset_config["concurrency"]
-        max_workers = preset_config["concurrency"]
+        max_workers = preset_config["max_workers"] if auto else preset_config["concurrency"]
     elif concurrency is None:
         concurrency = preset_config["concurrency"]
     hard_max = max(1, min(24, optional_int(payload.get("hard_worker_limit")) or 8))
@@ -2109,6 +2355,7 @@ def normalized_translation_settings(settings: dict[str, Any]) -> dict[str, Any]:
     if retry_count is None:
         retry_count = preset_config["retry_count"]
     payload["retry_count"] = max(0, min(5, retry_count))
+    payload["provider_timeout_seconds"] = max(30, min(600, optional_int(payload.get("provider_timeout_seconds")) or preset_config["timeout_seconds"]))
     payload["batch_size"] = max(1, min(5000, optional_int(payload.get("batch_size")) or 25))
     payload["priority"] = "high" if str(payload.get("priority") or "normal").lower() == "high" else "normal"
     payload["use_reference"] = bool(payload.get("use_reference", True))
@@ -2165,8 +2412,9 @@ def translation_result_values(result: Any) -> dict[str, Any]:
         input_tokens = int(result.get("input_tokens") or 0)
         output_tokens = int(result.get("output_tokens") or 0)
         actual_cost = float(result.get("actual_cost") or 0)
-        return {"text": text, "input_tokens": input_tokens, "output_tokens": output_tokens, "actual_cost": actual_cost}
-    return {"text": str(result or ""), "input_tokens": 0, "output_tokens": 0, "actual_cost": 0.0}
+        metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+        return {"text": text, "input_tokens": input_tokens, "output_tokens": output_tokens, "actual_cost": actual_cost, "metrics": metrics}
+    return {"text": str(result or ""), "input_tokens": 0, "output_tokens": 0, "actual_cost": 0.0, "metrics": {}}
 
 
 def compact_error(exc: Any) -> str:
@@ -2190,6 +2438,75 @@ def job_activity(items: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def job_health(job: dict[str, Any], activity: dict[str, Any], items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    items = items or []
+    status = str(job.get("status") or "unknown")
+    error = str(job.get("error") or "")
+    failed_categories = {str(item.get("failure_category") or "") for item in items if item.get("failure_category")}
+    idle_seconds = seconds_between(job.get("updated_at"), utc_now())
+    failed_items = int(job.get("failed_items") or 0)
+    active_workers = int(activity.get("active_workers") or 0)
+    stalled_items = int(activity.get("stalled_items") or 0)
+    actions: list[str] = []
+
+    if status == "paused":
+        state = "paused"
+        message = "Job is paused. Resume when ready."
+        actions = ["resume", "cancel"]
+    elif status == "cancelled":
+        state = "cancelled"
+        message = "Job was cancelled; completed chapters remain saved."
+    elif status == "completed":
+        state = "completed_with_warnings" if failed_items else "completed"
+        message = "Completed with warnings." if failed_items else "Completed."
+        if failed_items:
+            actions = ["retry_failed"]
+    elif status == "failed":
+        state = "failed"
+        message = "Job needs attention before continuing."
+        actions = ["retry_failed", "cancel"]
+    elif "rate" in error.lower() or "rate_limited" in failed_categories:
+        state = "rate_limited"
+        message = "Provider rate limit reached; retrying when the backoff window clears."
+        actions = ["pause", "cancel"]
+    elif "timeout" in failed_categories:
+        state = "retrying"
+        message = "A provider timeout occurred; retryable chapters can continue."
+        actions = ["pause", "cancel"]
+    elif stalled_items:
+        state = "stalled"
+        message = "One or more claimed chapters have stale leases and may need recovery."
+        actions = ["recover_stalled", "cancel"]
+    elif status == "queued":
+        state = "waiting_for_capacity"
+        message = "Waiting for an available translation worker."
+        actions = ["cancel"]
+    elif status == "running" and active_workers == 0 and idle_seconds >= 300:
+        state = "interrupted"
+        message = "No active worker heartbeat recently; completed chapters are safe and remaining work can resume."
+        actions = ["resume", "retry_failed", "cancel"]
+    elif status == "running" and active_workers == 0:
+        state = "waiting_for_capacity"
+        message = "Waiting for an available translation worker."
+        actions = ["pause", "cancel"]
+    elif status == "running" and idle_seconds >= 300:
+        state = "slow"
+        message = "A chapter is taking longer than normal; monitor provider timing."
+        actions = ["pause", "cancel"]
+    else:
+        state = "healthy"
+        message = "Job is running with recent worker activity." if status == "running" else "Job state is normal."
+        if status == "running":
+            actions = ["pause", "cancel"]
+
+    return {
+        "state": state,
+        "message": message,
+        "idle_seconds": round(idle_seconds, 1),
+        "recommended_actions": actions,
+    }
+
+
 def timestamp_expired(value: Any, now_text: str | None = None) -> bool:
     if not value:
         return False
@@ -2204,6 +2521,67 @@ def seconds_between(start: Any, end: Any) -> float:
     if not start_dt or not end_dt:
         return 0.0
     return max(0.0, (end_dt - start_dt).total_seconds())
+
+
+def average(values: list[float]) -> float | None:
+    clean = [float(value) for value in values if value is not None]
+    return round(sum(clean) / len(clean), 3) if clean else None
+
+
+def average_metric(items: list[dict[str, Any]], key: str) -> float | None:
+    values = [float(item[key]) for item in items if item.get(key) is not None]
+    return average(values)
+
+
+def reference_usage_percent(items: list[dict[str, Any]]) -> float | None:
+    measured = [item for item in items if item.get("reference_char_count") is not None]
+    if not measured:
+        return None
+    used = sum(1 for item in measured if int(item.get("reference_char_count") or 0) > 0)
+    return round(used / len(measured) * 100, 1)
+
+
+def chapters_per_minute(items: list[dict[str, Any]]) -> float | None:
+    completed = [item for item in items if parse_timestamp(item.get("finished_at"))]
+    if len(completed) < 2:
+        return None
+    first = min(parse_timestamp(item.get("finished_at")) for item in completed if parse_timestamp(item.get("finished_at")))
+    last = max(parse_timestamp(item.get("finished_at")) for item in completed if parse_timestamp(item.get("finished_at")))
+    if not first or not last:
+        return None
+    minutes = max(1 / 60, (last - first).total_seconds() / 60)
+    return round(len(completed) / minutes, 3)
+
+
+def peak_provider_overlap(items: list[dict[str, Any]]) -> int:
+    events: list[tuple[datetime, int]] = []
+    for item in items:
+        start = parse_timestamp(item.get("provider_started_at"))
+        end = parse_timestamp(item.get("provider_finished_at"))
+        if start and end and end >= start:
+            events.append((start, 1))
+            events.append((end, -1))
+    active = 0
+    peak = 0
+    for _, delta in sorted(events, key=lambda event: (event[0], -event[1])):
+        active += delta
+        peak = max(peak, active)
+    return peak
+
+
+def effective_settings_summary(settings_samples: list[dict[str, Any]]) -> dict[str, Any]:
+    if not settings_samples:
+        return {}
+    latest = settings_samples[0]
+    return {
+        "speed_preset": latest.get("speed_preset"),
+        "starting_worker_count": latest.get("concurrency"),
+        "maximum_worker_count": latest.get("max_workers"),
+        "retry_limit": latest.get("retry_count"),
+        "provider_timeout_seconds": latest.get("provider_timeout_seconds"),
+        "auto_optimize_speed": latest.get("auto_optimize_speed"),
+        "global_worker_cap": optional_int(os.getenv("TRANSLATION_MAX_CONCURRENCY")) or 8,
+    }
 
 
 def classify_failure_text(value: str | None) -> str:

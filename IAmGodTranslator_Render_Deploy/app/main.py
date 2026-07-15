@@ -15,6 +15,7 @@ import urllib.request
 import uuid
 import zipfile
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -74,34 +75,67 @@ class TranslationRunner:
         concurrency = translation_concurrency(job.get("settings") or {})
         workers = [asyncio.create_task(self._worker(job_id, mock)) for _ in range(concurrency)]
         await asyncio.gather(*workers)
+        await asyncio.to_thread(self.store.refresh_translation_job, job_id)
 
     async def _worker(self, job_id: str, mock: bool) -> None:
         worker_id = f"{threading.get_ident()}-{uuid.uuid4().hex[:8]}"
         while True:
             await self._respect_circuit_breaker()
             await asyncio.to_thread(self._acquire_global_slot)
+            retry_pause = 0.0
             try:
-                claim = self.store.claim_translation_item(job_id, worker_id, lease_seconds=translation_lease_seconds())
+                claim = await asyncio.to_thread(self.store.claim_translation_item, job_id, worker_id, translation_lease_seconds())
                 if claim.get("status") == "race_lost":
                     continue
                 if claim.get("status") != "claimed":
                     return
                 item_id = int(claim["item_id"])
+                metrics = dict(claim.get("metrics") or {})
                 if claim.get("skip_error"):
-                    self.store.finish_translation_item(job_id, item_id, worker_id, skipped_error=str(claim["skip_error"]))
+                    await asyncio.to_thread(
+                        self.store.finish_translation_item,
+                        job_id,
+                        item_id,
+                        worker_id,
+                        None,
+                        None,
+                        str(claim["skip_error"]),
+                        metrics,
+                    )
                     continue
                 stop = asyncio.Event()
                 heartbeat = asyncio.create_task(self._heartbeat(job_id, item_id, worker_id, stop))
                 try:
                     translator = fake_translator_async if mock else openai_translator_async
+                    provider_started = time.perf_counter()
                     result = await translator(claim["original_text"], claim.get("reference_text"), claim["settings"])
-                    self.store.finish_translation_item(job_id, item_id, worker_id, result=result)
+                    metrics.setdefault("provider_wait_seconds", time.perf_counter() - provider_started)
+                    await asyncio.to_thread(
+                        self.store.finish_translation_item,
+                        job_id,
+                        item_id,
+                        worker_id,
+                        result,
+                        None,
+                        None,
+                        metrics,
+                    )
                 except Exception as exc:
-                    self.store.finish_translation_item(job_id, item_id, worker_id, error=compact_exception(exc))
+                    metrics.setdefault("provider_wait_seconds", time.perf_counter() - provider_started)
                     if retryable_provider_error(exc):
-                        pause = provider_backoff_seconds(exc)
-                        self._open_circuit(pause)
-                        await asyncio.sleep(pause)
+                        retry_pause = provider_backoff_seconds(exc)
+                        metrics["retry_delay_seconds"] = retry_pause
+                        self._open_circuit(retry_pause)
+                    await asyncio.to_thread(
+                        self.store.finish_translation_item,
+                        job_id,
+                        item_id,
+                        worker_id,
+                        None,
+                        compact_exception(exc),
+                        None,
+                        metrics,
+                    )
                 finally:
                     stop.set()
                     heartbeat.cancel()
@@ -109,6 +143,8 @@ class TranslationRunner:
                         await heartbeat
             finally:
                 self._release_global_slot()
+            if retry_pause:
+                await self._respect_circuit_breaker()
 
     async def _heartbeat(self, job_id: str, item_id: int, worker_id: str, stop: asyncio.Event) -> None:
         interval = max(10, min(60, translation_lease_seconds() // 4))
@@ -116,7 +152,7 @@ class TranslationRunner:
             await asyncio.sleep(interval)
             if stop.is_set():
                 return
-            ok = self.store.heartbeat_translation_item(job_id, item_id, worker_id, lease_seconds=translation_lease_seconds())
+            ok = await asyncio.to_thread(self.store.heartbeat_translation_item, job_id, item_id, worker_id, translation_lease_seconds())
             if not ok:
                 return
 
@@ -716,6 +752,44 @@ def admin_users(_: None = Depends(require_admin)) -> dict[str, object]:
     return {"ok": True, "users": [sanitize_profile(user) for user in database.users()]}
 
 
+@app.get("/api/admin/translation/performance")
+def admin_translation_performance(novel_id: str | None = None, _: None = Depends(require_admin)) -> dict[str, object]:
+    diagnostics = database.translation_performance_diagnostics(novel_id=novel_id)
+    diagnostics["runtime"] = {
+        "global_worker_cap": translation_global_concurrency_limit(),
+        "default_concurrency": bounded_int(os.getenv("TRANSLATION_DEFAULT_CONCURRENCY"), 3, 1, 4),
+        "lease_seconds": translation_lease_seconds(),
+        "benchmark_enabled": benchmark_enabled(),
+        "scheduler_location": "FastAPI web process",
+    }
+    return diagnostics
+
+
+@app.post("/api/admin/translation/benchmark/estimate")
+def admin_translation_benchmark_estimate(payload: dict[str, Any] = Body(default={}), _: None = Depends(require_admin)) -> dict[str, object]:
+    if not benchmark_enabled():
+        return {
+            "ok": False,
+            "enabled": False,
+            "detail": "controlled_benchmark_disabled",
+            "message": "Set TRANSLATION_BENCHMARK_ENABLED=true before running a real provider benchmark.",
+        }
+    novel_id = str(payload.get("novel_id") or default_novel_id())
+    chapters = selected_chapters(novel_id, payload)
+    if len(chapters) > 5:
+        raise HTTPException(status_code=400, detail="benchmark_sample_limit_5")
+    settings = {**payload, "only_untranslated": bool(payload.get("only_untranslated", True))}
+    estimate = database.estimate_translation(novel_id, chapters, settings)
+    return {
+        "ok": True,
+        "enabled": True,
+        "dry_run": True,
+        "overwrite_existing_ai": False,
+        "estimate": estimate,
+        "message": "Dry-run only. Running a real benchmark requires a separate explicit action and is not implemented in normal QA.",
+    }
+
+
 @app.get("/api/novels/{novel_id}/backup")
 def export_backup(novel_id: str, _: None = Depends(require_admin)) -> StreamingResponse:
     payload = database.backup_payload(novel_id)
@@ -841,8 +915,23 @@ def fake_translator(original: str, reference: str | None, settings: dict[str, An
 
 
 async def fake_translator_async(original: str, reference: str | None, settings: dict[str, Any]) -> dict[str, Any]:
-    await asyncio.sleep(0)
-    return fake_translator(original, reference, settings)
+    prompt_started = time.perf_counter()
+    payload = build_prompt_payload(original, reference, settings)
+    prompt_build_seconds = time.perf_counter() - prompt_started
+    provider_started_at = datetime.now(UTC).isoformat()
+    provider_started = time.perf_counter()
+    await asyncio.sleep(float(settings.get("mock_provider_delay_seconds") or 0))
+    provider_wait_seconds = time.perf_counter() - provider_started
+    provider_finished_at = datetime.now(UTC).isoformat()
+    result = fake_translator(original, reference, settings)
+    result["metrics"] = {
+        **payload["metrics"],
+        "prompt_build_seconds": prompt_build_seconds,
+        "provider_wait_seconds": provider_wait_seconds,
+        "provider_started_at": provider_started_at,
+        "provider_finished_at": provider_finished_at,
+    }
+    return result
 
 
 _async_openai_client: Any | None = None
@@ -865,6 +954,14 @@ def translation_global_concurrency_limit() -> int:
 
 def translation_lease_seconds() -> int:
     return bounded_int(os.getenv("TRANSLATION_ITEM_LEASE_SECONDS"), 900, 120, 3600)
+
+
+def provider_timeout_seconds(settings: dict[str, Any]) -> int:
+    return bounded_int(settings.get("provider_timeout_seconds"), 180, 30, 600)
+
+
+def benchmark_enabled() -> bool:
+    return (os.getenv("TRANSLATION_BENCHMARK_ENABLED") or "").lower() in {"1", "true", "yes"}
 
 
 def bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
@@ -903,15 +1000,37 @@ def openai_client() -> Any:
 
 async def openai_translator_async(original: str, reference: str | None, settings: dict[str, Any]) -> dict[str, Any]:
     model = settings.get("model") or os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
-    prompt = build_prompt(original, reference, settings)
-    response = await async_openai_client().responses.create(model=model, input=prompt)
+    prompt_started = time.perf_counter()
+    payload = build_prompt_payload(original, reference, settings)
+    prompt = payload["prompt"]
+    prompt_build_seconds = time.perf_counter() - prompt_started
+    provider_started_at = datetime.now(UTC).isoformat()
+    provider_started = time.perf_counter()
+    response = await asyncio.wait_for(
+        async_openai_client().responses.create(model=model, input=prompt),
+        timeout=provider_timeout_seconds(settings),
+    )
+    provider_wait_seconds = time.perf_counter() - provider_started
+    provider_finished_at = datetime.now(UTC).isoformat()
     text = response.output_text
     usage = getattr(response, "usage", None)
     input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
     output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
     pricing = model_pricing(model)
     actual_cost = (input_tokens / 1_000_000 * pricing["input"]) + (output_tokens / 1_000_000 * pricing["output"])
-    return {"text": text, "input_tokens": input_tokens, "output_tokens": output_tokens, "actual_cost": round(actual_cost, 8)}
+    return {
+        "text": text,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "actual_cost": round(actual_cost, 8),
+        "metrics": {
+            **payload["metrics"],
+            "prompt_build_seconds": prompt_build_seconds,
+            "provider_wait_seconds": provider_wait_seconds,
+            "provider_started_at": provider_started_at,
+            "provider_finished_at": provider_finished_at,
+        },
+    }
 
 
 def retryable_provider_error(exc: Exception) -> bool:
@@ -958,6 +1077,11 @@ def openai_translator(original: str, reference: str | None, settings: dict[str, 
 
 
 def build_prompt(original: str, reference: str | None, settings: dict[str, Any]) -> str:
+    return str(build_prompt_payload(original, reference, settings)["prompt"])
+
+
+def build_prompt_payload(original: str, reference: str | None, settings: dict[str, Any]) -> dict[str, Any]:
+    glossary = relevant_glossary(settings.get("glossary") or "", original) if settings.get("glossary") else ""
     guidance = [
         "Translate the Chinese source into natural professional English.",
         "The Chinese original is the source of truth.",
@@ -969,12 +1093,28 @@ def build_prompt(original: str, reference: str | None, settings: dict[str, Any])
         guidance.append("Use the reference translation only as style guidance when it helps; never translate the reference instead of the original.")
     if settings.get("style_guide"):
         guidance.append(f"Style guide: {settings['style_guide']}")
-    if settings.get("glossary"):
-        guidance.append(f"Glossary: {relevant_glossary(settings['glossary'], original)}")
+    if glossary:
+        guidance.append(f"Glossary: {glossary}")
+    instructions = "\n".join(guidance)
     prompt = "\n".join(guidance) + "\n\nChinese original:\n" + original
     if reference:
         prompt += "\n\nReference translation:\n" + reference
-    return prompt
+    return {
+        "prompt": prompt,
+        "metrics": {
+            "prompt_instruction_tokens": estimate_text_tokens(instructions),
+            "prompt_original_tokens": estimate_text_tokens(original),
+            "prompt_reference_tokens": estimate_text_tokens(reference or ""),
+            "prompt_estimated_output_tokens": max(1, len(original or "") // 5),
+            "original_char_count": len(original or ""),
+            "reference_char_count": len(reference or ""),
+        },
+    }
+
+
+def estimate_text_tokens(value: str | None) -> int:
+    text = value or ""
+    return max(0, len(text) // 4)
 
 
 def relevant_glossary(glossary: str, original: str, max_lines: int = 80) -> str:
