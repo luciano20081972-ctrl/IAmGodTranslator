@@ -567,6 +567,37 @@ async def preview_content_pack(
     return {**preview, "pack_warnings": payload.get("warnings", [])}
 
 
+@app.post("/api/admin/content/import/execute-pack")
+async def execute_content_pack(
+    files: list[UploadFile] = File(...),
+    novel_id: str | None = Query(None),
+    content_type: str | None = Query(None),
+    overwrite_existing: bool = Query(False),
+    dry_run: bool = Query(False),
+    _: None = Depends(require_admin),
+) -> dict[str, object]:
+    payloads: list[tuple[str, bytes]] = []
+    for upload in files:
+        payloads.append((upload.filename or "upload.zip", await upload.read()))
+    payload = payload_from_uploads(
+        payloads,
+        {
+            "novel_id": novel_id or "",
+            "content_type": content_type or "",
+            "options": {
+                "overwrite_existing": overwrite_existing,
+                "skip_existing": not overwrite_existing,
+                "add_missing": not overwrite_existing,
+                "dry_run": dry_run,
+                "merge_metadata": True,
+                "import_titles": True,
+            },
+        },
+    )
+    result = database.apply_content_import_payload(payload)
+    return {**result, "pack_warnings": payload.get("warnings", [])}
+
+
 @app.get("/api/admin/content/editions/{novel_id}")
 def list_english_editions(novel_id: str, chapter_number: int | None = None, _: None = Depends(require_admin)) -> dict[str, object]:
     if database.novel(novel_id) is None:

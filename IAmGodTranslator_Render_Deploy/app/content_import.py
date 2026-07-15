@@ -16,6 +16,7 @@ SUPPORTED_PACK_FORMATS = {
     "godtranslator-reference-pack-v1",
     "godtranslator-mixed-pack-v1",
     "godtranslator-downloader-pack-v1",
+    "godtranslator-new-novel-pack-v1",
 }
 
 

@@ -1395,7 +1395,7 @@ async function previewContentImport() {
   try {
     const file = document.querySelector("#importPackFile")?.files?.[0];
     let preview;
-    if (file && document.querySelector("#importSourceType")?.value === "zip") {
+    if (file) {
       const form = new FormData();
       form.append("files", file);
       preview = await api(`/api/admin/content/import/preview-pack?novel_id=${encodeURIComponent(document.querySelector("#importNovel")?.value || "")}`, {method: "POST", body: form, headers: {}});
@@ -1403,7 +1403,7 @@ async function previewContentImport() {
       preview = await api("/api/admin/content/import/preview", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(contentImportPayloadFromForm())});
     }
     target.innerHTML = renderContentImportPreview(preview);
-    document.querySelector("#executeContentImport").disabled = !preview.can_execute || Boolean(file && document.querySelector("#importSourceType")?.value === "zip");
+    document.querySelector("#executeContentImport").disabled = !preview.can_execute;
   } catch (error) {
     target.innerHTML = `<section class="state-card error"><p>${escapeHtml(error.message)}</p></section>`;
   }
@@ -1412,10 +1412,23 @@ async function previewContentImport() {
 async function executeContentImport() {
   const target = document.querySelector("#contentImportPreview");
   try {
-    const result = await api("/api/admin/content/import/execute", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(contentImportPayloadFromForm())});
+    const file = document.querySelector("#importPackFile")?.files?.[0];
+    let result;
+    if (file) {
+      const form = new FormData();
+      form.append("files", file);
+      const params = new URLSearchParams({
+        novel_id: document.querySelector("#importNovel")?.value || "",
+        overwrite_existing: document.querySelector("#importOverwrite")?.checked ? "true" : "false",
+        dry_run: document.querySelector("#importDryRun")?.checked ? "true" : "false",
+      });
+      result = await api(`/api/admin/content/import/execute-pack?${params.toString()}`, {method: "POST", body: form, headers: {}});
+    } else {
+      result = await api("/api/admin/content/import/execute", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(contentImportPayloadFromForm())});
+    }
     invalidateCache("/api/novels");
     await loadNovels(true);
-    target.innerHTML = `<section class="panel"><h2>Import Summary</h2><div class="metric-grid">${metric("Imported", result.summary?.imported || 0)}${metric("Updated", result.summary?.updated || 0)}${metric("Skipped", result.summary?.skipped || 0)}${metric("Errors", result.summary?.errors || 0)}</div><div class="actions"><a class="button primary" href="#/novel/${encodeURIComponent(result.novel_id)}">Open Novel</a><a class="button" href="#/reader/${encodeURIComponent(result.novel_id)}/1/english">Open Reader</a><a class="button" href="#/translate/${encodeURIComponent(result.novel_id)}">Open Translate</a></div>${objectDetails("Errors", result.errors || [])}</section>`;
+    target.innerHTML = `<section class="panel"><h2>Import Summary</h2><div class="metric-grid">${metric("Imported", result.summary?.imported || 0)}${metric("Updated", result.summary?.updated || 0)}${metric("Overwritten", result.summary?.overwritten || 0)}${metric("Skipped", result.summary?.skipped || 0)}${metric("Warnings", result.summary?.warnings || 0)}${metric("Errors", result.summary?.errors || 0)}</div><div class="actions"><a class="button primary" href="#/novel/${encodeURIComponent(result.novel_id)}">Open Novel</a><a class="button" href="#/reader/${encodeURIComponent(result.novel_id)}/1/english">Open Reader</a><a class="button" href="#/translate/${encodeURIComponent(result.novel_id)}">Open Translate</a></div>${objectDetails("Warnings", result.pack_warnings || [])}${objectDetails("Errors", result.errors || [])}</section>`;
   } catch (error) {
     target.innerHTML = `<section class="state-card error"><p>${escapeHtml(error.message)}</p></section>`;
   }

@@ -37,8 +37,8 @@ CONTENT_TYPES = {"original", "english", "reference", "ai", "metadata", "cover", 
 ENGLISH_EDITION_PRIORITY = {
     "official": 0,
     "edited": 1,
-    "human": 2,
-    "imported": 3,
+    "imported": 2,
+    "human": 3,
     "ai": 4,
     "machine": 5,
     "community": 6,
@@ -701,7 +701,20 @@ class Database:
         now = now or utc_now()
         edition_type = normalize_edition_type(edition_type)
         edition_key = edition_key or edition_key_for(edition_type, source_label)
-        if is_default:
+        should_be_default = bool(is_default)
+        if should_be_default:
+            current = conn.execute(
+                f"""
+                SELECT edition_type
+                FROM {self.table('chapter_editions')}
+                WHERE novel_id = ? AND chapter_number = ? AND language = ? AND is_default = 1
+                LIMIT 1
+                """,
+                (novel_id, chapter_number, language),
+            ).fetchone()
+            if current and edition_priority(edition_type) > edition_priority(current["edition_type"]):
+                should_be_default = False
+        if should_be_default:
             conn.execute(
                 f"""
                 UPDATE {self.table('chapter_editions')}
@@ -736,7 +749,7 @@ class Database:
                 source_label,
                 text,
                 len(text),
-                1 if is_default else 0,
+                1 if should_be_default else 0,
                 json.dumps(metadata or {}, ensure_ascii=False),
                 now,
                 now,
@@ -2427,6 +2440,7 @@ class Database:
         items = normalized_content_import_items(payload)
         imported: list[dict[str, Any]] = []
         updated: list[dict[str, Any]] = []
+        overwritten: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
         job_id = str(uuid.uuid4())
@@ -2525,6 +2539,8 @@ class Database:
                         target = {"content_type": content_type, "chapter_number": chapter_number}
                         if action == "imported":
                             imported.append(target)
+                        elif action == "overwritten":
+                            overwritten.append(target)
                         elif action == "updated":
                             updated.append(target)
                         else:
@@ -2575,11 +2591,14 @@ class Database:
             "summary": {
                 "imported": len(imported),
                 "updated": len(updated),
+                "overwritten": len(overwritten),
                 "skipped": len(skipped),
                 "errors": len(errors),
+                "warnings": len(preview.get("warnings") or []),
             },
             "imported": imported,
             "updated": updated,
+            "overwritten": overwritten,
             "skipped": skipped,
             "errors": errors,
         }
@@ -2595,7 +2614,8 @@ class Database:
         ).fetchone()
         text = item["text"]
         title = clean_chapter_title(chapter_number, item.get("title")) if options["import_titles"] and item.get("title") else None
-        if existing and readable(existing[column]) and not options["overwrite_existing"]:
+        existing_text_present = bool(existing and readable(existing[column]))
+        if existing_text_present and not options["overwrite_existing"]:
             return {"action": "skipped", "status": "skipped_existing", "reason": "existing_content_preserved"}
         if existing is None:
             conn.execute(
@@ -2650,7 +2670,7 @@ class Database:
                 """,
                 tuple(params),
             )
-            action = "updated"
+            action = "overwritten" if existing_text_present and options["overwrite_existing"] else "updated"
         if column == "ai_text":
             self._upsert_english_edition_conn(
                 conn,
@@ -3139,6 +3159,10 @@ def normalize_edition_type(value: Any) -> str:
         "community": "Community",
     }
     return canonical.get(normalized, title_case(normalized or "Imported"))
+
+
+def edition_priority(value: Any) -> int:
+    return ENGLISH_EDITION_PRIORITY.get(str(value or "").strip().lower(), 99)
 
 
 def edition_key_for(edition_type: str, source_label: str | None = None) -> str:
