@@ -556,13 +556,27 @@ def execute_content_import(payload: dict[str, Any] = Body(...), _: None = Depend
 async def preview_content_pack(
     files: list[UploadFile] = File(...),
     novel_id: str | None = Query(None),
+    novel_title: str | None = Query(None),
+    author: str | None = Query(None),
+    source_url: str | None = Query(None),
     content_type: str | None = Query(None),
     _: None = Depends(require_admin),
 ) -> dict[str, object]:
     payloads: list[tuple[str, bytes]] = []
     for upload in files:
         payloads.append((upload.filename or "upload.zip", await upload.read()))
-    payload = payload_from_uploads(payloads, {"novel_id": novel_id or "", "content_type": content_type or ""})
+    payload = payload_from_uploads(
+        payloads,
+        {
+            "novel_id": novel_id or "",
+            "novel": {
+                "title": novel_title or "",
+                "author": author or "",
+                "source_url": source_url or "",
+            },
+            "content_type": content_type or "",
+        },
+    )
     preview = database.content_import_preview(payload)
     return {**preview, "pack_warnings": payload.get("warnings", [])}
 
@@ -571,6 +585,9 @@ async def preview_content_pack(
 async def execute_content_pack(
     files: list[UploadFile] = File(...),
     novel_id: str | None = Query(None),
+    novel_title: str | None = Query(None),
+    author: str | None = Query(None),
+    source_url: str | None = Query(None),
     content_type: str | None = Query(None),
     overwrite_existing: bool = Query(False),
     dry_run: bool = Query(False),
@@ -583,6 +600,11 @@ async def execute_content_pack(
         payloads,
         {
             "novel_id": novel_id or "",
+            "novel": {
+                "title": novel_title or "",
+                "author": author or "",
+                "source_url": source_url or "",
+            },
             "content_type": content_type or "",
             "options": {
                 "overwrite_existing": overwrite_existing,

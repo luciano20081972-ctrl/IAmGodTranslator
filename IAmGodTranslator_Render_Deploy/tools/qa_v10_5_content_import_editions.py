@@ -22,6 +22,109 @@ class ContentImportEditionTests(unittest.TestCase):
         db.initialize()
         return db
 
+    def test_brand_new_novel_empty_state_without_expected_range(self) -> None:
+        db = self.make_db()
+        db.save_novel_metadata("empty-novel", {"title": "Empty Novel"})
+        novel = db.novel("empty-novel")
+
+        self.assertEqual(novel["chapter_count"], 0)
+        self.assertFalse(novel["expected_range_configured"])
+        self.assertFalse(novel["missing_counts_known"])
+        self.assertEqual(novel["chapter_inventory_state"], "empty_no_expected_range")
+        self.assertEqual(novel["empty_state_title"], "No chapters imported yet")
+        self.assertEqual(novel["expected_range_label"], "Expected range not set")
+        self.assertIn("Unknown until chapters are imported", novel["missing_unknown_label"])
+
+    def test_brand_new_novel_expected_range_reports_real_missing_counts(self) -> None:
+        db = self.make_db()
+        db.save_novel_metadata(
+            "expected-empty",
+            {"title": "Expected Empty", "reference_target_start": 1, "reference_target_end": 10},
+        )
+        novel = db.novel("expected-empty")
+
+        self.assertEqual(novel["chapter_count"], 0)
+        self.assertTrue(novel["expected_range_configured"])
+        self.assertTrue(novel["missing_counts_known"])
+        self.assertEqual(novel["expected_chapter_count"], 10)
+        self.assertEqual(novel["missing_original_count"], 10)
+        self.assertEqual(novel["missing_english_count"], 10)
+        self.assertEqual(novel["missing_reference_count"], 10)
+
+    def test_simple_original_txt_import_creates_brand_new_chapter_rows(self) -> None:
+        db = self.make_db()
+        payload = payload_from_uploads(
+            [
+                ("Chapter 1.txt", b"Original one"),
+                ("Chapter 002.txt", b"Original two"),
+                ("003.txt", b"Original three"),
+            ],
+            {"novel": {"title": "Simple Original"}, "content_type": "original"},
+        )
+        preview = db.content_import_preview(payload)
+
+        self.assertTrue(preview["can_execute"])
+        self.assertEqual(preview["novel_id"], "simple-original")
+        self.assertEqual(preview["existing_chapter_count"], 0)
+        self.assertTrue(preview["new_chapters_detected"])
+        self.assertEqual(preview["new_chapter_count"], 3)
+        self.assertEqual(preview["rows_to_create_count"], 3)
+        self.assertEqual(preview["content_to_add"]["original"], 3)
+        self.assertEqual(preview["content_to_add"]["english"], 0)
+        self.assertIsNone(db.novel("simple-original"))
+
+        result = db.apply_content_import_payload(payload)
+        self.assertTrue(result["ok"])
+        counts = db.verification_counts("simple-original")
+        self.assertEqual(counts["total"], 3)
+        self.assertEqual(counts["original"], 3)
+        self.assertEqual(counts["english"], 0)
+        self.assertEqual(db.chapter_text("simple-original", 2, "original")["text"], "Original two")
+
+    def test_simple_english_txt_import_creates_rows_and_editions(self) -> None:
+        db = self.make_db()
+        payload = payload_from_uploads(
+            [
+                ("1.txt", b"English one"),
+                ("Chapter 2.txt", b"English two"),
+                ("Chapter 003.txt", b"English three"),
+            ],
+            {"novel": {"title": "Simple English"}, "content_type": "english"},
+        )
+        preview = db.content_import_preview(payload)
+
+        self.assertEqual(preview["rows_to_create_count"], 3)
+        self.assertEqual(preview["content_to_add"]["english"], 3)
+        result = db.apply_content_import_payload(payload)
+        self.assertTrue(result["ok"])
+        counts = db.verification_counts("simple-english")
+        self.assertEqual(counts["total"], 3)
+        self.assertEqual(counts["english"], 3)
+        self.assertEqual(len(db.english_editions("simple-english", 3)), 1)
+        self.assertEqual(db.chapter_text("simple-english", 3, "english")["text"], "English three")
+
+    def test_manifestless_zip_simple_reference_import_detects_chapters(self) -> None:
+        db = self.make_db()
+        memory = io.BytesIO()
+        with zipfile.ZipFile(memory, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("Chapter 1.txt", b"Reference one")
+            zf.writestr("Chapter 002.txt", b"Reference two")
+            zf.writestr("notes.txt", b"Not a chapter")
+        payload = payload_from_uploads(
+            [("simple-reference.zip", memory.getvalue())],
+            {"novel": {"title": "Simple Reference"}, "content_type": "reference"},
+        )
+        preview = db.content_import_preview(payload)
+
+        self.assertEqual(preview["new_chapter_count"], 2)
+        self.assertEqual(preview["rows_to_create_count"], 2)
+        self.assertEqual(preview["content_to_add"]["reference"], 2)
+        self.assertEqual(len(preview["invalid_files"]), 1)
+        self.assertIn("no manifest.json", " ".join(payload["warnings"]))
+        result = db.apply_content_import_payload(payload)
+        self.assertTrue(result["ok"])
+        self.assertEqual(db.verification_counts("simple-reference")["reference"], 2)
+
     def test_brand_new_novel_original_and_english_reads_without_translation(self) -> None:
         db = self.make_db()
         payload = {
@@ -102,6 +205,7 @@ class ContentImportEditionTests(unittest.TestCase):
         }
         preview = db.content_import_preview(payload)
         self.assertEqual(preview["duplicate_count"], 1)
+        self.assertTrue(preview["options"]["add_missing"])
         result = db.apply_content_import_payload({"novel": {"title": "Duplicate Fixture"}, "items": [payload["items"][0]]})
         novel_id = result["novel_id"]
         skipped = db.apply_content_import_payload({
@@ -125,7 +229,9 @@ class ContentImportEditionTests(unittest.TestCase):
         }
         preview = db.content_import_preview(payload)
         self.assertTrue(preview["can_execute"])
+        self.assertEqual(preview["rows_to_create_count"], 1)
         self.assertIsNone(db.novel("preview-only"))
+        self.assertEqual(db.verification_counts("preview-only")["total"], 0)
 
     def test_recovery_fills_missing_only_without_creating_rows(self) -> None:
         db = self.make_db()
@@ -139,6 +245,31 @@ class ContentImportEditionTests(unittest.TestCase):
         skipped = db.apply_import_job(missing_preview["job_id"])
         self.assertEqual(skipped["imported_count"], 0)
         self.assertFalse(db.chapter_text("recovery-fixture", 2, "english")["ok"])
+        self.assertEqual(db.verification_counts("recovery-fixture")["total"], 1)
+
+    def test_content_import_creates_rows_for_existing_partial_novel(self) -> None:
+        db = self.make_db()
+        db.save_novel_metadata("partial-existing", {"title": "Partial Existing"})
+        db.upsert_chapter("partial-existing", 1, "Chapter 1", "Original one", "", "", None)
+        payload = payload_from_uploads(
+            [
+                ("Chapter 1.txt", b"Replacement ignored"),
+                ("Chapter 2.txt", b"Original two"),
+                ("Chapter 3.txt", b"Original three"),
+            ],
+            {"novel_id": "partial-existing", "content_type": "original"},
+        )
+        preview = db.content_import_preview(payload)
+
+        self.assertEqual(preview["existing_chapter_count"], 1)
+        self.assertEqual(preview["rows_to_create"], [2, 3])
+        self.assertEqual(preview["estimated_import"]["would_skip"], 1)
+        result = db.apply_content_import_payload(payload)
+        self.assertTrue(result["ok"])
+        counts = db.verification_counts("partial-existing")
+        self.assertEqual(counts["total"], 3)
+        self.assertEqual(counts["original"], 3)
+        self.assertEqual(db.chapter_text("partial-existing", 1, "original")["text"], "Original one")
 
     def test_legacy_ai_migrates_to_english_edition(self) -> None:
         db = self.make_db()
@@ -385,6 +516,11 @@ class ContentImportEditionTests(unittest.TestCase):
         payload = payload_from_uploads([("new-novel.zip", memory.getvalue())])
         preview = db.content_import_preview(payload)
         self.assertTrue(preview["can_execute"])
+        self.assertEqual(preview["existing_chapter_count"], 0)
+        self.assertEqual(preview["new_chapter_count"], 1)
+        self.assertEqual(preview["rows_to_create_count"], 1)
+        self.assertEqual(preview["content_to_add"]["original"], 1)
+        self.assertEqual(preview["content_to_add"]["english"], 1)
         result = db.apply_content_import_payload(payload)
         self.assertTrue(result["ok"])
         self.assertEqual(db.chapter_text("new-novel-pack", 1, "original")["text"], original)

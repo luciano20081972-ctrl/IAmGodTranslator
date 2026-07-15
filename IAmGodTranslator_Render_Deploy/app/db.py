@@ -900,8 +900,27 @@ class Database:
             return [public_novel_row(row) for row in rows]
 
     def novel(self, novel_id: str) -> dict[str, Any] | None:
+        novels = self.table("novels")
+        chapters = self.table("chapters")
         with self.connect() as conn:
-            row = conn.execute(f"SELECT * FROM {self.table('novels')} WHERE id = ?", (novel_id,)).fetchone()
+            row = conn.execute(
+                f"""
+                SELECT n.id, n.title, n.summary, n.model, n.status, n.created_at, n.updated_at,
+                    n.author, n.cover_url, n.source_url, n.reference_source_url,
+                    n.reference_target_start, n.reference_target_end,
+                    n.metadata_json, n.is_archived,
+                    COUNT(c.id) AS chapter_count,
+                    SUM(CASE WHEN c.original_text IS NOT NULL AND LENGTH(TRIM(c.original_text)) > 0 THEN 1 ELSE 0 END) AS original_count,
+                    SUM(CASE WHEN c.reference_text IS NOT NULL AND LENGTH(TRIM(c.reference_text)) > 0 THEN 1 ELSE 0 END) AS reference_count,
+                    SUM(CASE WHEN c.ai_text IS NOT NULL AND LENGTH(TRIM(c.ai_text)) > 0 THEN 1 ELSE 0 END) AS ai_count,
+                    SUM(CASE WHEN c.ai_text IS NOT NULL AND LENGTH(TRIM(c.ai_text)) > 0 THEN 1 ELSE 0 END) AS english_count
+                FROM {novels} n
+                LEFT JOIN {chapters} c ON c.novel_id = n.id
+                WHERE n.id = ?
+                GROUP BY n.id
+                """,
+                (novel_id,),
+            ).fetchone()
             return public_novel_row(row) if row else None
 
     def archive_novel(self, novel_id: str, archived: bool) -> dict[str, Any]:
@@ -2390,10 +2409,20 @@ class Database:
         items = normalized_content_import_items(payload)
         chapter_numbers = sorted({int(item["chapter_number"]) for item in items if item.get("chapter_number")})
         existing_by_chapter: dict[int, dict[str, Any]] = {}
+        existing_chapter_count = 0
         existing_novel = None
+        existing_novel_public: dict[str, Any] | None = None
         if novel_id:
             with self.connect() as conn:
                 existing_novel = conn.execute(f"SELECT * FROM {self.table('novels')} WHERE id = ?", (novel_id,)).fetchone()
+                existing_chapter_count = int(
+                    conn.execute(
+                        f"SELECT COUNT(*) AS total FROM {self.table('chapters')} WHERE novel_id = ?",
+                        (novel_id,),
+                    ).fetchone()["total"]
+                    or 0
+                )
+                existing_novel_public = public_novel_row(existing_novel) if existing_novel else None
                 if chapter_numbers:
                     placeholders = ",".join("?" for _ in chapter_numbers)
                     rows = conn.execute(
@@ -2405,8 +2434,14 @@ class Database:
                         tuple([novel_id] + chapter_numbers),
                     ).fetchall()
                     existing_by_chapter = {int(row["chapter_number"]): dict(row) for row in rows}
+        expected_start, expected_end = configured_chapter_range(existing_novel_public or novel_payload)
+        expected_range_configured = expected_start is not None and expected_end is not None
+        expected_chapter_count = (expected_end - expected_start + 1) if expected_range_configured else None
 
         warnings: list[str] = []
+        invalid_files = list(payload.get("invalid_files") if isinstance(payload.get("invalid_files"), list) else [])
+        empty_files = list(payload.get("empty_files") if isinstance(payload.get("empty_files"), list) else [])
+        ambiguous_filenames = list(payload.get("ambiguous_filenames") if isinstance(payload.get("ambiguous_filenames"), list) else [])
         if not novel_id:
             warnings.append("A novel id or title is required before import can execute.")
         elif existing_novel is None:
@@ -2419,7 +2454,10 @@ class Database:
         duplicate_keys: list[dict[str, Any]] = []
         counters = {"would_import": 0, "would_update": 0, "would_skip": 0, "duplicates": 0, "errors": 0}
         by_type: dict[str, int] = {}
+        content_to_add = {"original": 0, "english": 0, "reference": 0}
+        content_to_update = {"original": 0, "english": 0, "reference": 0}
         missing_by_type = {"original": [], "english": [], "reference": []}
+        new_chapter_numbers: set[int] = set()
         titles: list[dict[str, Any]] = []
 
         for item in items:
@@ -2447,6 +2485,7 @@ class Database:
                     current_text = existing.get(column) if existing else None
                     if not existing:
                         reason = "Chapter row will be created by Content Import Center."
+                        new_chapter_numbers.add(chapter_number)
                     elif readable(current_text):
                         if options["overwrite_existing"]:
                             row_action = "would_update"
@@ -2468,19 +2507,42 @@ class Database:
                     counters["would_skip"] += 1
                 else:
                     counters["would_import"] += 1
+                if content_type in content_to_add and row_action == "would_import":
+                    content_to_add[content_type] += 1
+                if content_type in content_to_update and row_action == "would_update":
+                    content_to_update[content_type] += 1
             preview_items.append({key: value for key, value in item.items() if key != "text"} | {"action": row_action, "reason": reason})
 
+        rows_to_create = sorted(new_chapter_numbers)
+        if rows_to_create:
+            warnings.append("New chapters detected; execute will create chapter rows before adding content.")
         return {
             "ok": True,
             "stage": "preview",
             "novel_id": novel_id,
+            "novel_title": novel_payload.get("title") or (existing_novel_public or {}).get("title") or titleCase(novel_id),
             "create_new_novel": existing_novel is None,
             "options": options,
+            "existing_chapter_count": existing_chapter_count,
+            "detected_chapter_count": len(chapter_numbers),
             "chapter_count": len(chapter_numbers),
+            "new_chapters_detected": bool(rows_to_create),
+            "new_chapter_count": len(rows_to_create),
+            "new_chapter_numbers": rows_to_create,
+            "rows_to_create": rows_to_create,
+            "rows_to_create_count": len(rows_to_create),
+            "expected_range_configured": expected_range_configured,
+            "expected_chapter_range": {"start": expected_start, "end": expected_end} if expected_range_configured else None,
+            "expected_chapter_count": expected_chapter_count,
             "content_type_counts": by_type,
+            "content_to_add": content_to_add,
+            "content_to_update": content_to_update,
             "missing_chapters": {key: sorted(set(value)) for key, value in missing_by_type.items()},
             "duplicates": duplicate_keys,
             "duplicate_count": counters["duplicates"],
+            "invalid_files": invalid_files,
+            "empty_files": empty_files,
+            "ambiguous_filenames": ambiguous_filenames,
             "chapter_titles": titles[:100],
             "estimated_import": counters,
             "warnings": warnings,
@@ -3053,14 +3115,70 @@ def public_novel_row(row: Any) -> dict[str, Any]:
     except Exception:
         payload["metadata"] = {}
     payload.pop("metadata_json", None)
+    chapter_count = int(payload.get("chapter_count") or 0)
+    original_count = int(payload.get("original_count") or 0)
+    reference_count = int(payload.get("reference_count") or 0)
+    ai_count = int(payload.get("ai_count") or 0)
     payload["english_count"] = int(payload.get("english_count") if payload.get("english_count") is not None else payload.get("ai_count") or 0)
-    payload["missing_original_count"] = max(0, int(payload.get("chapter_count") or 0) - int(payload.get("original_count") or 0))
-    payload["missing_english_count"] = max(0, int(payload.get("chapter_count") or 0) - int(payload.get("english_count") or 0))
-    payload["missing_reference_count"] = max(0, int(payload.get("chapter_count") or 0) - int(payload.get("reference_count") or 0))
-    payload["remaining_count"] = max(0, int(payload.get("original_count") or 0) - int(payload.get("english_count") or 0))
+    english_count = int(payload.get("english_count") or 0)
+    expected_start, expected_end = configured_chapter_range(payload)
+    expected_range_configured = expected_start is not None and expected_end is not None
+    expected_chapter_count = (expected_end - expected_start + 1) if expected_range_configured else None
+    missing_basis = expected_chapter_count if expected_range_configured else chapter_count
+    payload["expected_range_configured"] = expected_range_configured
+    payload["expected_chapter_range"] = {"start": expected_start, "end": expected_end} if expected_range_configured else None
+    payload["expected_chapter_count"] = expected_chapter_count
+    payload["missing_counts_known"] = bool(expected_range_configured or chapter_count > 0)
+    payload["chapter_inventory_state"] = (
+        "empty_expected_range_configured"
+        if chapter_count == 0 and expected_range_configured
+        else "empty_no_expected_range"
+        if chapter_count == 0
+        else "has_chapters"
+    )
+    payload["empty_state_title"] = "No chapters imported yet" if chapter_count == 0 else ""
+    payload["empty_state_detail"] = (
+        "Import chapter files or a GodTranslator pack to create the first chapter rows."
+        if chapter_count == 0
+        else ""
+    )
+    payload["expected_range_state"] = "configured" if expected_range_configured else "not_set"
+    payload["expected_range_label"] = (
+        f"{expected_start}-{expected_end}" if expected_range_configured else "Expected range not set"
+    )
+    payload["missing_unknown_label"] = (
+        "" if payload["missing_counts_known"] else "Unknown until chapters are imported or a range is configured."
+    )
+    payload["missing_original_count"] = max(0, int(missing_basis or 0) - original_count)
+    payload["missing_english_count"] = max(0, int(missing_basis or 0) - english_count)
+    payload["missing_reference_count"] = max(0, int(missing_basis or 0) - reference_count)
+    payload["remaining_count"] = max(0, original_count - english_count)
     payload["translation_coverage"] = coverage_percent(payload.get("english_count"), payload.get("original_count"))
     payload["reading_coverage"] = coverage_percent(payload.get("english_count"), payload.get("chapter_count"))
     return payload
+
+
+def configured_chapter_range(payload: dict[str, Any]) -> tuple[int | None, int | None]:
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    start = optional_int(
+        payload.get("expected_chapter_start")
+        or payload.get("expected_start")
+        or payload.get("reference_target_start")
+        or metadata.get("expected_chapter_start")
+        or metadata.get("expected_start")
+        or metadata.get("reference_target_start")
+    )
+    end = optional_int(
+        payload.get("expected_chapter_end")
+        or payload.get("expected_end")
+        or payload.get("reference_target_end")
+        or metadata.get("expected_chapter_end")
+        or metadata.get("expected_end")
+        or metadata.get("reference_target_end")
+    )
+    if start is not None and end is not None and start > end:
+        start, end = end, start
+    return start, end
 
 
 def personal_progress_row(row: Any) -> dict[str, Any]:

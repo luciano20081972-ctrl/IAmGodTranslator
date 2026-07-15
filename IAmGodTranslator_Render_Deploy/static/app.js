@@ -488,6 +488,7 @@ function renderNovelCard(novel) {
   const favorite = favoriteIds().has(novel.id);
   const chapterCount = Number(novel.chapter_count || 0);
   const readLabel = chapterCount ? "Read" : "Open";
+  const missingEnglish = novel.missing_counts_known === false ? "Unknown" : novel.missing_english_count ?? novel.remaining_count;
   return `
     <article class="novel-card">
       <a class="cover" href="#/novel/${encodeURIComponent(novel.id)}">
@@ -503,8 +504,9 @@ function renderNovelCard(novel) {
           ${metric("Original", novel.original_count)}
           ${state.admin ? metric("Reference", novel.reference_count) : ""}
           ${metric("English", novel.english_count ?? novel.ai_count)}
-          ${metric("Missing English", novel.missing_english_count ?? novel.remaining_count)}
+          ${metric("Missing English", missingEnglish)}
         </div>
+        ${chapterCount === 0 ? `<p class="muted">No chapters imported yet. ${escapeHtml(novel.missing_unknown_label || "Import chapter files or a GodTranslator pack to create the first chapter rows.")}</p>` : ""}
         <div class="actions">
           <a class="button primary" href="#/novel/${encodeURIComponent(novel.id)}">Open</a>
           <a class="button" href="#/reader/${encodeURIComponent(novel.id)}/1/${safeReaderSource()}">${readLabel}</a>
@@ -535,7 +537,8 @@ async function openNovelDetail(novelId) {
     await loadNovels();
     const detail = await api(`/api/novels/${encodeURIComponent(novelId)}`);
     const library = await api(`/api/novels/${encodeURIComponent(novelId)}/library?limit=8`);
-    const baseNovel = detail.novel || state.novels.find((item) => item.id === novelId) || {};
+    const listNovel = state.novels.find((item) => item.id === novelId) || {};
+    const baseNovel = {...listNovel, ...(detail.novel || {})};
     const detailCounts = detail.counts || {};
     const novel = {
       ...baseNovel,
@@ -550,17 +553,34 @@ async function openNovelDetail(novelId) {
       remaining_count: detailCounts.needs_translation ?? baseNovel.remaining_count,
     };
     const pct = progress(novel);
+    const noChapterInventory = Number(novel.chapter_count || 0) === 0;
     const personal = await loadPersonalHome(true);
     const current = personal?.continue_reading?.novel_id === novelId ? personal.continue_reading : null;
-    const stats = [
+    const stats = noChapterInventory ? [
+      metric("Chapters", novel.chapter_count),
+      metric("Expected Range", novel.expected_range_configured ? novel.expected_range_label : "Expected range not set"),
+      metric("Original", novel.missing_counts_known === false ? "Unknown" : novel.original_count),
+      metric("English", novel.missing_counts_known === false ? "Unknown" : novel.english_count ?? novel.ai_count),
+      state.admin ? metric("Reference", novel.missing_counts_known === false ? "Unknown" : novel.reference_count) : "",
+    ].join("") : [
       metric("Chapters", novel.chapter_count),
       metric("Original", novel.original_count),
       state.admin ? metric("Reference", novel.reference_count) : "",
       metric("English", novel.english_count ?? novel.ai_count),
-      metric("Missing Original", novel.missing_original_count ?? 0),
-      metric("Missing English", novel.missing_english_count ?? novel.remaining_count),
-      state.admin ? metric("Missing Reference", novel.missing_reference_count ?? 0) : "",
+      metric("Missing Original", novel.missing_counts_known === false ? "Unknown" : novel.missing_original_count ?? 0),
+      metric("Missing English", novel.missing_counts_known === false ? "Unknown" : novel.missing_english_count ?? novel.remaining_count),
+      state.admin ? metric("Missing Reference", novel.missing_counts_known === false ? "Unknown" : novel.missing_reference_count ?? 0) : "",
     ].join("");
+    const primaryActions = noChapterInventory && state.admin ? `
+      <a class="button primary" href="#/admin/imports">Import First Chapters</a>
+      <a class="button" href="#/chapters/${novel.id}">Chapters</a>
+      <button type="button" data-copy-link="#/novel/${encodeURIComponent(novel.id)}">Copy Link</button>
+    ` : `
+      <a class="button primary" href="${current ? `#/reader/${current.novel_id}/${current.chapter_number}/${safeReaderSource(current.source)}` : `#/reader/${novel.id}/1/${safeReaderSource()}`}">Continue Reading</a>
+      <a class="button" href="#/reader/${novel.id}/1/${safeReaderSource()}">Start Reading</a>
+      <a class="button" href="#/chapters/${novel.id}">Chapters</a>
+      <button type="button" data-copy-link="#/novel/${encodeURIComponent(novel.id)}">Copy Link</button>
+    `;
     rememberRecent("novels", {id: novelId, label: novel.title || novelId, href: `#/novel/${encodeURIComponent(novelId)}`, at: new Date().toISOString()});
     app.innerHTML = `
       <section class="novel-hero">
@@ -572,15 +592,11 @@ async function openNovelDetail(novelId) {
           <p>${escapeHtml(novel.summary || "A database-first GodTranslator novel workspace.")}</p>
           <div class="mini-progress"><span style="width:${pct}%"></span></div>
           <div class="metric-grid">${stats}</div>
-          <div class="actions">
-            <a class="button primary" href="${current ? `#/reader/${current.novel_id}/${current.chapter_number}/${safeReaderSource(current.source)}` : `#/reader/${novel.id}/1/${safeReaderSource()}`}">Continue Reading</a>
-            <a class="button" href="#/reader/${novel.id}/1/${safeReaderSource()}">Start Reading</a>
-            <a class="button" href="#/chapters/${novel.id}">Chapters</a>
-            <button type="button" data-copy-link="#/novel/${encodeURIComponent(novel.id)}">Copy Link</button>
-          </div>
+          <div class="actions">${primaryActions}</div>
         </div>
       </section>
       <nav class="section-tabs"><a class="active" href="#/novel/${encodeURIComponent(novel.id)}">Overview</a><a href="#/chapters/${encodeURIComponent(novel.id)}">Chapters</a>${canTranslate() ? `<a href="#/translate/${encodeURIComponent(novel.id)}">Translation</a>` : ""}${state.admin ? `<a href="#/admin/novels">Admin Tools</a>` : ""}</nav>
+      ${renderNovelInventoryNotice(novel)}
       <section class="split-panels">
         <div class="panel"><h2>Overview</h2><p>Reading coverage is ${novel.reading_coverage ?? pct}% and translation coverage is ${novel.translation_coverage ?? pct}% based on readable Original and English chapter text.</p>${Array.isArray(novel.metadata?.tags) && novel.metadata.tags.length ? `<p class="tag-row">${novel.metadata.tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</p>` : ""}</div>
         <div class="panel"><h2>Recent Chapters</h2>${(library.chapters || []).map((chapter) => `<a class="chapter-link" href="#/reader/${novel.id}/${chapter.chapter_number}/${safeReaderSource()}"><strong>Chapter ${chapter.chapter_number}</strong><span>${escapeHtml(chapter.title)}</span></a>`).join("") || `<p class="empty-state">No chapters found.</p>`}</div>
@@ -1326,16 +1342,19 @@ function renderContentAdmin(data) {
 }
 
 function renderContentImportCenter() {
+  const selectedNovel = state.novels.find((novel) => novel.id === state.currentNovelId);
   return `<section class="studio-panel content-import-center">
     <div class="studio-heading"><h2>Content Import Center</h2><span>Create Novel -> Import Content -> Validate -> Preview -> Import -> Read -> Translate Optional</span></div>
+    <div id="importNovelState">${renderImportNovelState(selectedNovel)}</div>
     <div class="form-grid">
       <label>1. Select Novel<select id="importNovel"><option value="">Create New Novel</option>${state.novels.map((novel) => `<option value="${escapeAttr(novel.id)}" ${novel.id === state.currentNovelId ? "selected" : ""}>${escapeHtml(novel.title || novel.id)}</option>`).join("")}</select></label>
       <label>New Novel Title<input id="importNovelTitle" placeholder="Required when creating a new novel"></label>
       <label>Author<input id="importAuthor" placeholder="Optional"></label>
       <label>Source URL<input id="importSourceUrl" placeholder="Optional"></label>
       <label class="wide">2. Choose Import Type<div class="choice-grid">${["original", "english", "reference", "metadata", "cover", "glossary"].map((type) => `<label class="choice-card"><input type="checkbox" name="importType" value="${type}" ${["original", "english"].includes(type) ? "checked" : ""}><strong>${titleCase(type)}</strong><span>${type === "english" ? "Readable edition" : "Import content"}</span></label>`).join("")}</div></label>
-      <label>3. Choose Source<select id="importSourceType"><option value="godtranslator-pack">GodTranslator Pack JSON</option><option value="zip">ZIP / Downloader Pack Preview</option><option value="folder">Folder manifest JSON</option><option value="reference-pack">Reference Pack</option></select></label>
-      <label>Pack ZIP or JSON<input id="importPackFile" type="file" accept=".zip,.json"></label>
+      <label>3. Choose Source<select id="importSourceType"><option value="simple">Simple Import (.txt / ZIP)</option><option value="godtranslator-pack">Advanced / Pack Import</option><option value="zip">ZIP / Downloader Pack Preview</option><option value="folder">Folder manifest JSON</option><option value="reference-pack">Reference Pack</option></select></label>
+      <label>Simple Import Content<select id="simpleImportContentType"><option value="original">Original</option><option value="english">English</option><option value="reference">Reference</option></select></label>
+      <label>Text files, ZIP, or JSON<input id="importPackFile" type="file" accept=".txt,.zip,.json,text/plain,application/json" multiple></label>
       <label class="wide">Content Items JSON<textarea id="importItemsJson" rows="8" placeholder='[{"chapter_number":1,"content_type":"original","title":"Chapter 1","text":"..."},{"chapter_number":1,"content_type":"english","edition_type":"Official","text":"..."}]'></textarea></label>
       <label class="inline-check"><input id="importSkipExisting" type="checkbox" checked> Skip existing text</label>
       <label class="inline-check"><input id="importOverwrite" type="checkbox"> Overwrite existing text</label>
@@ -1347,6 +1366,43 @@ function renderContentImportCenter() {
     <div class="actions"><button id="previewContentImport" class="primary" type="button">Preview</button><button id="executeContentImport" type="button" disabled>Execute Import</button><a class="button" href="#/admin/editions">Edition Manager</a></div>
     <section id="contentImportPreview"></section>
   </section>`;
+}
+
+function renderNovelInventoryNotice(novel) {
+  if (Number(novel?.chapter_count || 0) !== 0) return "";
+  const expected = novel.expected_range_configured ? `Expected range ${escapeHtml(novel.expected_range_label || "")}` : "No expected range configured";
+  return `<section class="state-card">
+    <h2>No chapters imported yet</h2>
+    <p class="muted">Import chapter files or a GodTranslator pack to create the first chapter rows.</p>
+    <div class="metric-grid">${metric("Chapter Inventory", "Empty")}${metric("Expected Range", expected)}${metric("Missing Counts", novel.missing_counts_known === false ? "Unknown" : "Calculated")}</div>
+    ${novel.missing_counts_known === false ? `<p class="muted">Unknown until chapters are imported or a range is configured.</p>` : ""}
+    ${state.admin ? `<div class="actions"><a class="button primary" href="#/admin/imports">Import First Chapters</a></div>` : ""}
+  </section>`;
+}
+
+function renderImportNovelState(novel) {
+  if (!novel) {
+    return `<section class="state-card"><h2>Create a new novel</h2><p class="muted">Preview will show new chapters detected and rows to create before import executes.</p></section>`;
+  }
+  if (Number(novel.chapter_count || 0) === 0) {
+    return `<section class="state-card">
+      <h2>No chapters imported yet</h2>
+      <p class="muted">Import chapter files or a GodTranslator pack to create the first chapter rows.</p>
+      <div class="metric-grid">${metric("Existing Chapters", 0)}${metric("Expected Range", novel.expected_range_configured ? novel.expected_range_label : "Expected range not set")}${metric("Missing Counts", novel.missing_counts_known === false ? "Unknown" : "Calculated")}</div>
+      <p class="muted">${novel.expected_range_configured ? "Expected range is set; missing counts are based on that range." : "No expected range configured. Unknown until chapters are imported or a range is configured."}</p>
+      <div class="actions"><button id="importFirstChaptersBtn" class="primary" type="button">Import First Chapters</button></div>
+    </section>`;
+  }
+  return `<section class="panel"><h2>Selected Novel Inventory</h2><div class="metric-grid">${metric("Chapters", novel.chapter_count)}${metric("Original", novel.original_count)}${metric("English", novel.english_count ?? novel.ai_count)}${state.admin ? metric("Reference", novel.reference_count) : ""}${metric("Expected Range", novel.expected_range_configured ? novel.expected_range_label : "Expected range not set")}</div></section>`;
+}
+
+function updateImportNovelState() {
+  const target = document.querySelector("#importNovelState");
+  if (!target) return;
+  const selectedId = document.querySelector("#importNovel")?.value || "";
+  const novel = state.novels.find((item) => item.id === selectedId);
+  target.innerHTML = renderImportNovelState(novel);
+  document.querySelector("#importFirstChaptersBtn")?.addEventListener("click", () => document.querySelector("#importPackFile")?.click());
 }
 
 function renderEditionManager() {
@@ -1393,12 +1449,12 @@ function contentImportPayloadFromForm() {
 async function previewContentImport() {
   const target = document.querySelector("#contentImportPreview");
   try {
-    const file = document.querySelector("#importPackFile")?.files?.[0];
+    const files = [...(document.querySelector("#importPackFile")?.files || [])];
     let preview;
-    if (file) {
+    if (files.length) {
       const form = new FormData();
-      form.append("files", file);
-      preview = await api(`/api/admin/content/import/preview-pack?novel_id=${encodeURIComponent(document.querySelector("#importNovel")?.value || "")}`, {method: "POST", body: form, headers: {}});
+      files.forEach((file) => form.append("files", file));
+      preview = await api(`/api/admin/content/import/preview-pack?${contentImportUploadParams().toString()}`, {method: "POST", body: form, headers: {}});
     } else {
       preview = await api("/api/admin/content/import/preview", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(contentImportPayloadFromForm())});
     }
@@ -1412,16 +1468,14 @@ async function previewContentImport() {
 async function executeContentImport() {
   const target = document.querySelector("#contentImportPreview");
   try {
-    const file = document.querySelector("#importPackFile")?.files?.[0];
+    const files = [...(document.querySelector("#importPackFile")?.files || [])];
     let result;
-    if (file) {
+    if (files.length) {
       const form = new FormData();
-      form.append("files", file);
-      const params = new URLSearchParams({
-        novel_id: document.querySelector("#importNovel")?.value || "",
-        overwrite_existing: document.querySelector("#importOverwrite")?.checked ? "true" : "false",
-        dry_run: document.querySelector("#importDryRun")?.checked ? "true" : "false",
-      });
+      files.forEach((file) => form.append("files", file));
+      const params = contentImportUploadParams();
+      params.set("overwrite_existing", document.querySelector("#importOverwrite")?.checked ? "true" : "false");
+      params.set("dry_run", document.querySelector("#importDryRun")?.checked ? "true" : "false");
       result = await api(`/api/admin/content/import/execute-pack?${params.toString()}`, {method: "POST", body: form, headers: {}});
     } else {
       result = await api("/api/admin/content/import/execute", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(contentImportPayloadFromForm())});
@@ -1435,7 +1489,45 @@ async function executeContentImport() {
 }
 
 function renderContentImportPreview(preview) {
-  return `<section class="panel"><h2>Import Preview</h2><div class="metric-grid">${metric("Novel", preview.create_new_novel ? "Create New" : "Existing")}${metric("Chapters", preview.chapter_count || 0)}${metric("Would import", preview.estimated_import?.would_import || 0)}${metric("Would update", preview.estimated_import?.would_update || 0)}${metric("Would skip", preview.estimated_import?.would_skip || 0)}${metric("Duplicates", preview.duplicate_count || 0)}</div>${objectDetails("Content Types", preview.content_type_counts || {})}${objectDetails("Missing", preview.missing_chapters || {})}${objectDetails("Warnings", [...(preview.warnings || []), ...(preview.pack_warnings || [])])}${objectDetails("Preview Items", preview.items || [])}</section>`;
+  const contentToAdd = preview.content_to_add || {};
+  const expectedRange = preview.expected_range_configured ? `${preview.expected_chapter_range?.start}-${preview.expected_chapter_range?.end}` : "Expected range not set";
+  return `<section class="panel"><h2>Import Preview</h2>
+    ${preview.new_chapters_detected ? `<p class="muted">New chapters detected. Content Import will create chapter rows before adding content.</p>` : ""}
+    <div class="metric-grid">
+      ${metric("Novel", preview.novel_title || (preview.create_new_novel ? "Create New" : "Existing"))}
+      ${metric("Existing Chapters", preview.existing_chapter_count || 0)}
+      ${metric("New Chapters", preview.new_chapter_count || 0)}
+      ${metric("Chapter Rows to Create", preview.rows_to_create_count || 0)}
+      ${metric("Original Content to Add", contentToAdd.original || 0)}
+      ${metric("English Content to Add", contentToAdd.english || 0)}
+      ${metric("Reference Content to Add", contentToAdd.reference || 0)}
+      ${metric("Expected Range", expectedRange)}
+      ${metric("Would Update", preview.estimated_import?.would_update || 0)}
+      ${metric("Would Skip", preview.estimated_import?.would_skip || 0)}
+      ${metric("Duplicates", preview.duplicate_count || 0)}
+      ${metric("Invalid Files", preview.invalid_files?.length || 0)}
+    </div>
+    ${objectDetails("Rows to Create", preview.rows_to_create || [])}
+    ${objectDetails("Content Types", preview.content_type_counts || {})}
+    ${objectDetails("Missing", preview.missing_chapters || {})}
+    ${objectDetails("Duplicates", preview.duplicates || [])}
+    ${objectDetails("Invalid Files", preview.invalid_files || [])}
+    ${objectDetails("Warnings", [...(preview.warnings || []), ...(preview.pack_warnings || [])])}
+    ${objectDetails("Preview Items", preview.items || [])}
+  </section>`;
+}
+
+function contentImportUploadParams() {
+  const selectedNovel = document.querySelector("#importNovel")?.value || "";
+  const title = document.querySelector("#importNovelTitle")?.value.trim() || "";
+  const params = new URLSearchParams({
+    novel_id: selectedNovel,
+    content_type: document.querySelector("#simpleImportContentType")?.value || "english",
+    novel_title: title,
+    author: document.querySelector("#importAuthor")?.value.trim() || "",
+    source_url: document.querySelector("#importSourceUrl")?.value.trim() || "",
+  });
+  return params;
 }
 
 async function loadEditionManager() {
@@ -1541,6 +1633,12 @@ function bindAdminWorkspace() {
   document.querySelector("#restorePreviewBtn")?.addEventListener("click", restorePreviewFromFile);
   document.querySelector("#previewContentImport")?.addEventListener("click", previewContentImport);
   document.querySelector("#executeContentImport")?.addEventListener("click", executeContentImport);
+  document.querySelector("#importNovel")?.addEventListener("change", (event) => {
+    state.currentNovelId = event.target.value || state.currentNovelId;
+    if (event.target.value) localStorage.setItem("gt-current-novel", event.target.value);
+    updateImportNovelState();
+  });
+  document.querySelector("#importFirstChaptersBtn")?.addEventListener("click", () => document.querySelector("#importPackFile")?.click());
   document.querySelector("#loadEditions")?.addEventListener("click", loadEditionManager);
   document.querySelector("#editionNovel")?.addEventListener("change", (event) => {
     state.currentNovelId = event.target.value;
