@@ -66,6 +66,9 @@ class CompanionStore:
     def job(self, job_id: str) -> DownloadJob | None:
         return next((job for job in self.jobs() if job.id == job_id), None)
 
+    def delete_job(self, job_id: str) -> None:
+        self.save_jobs([job for job in self.jobs() if job.id != job_id])
+
     def uploads(self) -> list[UploadJob]:
         payload = read_json(self.paths.uploads_file, {"uploads": []})
         return [UploadJob.from_dict(item) for item in payload.get("uploads", []) if isinstance(item, dict)]

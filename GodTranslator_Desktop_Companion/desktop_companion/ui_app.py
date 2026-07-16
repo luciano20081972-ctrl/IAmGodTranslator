@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import subprocess
 import threading
 from pathlib import Path
 from tkinter import filedialog, messagebox
@@ -92,6 +93,7 @@ class DesktopCompanionApp:
             self.ctk.CTkButton(self.nav, text=label, anchor="w", command=routes[label]).pack(fill="x", padx=12, pady=4)
 
     def _clear(self, title: str, subtitle: str) -> None:
+        self.current_view = title
         for widget in self.content.winfo_children():
             widget.destroy()
         header = self.ctk.CTkFrame(self.content, fg_color="transparent")
@@ -105,7 +107,7 @@ class DesktopCompanionApp:
     def show_home(self) -> None:
         self._clear("Home", "Download, package, and sync novels without manual ZIP handling.")
         jobs = self.store.jobs()
-        active = [job for job in jobs if job.status in {"queued", "running", "paused"}]
+        active = [job for job in jobs if job.status in {"queued", "starting", "opening_browser", "waiting_cloudflare", "downloading", "paused", "retrying"}]
         failed = [job for job in jobs if job.status == "failed"]
         completed = [job for job in jobs if job.status == "completed"]
         pack_count = len(list(self.paths.packs_dir.glob("*.zip")))
@@ -237,21 +239,63 @@ class DesktopCompanionApp:
             self.ctk.CTkLabel(frame, text="No jobs yet.", text_color="#9fb7aa").pack(anchor="w", padx=12, pady=12)
             return
         for job in jobs:
-            line = self.ctk.CTkFrame(frame)
-            line.pack(fill="x", padx=10, pady=6)
-            text = (
-                f"{job.novel_title} | website {job.website_url or 'not connected'} | chapter {job.current_chapter or '-'} | "
-                f"done {job.completed} remaining {job.remaining} failed {job.failed} retries {job.retry_count} | "
-                f"ETA {format_seconds(job.estimated_remaining_seconds)} | speed {job.download_speed_cpm:.1f}/min | "
-                f"worker {job.current_worker} | import {job.website_import_status} | {job.last_activity}"
+            active = job.status in {"starting", "opening_browser", "waiting_cloudflare", "downloading", "retrying"}
+            card = self.ctk.CTkFrame(frame)
+            card.pack(fill="x", padx=10, pady=8)
+            top = self.ctk.CTkFrame(card, fg_color="transparent")
+            top.pack(fill="x", padx=10, pady=(10, 4))
+            self.ctk.CTkLabel(top, text=job.novel_title, font=("Segoe UI", 16, "bold"), anchor="w").pack(side="left", fill="x", expand=True)
+            self.ctk.CTkLabel(top, text=format_status(job.status), text_color=status_color(job.status), font=("Segoe UI", 13, "bold")).pack(side="right", padx=8)
+
+            progress = self.ctk.CTkProgressBar(card)
+            progress.pack(fill="x", padx=10, pady=4)
+            progress.set(job_progress_fraction(job))
+
+            details = (
+                f"Current Novel: {job.novel_title} | Current Chapter: {job.current_chapter or '-'} | "
+                f"Last downloaded chapter: {job.last_downloaded_chapter or '-'} | Remaining chapters: {job.remaining} | "
+                f"Downloaded chapters: {len(job.downloaded_chapters) or job.completed} | Failed chapters: {len(job.failed_chapters) or job.failed} | "
+                f"Retries: {job.retry_events} | Elapsed: {format_seconds(job.elapsed_seconds)} | "
+                f"Average: {job.download_speed_cpm:.1f} chapters/minute | ETA: {format_seconds(job.estimated_remaining_seconds)}"
             )
-            self.ctk.CTkLabel(line, text=text, anchor="w").pack(side="left", fill="x", expand=True, padx=8, pady=8)
+            self.ctk.CTkLabel(card, text=details, anchor="w", wraplength=900, justify="left").pack(fill="x", padx=10, pady=2)
+            state_line = (
+                f"Browser state: {job.browser_state} | Worker state: {job.worker_state} | "
+                f"Current URL: {short_text(job.current_url or job.source_url, 120)} | Current output folder: {job.output_dir}"
+            )
+            self.ctk.CTkLabel(card, text=state_line, text_color="#9fb7aa", anchor="w", wraplength=900, justify="left").pack(fill="x", padx=10, pady=2)
+            if job.live_log:
+                log_box = self.ctk.CTkTextbox(card, height=92)
+                log_box.insert("1.0", "\n".join(job.live_log[-8:]))
+                log_box.configure(state="disabled")
+                log_box.pack(fill="x", padx=10, pady=(4, 8))
             if with_actions:
-                self.ctk.CTkButton(line, text="Pause", width=70, command=lambda jid=job.id: self._job_action("pause", jid)).pack(side="left", padx=2)
-                self.ctk.CTkButton(line, text="Resume", width=78, command=lambda jid=job.id: self._job_action("resume", jid)).pack(side="left", padx=2)
-                self.ctk.CTkButton(line, text="Retry Failed", width=96, command=lambda jid=job.id: self._job_action("retry", jid)).pack(side="left", padx=2)
-                self.ctk.CTkButton(line, text="Cancel", width=70, command=lambda jid=job.id: self._job_action("stop", jid)).pack(side="left", padx=2)
-                self.ctk.CTkButton(line, text="Open Folder", width=96, command=lambda folder=job.output_dir: open_folder(Path(folder))).pack(side="left", padx=2)
+                actions = self.ctk.CTkFrame(card, fg_color="transparent")
+                actions.pack(fill="x", padx=8, pady=(0, 10))
+                primary = self.ctk.CTkFrame(actions, fg_color="transparent")
+                secondary = self.ctk.CTkFrame(actions, fg_color="transparent")
+                primary.pack(fill="x")
+                secondary.pack(fill="x")
+                self._job_button(primary, "Start", "start", job.id, job.status in {"queued", "failed"})
+                self._job_button(primary, "Pause", "pause", job.id, active)
+                self._job_button(primary, "Resume", "resume", job.id, job.status in {"paused", "stopped"})
+                self._job_button(primary, "Stop", "stop", job.id, active)
+                self._job_button(primary, "Retry Failed", "retry", job.id, bool(job.failed or job.failed_chapters or job.errors))
+                self._job_button(primary, "Restart Job", "restart", job.id, not active)
+                self._job_button(secondary, "Duplicate Job", "duplicate", job.id, True)
+                self._job_button(secondary, "Delete Job", "delete", job.id, not active)
+                self.ctk.CTkButton(secondary, text="Open Output Folder", width=132, command=lambda folder=job.novel_root_dir or job.output_dir: open_folder(Path(folder))).pack(side="left", padx=2, pady=2)
+                self.ctk.CTkButton(secondary, text="Copy Output Path", width=126, command=lambda text=job.output_dir: self.copy_text(text)).pack(side="left", padx=2, pady=2)
+                self._job_button(secondary, "Reveal Current Chapter", "reveal", job.id, bool(job.current_chapter or job.last_downloaded_chapter), width=150)
+
+    def _job_button(self, parent, text: str, action: str, job_id: str, enabled: bool, width: int = 96) -> None:
+        self.ctk.CTkButton(
+            parent,
+            text=text,
+            width=width,
+            state="normal" if enabled else "disabled",
+            command=lambda jid=job_id, act=action: self._job_action(act, jid),
+        ).pack(side="left", padx=2, pady=2)
 
     def _entry(self, parent, label: str, row: int, column: int, default: str = "", show: str | None = None):
         wrapper = self.ctk.CTkFrame(parent, fg_color="transparent")
@@ -283,10 +327,24 @@ class DesktopCompanionApp:
                 browser_mode=True,
             )
             self.store.append_log(f"Created job {job.id}")
-            messagebox.showinfo(APP_NAME, f"Job created: {job.id}")
+            self.manager.start(job.id)
+            messagebox.showinfo(APP_NAME, f"Job started: {job.id}")
             self.show_downloads()
         except Exception as exc:
             messagebox.showerror(APP_NAME, friendly_error(exc))
+
+    def copy_text(self, value: str) -> None:
+        self.root.clipboard_clear()
+        self.root.clipboard_append(value)
+        self.store.append_log(f"Copied output path {value}")
+
+    def reveal_current_chapter(self, job_id: str) -> None:
+        job = self.manager.require_job(job_id)
+        path = chapter_file_path(job)
+        if path and path.exists():
+            subprocess.run(["explorer", "/select,", str(path)], check=False)
+            return
+        open_folder(Path(job.output_dir))
 
     def detect_source_from_form(self) -> None:
         url = self.new_url.get().lower()
@@ -344,6 +402,7 @@ class DesktopCompanionApp:
             browser_mode=True,
         )
         self.store.append_log(f"Created recovery job {job.id}")
+        self.manager.start(job.id)
         self.show_downloads()
 
     def build_pack_from_form(self) -> None:
@@ -455,6 +514,8 @@ class DesktopCompanionApp:
             self.store.append_log(message)
             if hasattr(self, "sync_result"):
                 self.sync_result.insert("end", message + "\n")
+        if getattr(self, "current_view", "") == "Downloads" and any(job.status in {"starting", "opening_browser", "waiting_cloudflare", "downloading", "retrying"} for job in self.store.jobs()):
+            self.show_downloads()
         self.root.after(1000, self._pump_events)
 
     def _job_action(self, action: str, job_id: str) -> None:
@@ -462,9 +523,20 @@ class DesktopCompanionApp:
             if action == "pause":
                 self.manager.pause(job_id)
             elif action == "resume":
-                self.manager.resume(job_id)
+                self.manager.start(self.manager.resume(job_id).id)
+            elif action == "start":
+                self.manager.start(job_id)
             elif action == "retry":
-                self.manager.retry_failed(job_id)
+                self.manager.start(self.manager.retry_failed(job_id).id)
+            elif action == "restart":
+                self.manager.start(self.manager.restart_job(job_id).id)
+            elif action == "duplicate":
+                self.manager.duplicate_job(job_id)
+            elif action == "delete":
+                if messagebox.askyesno(APP_NAME, "Delete this job from the local queue? Output files will not be deleted."):
+                    self.manager.delete_job(job_id)
+            elif action == "reveal":
+                self.reveal_current_chapter(job_id)
             elif action == "stop":
                 self.manager.stop(job_id)
             self.show_downloads()
@@ -504,6 +576,58 @@ def format_seconds(value: float | None) -> str:
     if minutes:
         return f"{minutes}m {seconds}s"
     return f"{seconds}s"
+
+
+def job_progress_fraction(job) -> float:
+    total = len(job.chapters)
+    if total <= 0:
+        return 0.0
+    finished = min(total, job.completed + job.skipped + job.failed)
+    return max(0.0, min(1.0, finished / total))
+
+
+def format_status(status: str) -> str:
+    labels = {
+        "queued": "Queued",
+        "starting": "Starting",
+        "opening_browser": "Opening Browser",
+        "waiting_cloudflare": "Waiting Cloudflare",
+        "downloading": "Downloading",
+        "paused": "Paused",
+        "retrying": "Retrying",
+        "completed": "Completed",
+        "stopped": "Stopped",
+        "failed": "Failed",
+        "cancelled": "Stopped",
+    }
+    return labels.get(status, status.replace("_", " ").title())
+
+
+def status_color(status: str) -> str:
+    if status == "completed":
+        return "#6ee7b7"
+    if status in {"failed", "cancelled"}:
+        return "#fca5a5"
+    if status in {"paused", "stopped"}:
+        return "#fbbf24"
+    if status in {"retrying", "waiting_cloudflare"}:
+        return "#93c5fd"
+    return "#d1fae5"
+
+
+def short_text(value: str, limit: int) -> str:
+    text = value or ""
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)] + "..."
+
+
+def chapter_file_path(job) -> Path | None:
+    chapter = job.current_chapter or job.last_downloaded_chapter
+    if chapter is None:
+        return None
+    width = max(4, len(str(max(job.chapters) if job.chapters else chapter)))
+    return Path(job.output_dir) / f"{chapter:0{width}d}.txt"
 
 
 def safe_slug(value: str) -> str:

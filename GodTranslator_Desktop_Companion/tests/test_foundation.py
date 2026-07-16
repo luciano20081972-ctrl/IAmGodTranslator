@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -21,6 +22,47 @@ from desktop_companion.website_api import WebsiteClient
 
 ROOT = Path(__file__).resolve().parent
 FIXTURES = ROOT / "fixtures"
+
+
+class FixtureDownloaderAdapter:
+    name = "fixture"
+    display_name = "Fixture"
+    supports_http = True
+    supports_playwright = True
+
+    def build_options(self, **kwargs):
+        return kwargs
+
+    def download(self, options, stop_event, log, progress):
+        output_dir = Path(options["output_dir"])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        total = len(options["chapters"])
+        success = failed = skipped = 0
+        log("Browser launched")
+        for index, chapter in enumerate(options["chapters"], start=1):
+            if stop_event.is_set():
+                log("Stopped safely by user.")
+                break
+            progress(index - 1, total, success, failed, skipped, f"Chapter {chapter}")
+            log(f"Downloading Chapter {chapter}: https://example.invalid/chapter-{chapter}")
+            body = f"Chapter {chapter}\n\n" + ("fixture text " * 80)
+            (output_dir / f"{chapter:04d}.txt").write_text(body, encoding="utf-8")
+            log(f"Saved Chapter {chapter}: {chapter:04d}.txt ({len(body)} chars)")
+            success += 1
+            progress(index, total, success, failed, skipped, f"Chapter {chapter}")
+        log("Browser closed")
+        return {"success": success, "failed": failed, "skipped": skipped}
+
+
+def wait_for_job(store: CompanionStore, job_id: str, statuses: set[str]) -> None:
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        job = store.job(job_id)
+        if job and job.status in statuses:
+            return
+        time.sleep(0.05)
+    job = store.job(job_id)
+    raise AssertionError(f"Job did not reach {statuses}; status={job.status if job else 'missing'}")
 
 
 class DesktopCompanionFoundationTests(unittest.TestCase):
@@ -47,6 +89,46 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
             self.assertEqual(store.job(job.id).status, "queued")
             payload = read_json(paths.jobs_file, {})
             self.assertEqual(payload["jobs"][0]["id"], job.id)
+
+    def test_download_manager_persists_real_adapter_events_and_output_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, patch.dict("desktop_companion.jobs.ADAPTERS", {"fixture": FixtureDownloaderAdapter}):
+            paths = app_paths(Path(temp))
+            store = CompanionStore(paths)
+            manager = JobManager(store, paths)
+            job = manager.create_job(
+                "Fixture Novel",
+                "https://example.invalid/novel",
+                [1, 2, 3],
+                output_dir=paths.downloads_dir,
+                source_adapter="fixture",
+                target_mode="original",
+            )
+            self.assertEqual(Path(job.novel_root_dir).name, "Fixture Novel")
+            self.assertEqual(Path(job.output_dir).name, "Original")
+
+            manager.start(job.id)
+            wait_for_job(store, job.id, {"completed"})
+            saved = store.job(job.id)
+            self.assertEqual(saved.status, "completed")
+            self.assertEqual(saved.downloaded_chapters, [1, 2, 3])
+            self.assertEqual(saved.last_downloaded_chapter, 3)
+            self.assertEqual(saved.browser_state, "Closed")
+            self.assertIn("Downloading Chapter 2", "\n".join(saved.live_log))
+            self.assertTrue((Path(saved.novel_root_dir) / "Packs" / "fixture-novel-original-pack.zip").exists())
+
+    def test_download_job_restart_duplicate_and_delete_are_local_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, patch.dict("desktop_companion.jobs.ADAPTERS", {"fixture": FixtureDownloaderAdapter}):
+            paths = app_paths(Path(temp))
+            store = CompanionStore(paths)
+            manager = JobManager(store, paths)
+            job = manager.create_job("Fixture Novel", "https://example.invalid/novel", [1], source_adapter="fixture")
+            restarted = manager.restart_job(job.id)
+            self.assertEqual(restarted.status, "queued")
+            self.assertFalse(restarted.skip_existing)
+            duplicate = manager.duplicate_job(job.id)
+            self.assertNotEqual(duplicate.id, job.id)
+            manager.delete_job(duplicate.id)
+            self.assertIsNone(store.job(duplicate.id))
 
     def test_pack_creation_checksum_and_secret_exclusion(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

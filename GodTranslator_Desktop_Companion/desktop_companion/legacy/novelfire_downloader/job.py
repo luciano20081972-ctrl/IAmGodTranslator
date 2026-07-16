@@ -44,7 +44,7 @@ def find_chapters(options: DownloadOptions, log: LogFn, browser: BrowserEngine |
     owned_browser = False
     if browser is None and options.browser_mode:
         profile_dir = options.browser_profile_dir or Path(__file__).resolve().parents[1] / "browser_profile"
-        browser = BrowserEngine(profile_dir, timeout=max(60, options.timeout))
+        browser = BrowserEngine(profile_dir, timeout=max(60, options.timeout), log=log)
         owned_browser = True
     try:
         if browser is not None:
@@ -60,6 +60,19 @@ def find_chapters(options: DownloadOptions, log: LogFn, browser: BrowserEngine |
     if reason:
         raise ValueError(f"Novel page appears blocked or unavailable: {reason}. Enable Browser Mode and complete normal verification in Chrome if needed.")
     links = discover_chapter_links(options.novel_url, html)
+    missing = [chapter for chapter in options.chapters if chapter not in links]
+    if missing and not options.novel_url.rstrip("/").endswith("/chapters"):
+        chapter_list_url = options.novel_url.rstrip("/") + "/chapters"
+        log(f"Opening chapter list: {chapter_list_url}")
+        if browser is not None:
+            chapter_html = browser.get_text(chapter_list_url)
+        else:
+            engine = HttpEngine(timeout=options.timeout, retries=options.retry_count, delay=0)
+            chapter_html = engine.get_text(chapter_list_url)
+        reason = blocked_reason(chapter_html)
+        if reason:
+            raise ValueError(f"Chapter list appears blocked or unavailable: {reason}. Enable Browser Mode and complete normal verification in Chrome if needed.")
+        links.update(discover_chapter_links(chapter_list_url, chapter_html))
     selected = {chapter: links[chapter] for chapter in options.chapters if chapter in links}
     missing = [chapter for chapter in options.chapters if chapter not in selected]
     if missing:
@@ -73,8 +86,9 @@ def run_download(options: DownloadOptions, stop_event: Event, log: LogFn, progre
     manifest["requested_chapters"] = options.chapters
     engine = HttpEngine(timeout=options.timeout, retries=options.retry_count, delay=options.delay)
     profile_dir = options.browser_profile_dir or Path(__file__).resolve().parents[1] / "browser_profile"
-    browser = BrowserEngine(profile_dir, timeout=max(60, options.timeout)) if options.browser_mode else None
+    browser = BrowserEngine(profile_dir, timeout=max(60, options.timeout), log=log) if options.browser_mode else None
     title_metadata: dict[str, dict[str, str]] = {}
+    seen_chapters: set[int] = set()
     total = len(options.chapters)
     success = failed = skipped = 0
     try:
@@ -89,7 +103,7 @@ def run_download(options: DownloadOptions, stop_event: Event, log: LogFn, progre
             if options.skip_existing and valid_existing_file(output_path, chapter, options.min_chars):
                 skipped += 1
                 manifest["skipped_chapters"] = sorted(set(manifest.get("skipped_chapters", []) + [chapter]))
-                log(f"Skipped existing valid file: {filename}")
+                log(f"Skipped existing valid file: Chapter {chapter} {filename}")
                 continue
             url = urls.get(chapter)
             if not url:
@@ -97,41 +111,59 @@ def run_download(options: DownloadOptions, stop_event: Event, log: LogFn, progre
                 manifest.setdefault("failed_chapters", {})[str(chapter)] = {"error": "chapter URL not found"}
                 log(f"Failed Chapter {chapter}: URL not found")
                 continue
-            try:
-                if browser:
-                    html = browser.get_text(url, verification_callback)
-                else:
-                    html = engine.get_text(url)
-                reason = blocked_reason(html)
-                if reason:
-                    if browser and verification_callback:
-                        log(f"Verification needed for Chapter {chapter}: {reason}")
-                        verification_callback(url)
+            chapter_saved = False
+            for attempt in range(options.retry_count + 1):
+                if stop_event.is_set():
+                    log("Stopped safely by user.")
+                    break
+                try:
+                    log(f"Downloading Chapter {chapter}: {url}")
+                    if browser:
                         html = browser.get_text(url, verification_callback)
-                        reason = blocked_reason(html)
+                    else:
+                        html = engine.get_text(url)
+                    reason = blocked_reason(html)
                     if reason:
-                        raise ValueError(f"Blocked, login, or verification page detected: {reason}")
-                extracted = extract_chapter(html)
-                validate_chapter(chapter, extracted.title, extracted.text, url, options.min_chars)
-                output_path.write_text(extracted.text, encoding="utf-8")
-                success += 1
-                manifest.setdefault("chapters", {})[str(chapter)] = {
-                    "title": extracted.title,
-                    "file": filename,
-                    "source_url": url,
-                    "character_count": len(extracted.text),
-                }
-                manifest["successful_chapters"] = sorted(set(manifest.get("successful_chapters", []) + [chapter]))
-                manifest.get("failed_chapters", {}).pop(str(chapter), None)
-                title_metadata[str(chapter)] = {"title": extracted.title, "file": filename, "source_url": url}
-                save_manifest(options.output_dir, manifest)
-                log(f"Downloaded Chapter {chapter}: {filename} ({len(extracted.text)} chars)")
-                engine.polite_delay()
-            except Exception as exc:
-                failed += 1
-                manifest.setdefault("failed_chapters", {})[str(chapter)] = {"error": str(exc), "source_url": url}
-                save_manifest(options.output_dir, manifest)
-                log(f"Failed Chapter {chapter}: {exc}")
+                        if browser and verification_callback:
+                            log(f"Verification needed for Chapter {chapter}: {reason}")
+                            verification_callback(url)
+                            html = browser.get_text(url, verification_callback)
+                            reason = blocked_reason(html)
+                        if reason:
+                            raise ValueError(f"Blocked, login, or verification page detected: {reason}")
+                    extracted = extract_chapter(html)
+                    validate_chapter(chapter, extracted.title, extracted.text, url, options.min_chars)
+                    if chapter in seen_chapters:
+                        raise ValueError(f"Duplicate chapter detected in current job: {chapter}")
+                    output_path.write_text(extracted.text, encoding="utf-8")
+                    validate_saved_chapter_file(output_path, chapter, options.min_chars)
+                    seen_chapters.add(chapter)
+                    success += 1
+                    manifest.setdefault("chapters", {})[str(chapter)] = {
+                        "title": extracted.title,
+                        "file": filename,
+                        "source_url": url,
+                        "character_count": len(extracted.text),
+                    }
+                    manifest["successful_chapters"] = sorted(set(manifest.get("successful_chapters", []) + [chapter]))
+                    manifest.get("failed_chapters", {}).pop(str(chapter), None)
+                    title_metadata[str(chapter)] = {"title": extracted.title, "file": filename, "source_url": url}
+                    save_manifest(options.output_dir, manifest)
+                    log(f"Saved Chapter {chapter}: {filename} ({len(extracted.text)} chars)")
+                    chapter_saved = True
+                    engine.polite_delay()
+                    break
+                except Exception as exc:
+                    if attempt < options.retry_count:
+                        log(f"Retry Chapter {chapter} ({attempt + 1}/{options.retry_count}): {exc}")
+                        engine.polite_delay()
+                        continue
+                    failed += 1
+                    manifest.setdefault("failed_chapters", {})[str(chapter)] = {"error": str(exc), "source_url": url}
+                    save_manifest(options.output_dir, manifest)
+                    log(f"Failed Chapter {chapter}: {exc}")
+            if stop_event.is_set() and not chapter_saved:
+                break
             progress(index, total, success, failed, skipped, f"Chapter {chapter}")
         if options.save_titles:
             save_metadata(options.output_dir, "NovelFire Novel", options.novel_url or options.url_template, manifest.get("chapters", {}))
@@ -142,3 +174,15 @@ def run_download(options: DownloadOptions, stop_event: Event, log: LogFn, progre
     finally:
         if browser:
             browser.close()
+
+
+def validate_saved_chapter_file(path: Path, chapter: int, min_chars: int) -> None:
+    if not path.exists():
+        raise ValueError(f"Saved chapter file does not exist for chapter {chapter}.")
+    if path.stat().st_size <= 0:
+        raise ValueError(f"Saved chapter file is empty for chapter {chapter}.")
+    text = path.read_text(encoding="utf-8")
+    if not text.strip():
+        raise ValueError(f"Saved chapter file contains no text for chapter {chapter}.")
+    if len(text.strip()) < min_chars:
+        raise ValueError(f"Saved chapter file is too short for chapter {chapter}.")

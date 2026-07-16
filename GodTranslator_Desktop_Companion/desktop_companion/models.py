@@ -7,7 +7,19 @@ from typing import Any, Literal
 from uuid import uuid4
 
 
-JobStatus = Literal["queued", "running", "paused", "completed", "failed", "cancelled"]
+JobStatus = Literal[
+    "queued",
+    "starting",
+    "opening_browser",
+    "waiting_cloudflare",
+    "downloading",
+    "paused",
+    "retrying",
+    "completed",
+    "stopped",
+    "failed",
+    "cancelled",
+]
 TargetMode = Literal["reference", "original", "english", "mixed", "new_novel"]
 UploadStatus = Literal["queued", "previewed", "imported", "failed", "cancelled"]
 
@@ -28,6 +40,7 @@ class DownloadJob:
     source_url: str
     output_dir: str
     chapters: list[int]
+    novel_root_dir: str = ""
     website_url: str = ""
     novel_id: str = ""
     status: JobStatus = "queued"
@@ -43,6 +56,14 @@ class DownloadJob:
     failed: int = 0
     skipped: int = 0
     current_chapter: int | None = None
+    current_url: str = ""
+    last_downloaded_chapter: int | None = None
+    downloaded_chapters: list[int] = field(default_factory=list)
+    failed_chapters: list[int] = field(default_factory=list)
+    retry_events: int = 0
+    browser_state: str = "Not started"
+    worker_state: str = "Idle"
+    live_log: list[str] = field(default_factory=list)
     last_activity: str = ""
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
@@ -59,7 +80,8 @@ class DownloadJob:
 
     @property
     def remaining(self) -> int:
-        return max(0, len(self.chapters) - self.completed - self.failed - self.skipped)
+        finished = len(set(self.downloaded_chapters)) + self.skipped
+        return max(0, len(self.chapters) - finished)
 
     @property
     def chapter_range_label(self) -> str:
@@ -74,6 +96,23 @@ class DownloadJob:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "DownloadJob":
+        valid_statuses = {
+            "queued",
+            "running",
+            "starting",
+            "opening_browser",
+            "waiting_cloudflare",
+            "downloading",
+            "paused",
+            "retrying",
+            "completed",
+            "stopped",
+            "failed",
+            "cancelled",
+        }
+        status = payload.get("status") if payload.get("status") in valid_statuses else "queued"
+        if status == "running":
+            status = "downloading"
         return cls(
             id=str(payload.get("id") or new_id("job")),
             novel_title=str(payload.get("novel_title") or "Untitled Novel"),
@@ -81,9 +120,10 @@ class DownloadJob:
             source_url=str(payload.get("source_url") or ""),
             output_dir=str(payload.get("output_dir") or ""),
             chapters=[int(chapter) for chapter in payload.get("chapters", [])],
+            novel_root_dir=str(payload.get("novel_root_dir") or ""),
             website_url=str(payload.get("website_url") or ""),
             novel_id=str(payload.get("novel_id") or ""),
-            status=payload.get("status") if payload.get("status") in {"queued", "running", "paused", "completed", "failed", "cancelled"} else "queued",
+            status=status,
             target_mode=payload.get("target_mode") if payload.get("target_mode") in {"reference", "original", "english", "mixed", "new_novel"} else "reference",
             browser_mode=bool(payload.get("browser_mode", True)),
             skip_existing=bool(payload.get("skip_existing", True)),
@@ -95,7 +135,15 @@ class DownloadJob:
             completed=int(payload.get("completed") or 0),
             failed=int(payload.get("failed") or 0),
             skipped=int(payload.get("skipped") or 0),
-            current_chapter=payload.get("current_chapter"),
+            current_chapter=int(payload["current_chapter"]) if payload.get("current_chapter") is not None else None,
+            current_url=str(payload.get("current_url") or ""),
+            last_downloaded_chapter=int(payload["last_downloaded_chapter"]) if payload.get("last_downloaded_chapter") is not None else None,
+            downloaded_chapters=sorted({int(chapter) for chapter in payload.get("downloaded_chapters", [])}),
+            failed_chapters=sorted({int(chapter) for chapter in payload.get("failed_chapters", [])}),
+            retry_events=int(payload.get("retry_events") or 0),
+            browser_state=str(payload.get("browser_state") or "Not started"),
+            worker_state=str(payload.get("worker_state") or "Idle"),
+            live_log=[str(line) for line in payload.get("live_log", [])][-300:],
             last_activity=str(payload.get("last_activity") or ""),
             created_at=str(payload.get("created_at") or utc_now()),
             updated_at=str(payload.get("updated_at") or utc_now()),
