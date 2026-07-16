@@ -28,7 +28,7 @@ from app.content_import import payload_from_uploads
 from app.recovery import parse_uploads, recovery_request, recovery_diagnostic, reference_diagnostic
 
 
-VERSION = "10.5.0"
+VERSION = "10.6.0"
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_COOKIE = "gt_admin_session"
 SESSION_TTL_SECONDS = 60 * 60 * 12
@@ -214,6 +214,24 @@ def health() -> dict[str, object]:
     except Exception as exc:
         return {"ok": False, "version": VERSION, "database": "unreachable", "schema": database.config.schema, "error": exc.__class__.__name__}
     return {"ok": True, "version": VERSION, "database": "reachable" if reachable else "unreachable", "schema": database.config.schema}
+
+
+@app.get("/api/desktop/health")
+def desktop_health() -> dict[str, object]:
+    base = health()
+    return {
+        **base,
+        "desktop_api": "10.6.0",
+        "supports": [
+            "connection_test",
+            "desktop_auth_check",
+            "pack_preview",
+            "pack_execute",
+            "sync_status",
+            "import_history",
+            "recovery_request",
+        ],
+    }
 
 
 @app.post("/api/admin/login")
@@ -620,6 +638,89 @@ async def execute_content_pack(
     return {**result, "pack_warnings": payload.get("warnings", [])}
 
 
+@app.get("/api/desktop/auth/check")
+def desktop_auth_check(request: Request, _: None = Depends(require_admin)) -> dict[str, object]:
+    user = current_user(request)
+    return {
+        "ok": True,
+        "authenticated": True,
+        "role": user.role if user else "admin",
+        "desktop_api": "10.6.0",
+    }
+
+
+@app.get("/api/desktop/sync/status")
+def desktop_sync_status(novel_id: str | None = None, _: None = Depends(require_admin)) -> dict[str, object]:
+    overview = database.admin_overview()
+    novel = database.novel(novel_id) if novel_id else None
+    missing = database.missing_data(novel_id) if novel_id and novel else None
+    imports = database.import_jobs(novel_id=novel_id, limit=10)
+    return {
+        "ok": True,
+        "version": VERSION,
+        "schema": database.config.schema,
+        "overview": overview,
+        "novel": novel,
+        "missing": missing,
+        "recent_imports": imports,
+        "sync": {
+            "pack_preview": "/api/desktop/import/preview-pack",
+            "pack_execute": "/api/desktop/import/execute-pack",
+            "import_history": "/api/desktop/import-history",
+            "recovery_request": "/api/novels/{novel_id}/recovery/request",
+        },
+    }
+
+
+@app.get("/api/desktop/import-history")
+def desktop_import_history(novel_id: str | None = None, limit: int = 20, _: None = Depends(require_admin)) -> dict[str, object]:
+    return {"ok": True, "jobs": database.import_jobs(novel_id=novel_id, limit=max(1, min(int(limit or 20), 100)))}
+
+
+@app.post("/api/desktop/import/preview-pack")
+async def desktop_preview_content_pack(
+    files: list[UploadFile] = File(...),
+    novel_id: str | None = Query(None),
+    novel_title: str | None = Query(None),
+    author: str | None = Query(None),
+    source_url: str | None = Query(None),
+    content_type: str | None = Query(None),
+    _: None = Depends(require_admin),
+) -> dict[str, object]:
+    return await preview_content_pack(
+        files=files,
+        novel_id=novel_id,
+        novel_title=novel_title,
+        author=author,
+        source_url=source_url,
+        content_type=content_type,
+    )
+
+
+@app.post("/api/desktop/import/execute-pack")
+async def desktop_execute_content_pack(
+    files: list[UploadFile] = File(...),
+    novel_id: str | None = Query(None),
+    novel_title: str | None = Query(None),
+    author: str | None = Query(None),
+    source_url: str | None = Query(None),
+    content_type: str | None = Query(None),
+    overwrite_existing: bool = Query(False),
+    dry_run: bool = Query(False),
+    _: None = Depends(require_admin),
+) -> dict[str, object]:
+    return await execute_content_pack(
+        files=files,
+        novel_id=novel_id,
+        novel_title=novel_title,
+        author=author,
+        source_url=source_url,
+        content_type=content_type,
+        overwrite_existing=overwrite_existing,
+        dry_run=dry_run,
+    )
+
+
 @app.get("/api/admin/content/editions/{novel_id}")
 def list_english_editions(novel_id: str, chapter_number: int | None = None, _: None = Depends(require_admin)) -> dict[str, object]:
     if database.novel(novel_id) is None:
@@ -827,8 +928,8 @@ def get_import_job(job_id: str, _: None = Depends(require_admin)) -> dict[str, o
 
 
 @app.get("/api/import-jobs")
-def list_import_jobs(novel_id: str | None = None, _: None = Depends(require_admin)) -> dict[str, object]:
-    return {"ok": True, "jobs": database.import_jobs(novel_id=novel_id)}
+def list_import_jobs(novel_id: str | None = None, limit: int = 20, _: None = Depends(require_admin)) -> dict[str, object]:
+    return {"ok": True, "jobs": database.import_jobs(novel_id=novel_id, limit=max(1, min(int(limit or 20), 100)))}
 
 
 @app.post("/api/novels/{novel_id}/recovery/import/{job_id}")

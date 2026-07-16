@@ -1,0 +1,3 @@
+Fixture reference chapter one.
+
+This is local fixture content used only for pack creation QA.

@@ -1,0 +1,14 @@
+{
+  "novel_title": "Fixture Novel",
+  "source_url": "https://example.invalid/novel/fixture",
+  "chapters": {
+    "1": {
+      "title": "Fixture One",
+      "source_url": "https://example.invalid/novel/fixture/chapter-1"
+    },
+    "2": {
+      "title": "Fixture Two",
+      "source_url": "https://example.invalid/novel/fixture/chapter-2"
+    }
+  }
+}

@@ -1,6 +1,16 @@
-# GodTranslator v10.3.0 Product Experience Rebuild
+# GodTranslator v10.6.0 Desktop Companion Integration
 
-GodTranslator v10.3.0 evolves the restored v10 product shell into a polished, responsive novel-reading and translation application on top of the v10 database-first foundation.
+GodTranslator v10.6.0 connects the website with the Desktop Companion so local downloads, pack building, preview, import, and recovery can work as one product flow.
+
+## v10.6 Highlights
+
+- Desktop Companion API endpoints for health, auth check, sync status, import history, pack preview, and pack execution.
+- Content Import remains the website import engine.
+- Recovery remains available and can be driven from the desktop workflow.
+- Desktop auto pack generation supports Original, Reference, English, and Mixed packs.
+- Translation scheduling, authentication design, and PostgreSQL architecture are unchanged.
+
+See `DESKTOP_COMPANION_API.md` and `V10_6_DESKTOP_COMPANION_INTEGRATION.md`.
 
 PostgreSQL remains the live source of truth:
 

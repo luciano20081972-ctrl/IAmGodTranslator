@@ -1,0 +1,3 @@
+Fixture reference chapter two.
+
+This is local fixture content used only for checksum validation.

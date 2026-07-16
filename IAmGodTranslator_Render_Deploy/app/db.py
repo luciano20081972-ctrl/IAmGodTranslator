@@ -2888,7 +2888,7 @@ class Database:
         table_counts = {name: len(rows) for name, rows in tables.items()}
         manifest = {
             "format_version": "godtranslator-v10-platform-backup.v1",
-            "app_version": "10.5.0",
+            "app_version": "10.6.0",
             "schema": self.config.schema,
             "created_at": utc_now(),
             "table_counts": table_counts,

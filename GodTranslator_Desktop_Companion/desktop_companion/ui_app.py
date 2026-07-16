@@ -1,0 +1,520 @@
+from __future__ import annotations
+
+import queue
+import threading
+from pathlib import Path
+from tkinter import filedialog, messagebox
+
+from . import APP_NAME, APP_VERSION
+from .adapters import adapter_descriptors
+from .jobs import JobManager
+from .models import WebsiteConnectionProfile
+from .packs import build_pack, validate_pack
+from .paths import app_paths
+from .recovery import load_recovery_request
+from .storage import CompanionStore
+from .sync import SyncManager
+from .website_api import WebsiteClient
+
+
+NAV_ITEMS = [
+    "Home",
+    "Downloads",
+    "New Novel",
+    "Sync Center",
+    "Recovery Requests",
+    "Export & Packs",
+    "Desktop Library",
+    "Activity",
+    "Settings",
+    "Logs",
+]
+
+
+def run() -> None:
+    try:
+        import customtkinter as ctk
+    except Exception as exc:
+        raise SystemExit("CustomTkinter is required. Run SETUP_ONCE.bat first.") from exc
+    paths = app_paths()
+    store = CompanionStore(paths)
+    manager = JobManager(store, paths)
+    ctk.set_appearance_mode("dark")
+    ctk.set_default_color_theme("green")
+    app = DesktopCompanionApp(ctk, store, manager)
+    app.mainloop()
+
+
+class DesktopCompanionApp:
+    def __init__(self, ctk, store: CompanionStore, manager: JobManager) -> None:
+        self.ctk = ctk
+        self.store = store
+        self.manager = manager
+        self.sync = SyncManager(store)
+        self.paths = store.paths
+        self.events: queue.Queue[str] = queue.Queue()
+        self.recovery_request = None
+        self.root = ctk.CTk()
+        self.root.title(f"{APP_NAME} {APP_VERSION}")
+        self.root.geometry("1180x760")
+        self.root.minsize(980, 620)
+        self.root.grid_columnconfigure(1, weight=1)
+        self.root.grid_rowconfigure(0, weight=1)
+        self.nav = ctk.CTkFrame(self.root, width=220, corner_radius=0)
+        self.nav.grid(row=0, column=0, sticky="nsew")
+        self.content = ctk.CTkFrame(self.root, corner_radius=0)
+        self.content.grid(row=0, column=1, sticky="nsew")
+        self.content.grid_columnconfigure(0, weight=1)
+        self.content.grid_rowconfigure(1, weight=1)
+        self._build_nav()
+        self.show_home()
+        self.root.after(1000, self._pump_events)
+
+    def mainloop(self) -> None:
+        self.root.mainloop()
+
+    def _build_nav(self) -> None:
+        self.ctk.CTkLabel(self.nav, text="GodTranslator", font=("Segoe UI", 22, "bold")).pack(anchor="w", padx=18, pady=(20, 2))
+        self.ctk.CTkLabel(self.nav, text="Desktop Companion", text_color="#9fb7aa").pack(anchor="w", padx=18, pady=(0, 20))
+        routes = {
+            "Home": self.show_home,
+            "Downloads": self.show_downloads,
+            "New Novel": self.show_new_novel,
+            "Sync Center": self.show_sync_center,
+            "Recovery Requests": self.show_recovery_requests,
+            "Export & Packs": self.show_export_packs,
+            "Desktop Library": self.show_desktop_library,
+            "Activity": self.show_activity,
+            "Settings": self.show_settings,
+            "Logs": self.show_logs,
+        }
+        for label in NAV_ITEMS:
+            self.ctk.CTkButton(self.nav, text=label, anchor="w", command=routes[label]).pack(fill="x", padx=12, pady=4)
+
+    def _clear(self, title: str, subtitle: str) -> None:
+        for widget in self.content.winfo_children():
+            widget.destroy()
+        header = self.ctk.CTkFrame(self.content, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=24, pady=(20, 10))
+        self.ctk.CTkLabel(header, text=title, font=("Segoe UI", 28, "bold")).pack(anchor="w")
+        self.ctk.CTkLabel(header, text=subtitle, text_color="#9fb7aa").pack(anchor="w")
+        self.body = self.ctk.CTkScrollableFrame(self.content)
+        self.body.grid(row=1, column=0, sticky="nsew", padx=24, pady=(0, 24))
+        self.body.grid_columnconfigure(0, weight=1)
+
+    def show_home(self) -> None:
+        self._clear("Home", "Download, package, and sync novels without manual ZIP handling.")
+        jobs = self.store.jobs()
+        active = [job for job in jobs if job.status in {"queued", "running", "paused"}]
+        failed = [job for job in jobs if job.status == "failed"]
+        completed = [job for job in jobs if job.status == "completed"]
+        pack_count = len(list(self.paths.packs_dir.glob("*.zip")))
+        sync = self.sync.center_snapshot()
+        self._metrics([("Connection", sync["connection_health"]), ("Current jobs", len(active)), ("Failed jobs", len(failed)), ("Packs ready", pack_count), ("Pending uploads", sync["pending_uploads"]), ("Last sync", sync["last_sync"])])
+        actions = self.ctk.CTkFrame(self.body)
+        actions.grid(row=1, column=0, sticky="ew", pady=14)
+        for text, command in (
+            ("Download New Novel", self.show_new_novel),
+            ("Open Recovery Request", self.open_recovery_request),
+            ("Sync Center", self.show_sync_center),
+            ("Open Downloads Folder", lambda: open_folder(Path(self.store.settings().get("downloads_folder") or self.paths.downloads_dir))),
+        ):
+            self.ctk.CTkButton(actions, text=text, command=command).pack(side="left", padx=8, pady=12)
+        self._jobs_table("Recent Download Jobs", jobs[:8], row=2)
+
+    def show_downloads(self) -> None:
+        self._clear("Downloads", "Modern queue with progress, ETA, retries, workers, and upload state.")
+        self._jobs_table("Jobs", self.store.jobs(), row=0, with_actions=True)
+
+    def show_new_novel(self) -> None:
+        self._clear("New Novel", "Paste a novel URL, download chapters, build packs, send to GodTranslator, then open the imported novel.")
+        form = self.ctk.CTkFrame(self.body)
+        form.grid(row=0, column=0, sticky="ew", pady=8)
+        for column in range(2):
+            form.grid_columnconfigure(column, weight=1)
+        self.new_title = self._entry(form, "Novel title", 0, 0)
+        self.new_author = self._entry(form, "Author", 0, 1)
+        self.new_url = self._entry(form, "Source URL", 1, 0)
+        self.new_reference_url = self._entry(form, "Optional Reference URL", 1, 1)
+        self.new_language = self._entry(form, "Language", 2, 0, default="Chinese")
+        self.new_range = self._entry(form, "Chapter range", 2, 1, default="1-10")
+        self.new_folder = self._entry(form, "Download folder", 3, 0, default=str(self.paths.downloads_dir))
+        self.new_adapter = self.ctk.CTkOptionMenu(form, values=[item.name for item in adapter_descriptors()])
+        self.new_adapter.set("novelfire")
+        self.new_adapter.grid(row=4, column=0, sticky="ew", padx=8, pady=8)
+        self.new_auto_upload = self.ctk.CTkCheckBox(form, text="Send to GodTranslator after download")
+        self.new_auto_upload.grid(row=4, column=1, sticky="w", padx=8, pady=8)
+        self.mode_switch = self.ctk.CTkSegmentedButton(form, values=["Simple", "Advanced"])
+        self.mode_switch.set("Simple")
+        self.mode_switch.grid(row=3, column=1, sticky="ew", padx=8, pady=8)
+        self.ctk.CTkButton(form, text="Detect Source", command=self.detect_source_from_form).grid(row=5, column=0, sticky="ew", padx=8, pady=12)
+        self.ctk.CTkButton(form, text="Download Chapters", command=self.create_download_job_from_form).grid(row=5, column=1, sticky="ew", padx=8, pady=12)
+        self.ctk.CTkButton(form, text="Send Latest Pack to GodTranslator", command=self.queue_latest_pack_upload).grid(row=6, column=0, sticky="ew", padx=8, pady=12)
+        self.ctk.CTkButton(form, text="Open Imported Novel", command=self.open_current_novel_on_website).grid(row=6, column=1, sticky="ew", padx=8, pady=12)
+
+    def show_recovery_requests(self) -> None:
+        self._clear("Recovery Requests", "Open a GodTranslator Recovery Request JSON, download missing chapters, and build a recovery pack.")
+        self.ctk.CTkButton(self.body, text="Open Recovery Request JSON", command=self.open_recovery_request).grid(row=0, column=0, sticky="ew", pady=8)
+        self.recovery_card = self.ctk.CTkFrame(self.body)
+        self.recovery_card.grid(row=1, column=0, sticky="ew", pady=8)
+        self._render_recovery_card()
+
+    def show_export_packs(self) -> None:
+        self._clear("Export & Packs", "Build GodTranslator-compatible ZIP packs from verified local chapter files.")
+        form = self.ctk.CTkFrame(self.body)
+        form.grid(row=0, column=0, sticky="ew", pady=8)
+        form.grid_columnconfigure(1, weight=1)
+        self.pack_source = self._entry(form, "Source folder", 0, 0, default=str(self.paths.downloads_dir))
+        self.pack_novel_id = self._entry(form, "Novel identifier", 1, 0, default="i-am-god")
+        self.pack_novel_title = self._entry(form, "Novel title", 2, 0, default="I Am God")
+        self.pack_mode = self.ctk.CTkOptionMenu(form, values=["reference", "original", "english", "mixed", "new_novel"])
+        self.pack_mode.set("reference")
+        self.pack_mode.grid(row=3, column=0, sticky="ew", padx=8, pady=8)
+        self.ctk.CTkButton(form, text="Build Pack", command=self.build_pack_from_form).grid(row=4, column=0, sticky="ew", padx=8, pady=12)
+
+    def show_sync_center(self) -> None:
+        self._clear("Sync Center", "Connect to the website, preview uploads, execute imports, and review recent sync activity.")
+        profiles = self.store.connection_profiles()
+        profile = profiles[0]
+        snapshot = self.sync.center_snapshot()
+        self._metrics([
+            ("Connected website", snapshot["connected_website"]),
+            ("Connection health", snapshot["connection_health"]),
+            ("Last sync", snapshot["last_sync"]),
+            ("Pending uploads", snapshot["pending_uploads"]),
+            ("Failed uploads", snapshot["failed_uploads"]),
+            ("Queued uploads", snapshot["queued_uploads"]),
+        ])
+        form = self.ctk.CTkFrame(self.body)
+        form.grid(row=1, column=0, sticky="ew", pady=8)
+        self.sync_url = self._entry(form, "Website URL", 0, 0, default=profile.base_url)
+        self.sync_token = self._entry(form, "Manual session/token", 1, 0, default=profile.auth_token, show="*")
+        self.ctk.CTkButton(form, text="Remember Website", command=self.remember_website).grid(row=2, column=0, sticky="ew", padx=8, pady=8)
+        self.ctk.CTkButton(form, text="Test Connection", command=self.test_connection).grid(row=2, column=1, sticky="ew", padx=8, pady=8)
+        self.ctk.CTkButton(form, text="Authenticate", command=self.check_authentication).grid(row=3, column=0, sticky="ew", padx=8, pady=8)
+        self.ctk.CTkButton(form, text="Upload Pack", command=self.select_pack_for_upload).grid(row=3, column=1, sticky="ew", padx=8, pady=8)
+        self.ctk.CTkButton(form, text="Manual Sync", command=self.refresh_sync_status).grid(row=4, column=0, sticky="ew", padx=8, pady=8)
+        self.sync_result = self.ctk.CTkTextbox(self.body, height=220)
+        self.sync_result.grid(row=2, column=0, sticky="ew", pady=8)
+        self._uploads_table(row=3)
+
+    def show_desktop_library(self) -> None:
+        self._clear("Desktop Library", "Downloaded novels with download, website, and import status.")
+        jobs = self.store.jobs()
+        if not jobs:
+            self._plain_text("No downloaded novels yet.")
+            return
+        self._jobs_table("Downloaded Novels", jobs, row=0, with_actions=True)
+
+    def show_activity(self) -> None:
+        self._clear("Activity", "Recent local job and pack activity.")
+        self._jobs_table("Recent Jobs", self.store.jobs()[:20], row=0)
+
+    def show_settings(self) -> None:
+        self._clear("Settings", "Local settings stay under %LOCALAPPDATA%\\GodTranslatorDesktop.")
+        settings = self.store.settings()
+        self._plain_text(f"Local data:\n{self.paths.root}\n\nDownloads folder:\n{settings.get('downloads_folder')}\n\nMode:\n{settings.get('mode')}\n\nWebsite:\n{settings.get('default_website_url')}")
+
+    def show_logs(self) -> None:
+        self._clear("Logs", "Local activity log.")
+        path = self.paths.logs_dir / "activity.log"
+        self._plain_text(path.read_text(encoding="utf-8") if path.exists() else "No log entries yet.")
+
+    def _metrics(self, items: list[tuple[str, object]]) -> None:
+        frame = self.ctk.CTkFrame(self.body)
+        frame.grid(row=0, column=0, sticky="ew")
+        for label, value in items:
+            card = self.ctk.CTkFrame(frame)
+            card.pack(side="left", expand=True, fill="x", padx=6, pady=10)
+            self.ctk.CTkLabel(card, text=label, text_color="#9fb7aa").pack(anchor="w", padx=12, pady=(10, 0))
+            self.ctk.CTkLabel(card, text=str(value), font=("Segoe UI", 20, "bold")).pack(anchor="w", padx=12, pady=(0, 10))
+
+    def _jobs_table(self, title: str, jobs, row: int = 0, with_actions: bool = False) -> None:
+        frame = self.ctk.CTkFrame(self.body)
+        frame.grid(row=row, column=0, sticky="ew", pady=10)
+        self.ctk.CTkLabel(frame, text=title, font=("Segoe UI", 18, "bold")).pack(anchor="w", padx=12, pady=(12, 4))
+        if not jobs:
+            self.ctk.CTkLabel(frame, text="No jobs yet.", text_color="#9fb7aa").pack(anchor="w", padx=12, pady=12)
+            return
+        for job in jobs:
+            line = self.ctk.CTkFrame(frame)
+            line.pack(fill="x", padx=10, pady=6)
+            text = (
+                f"{job.novel_title} | website {job.website_url or 'not connected'} | chapter {job.current_chapter or '-'} | "
+                f"done {job.completed} remaining {job.remaining} failed {job.failed} retries {job.retry_count} | "
+                f"ETA {format_seconds(job.estimated_remaining_seconds)} | speed {job.download_speed_cpm:.1f}/min | "
+                f"worker {job.current_worker} | import {job.website_import_status} | {job.last_activity}"
+            )
+            self.ctk.CTkLabel(line, text=text, anchor="w").pack(side="left", fill="x", expand=True, padx=8, pady=8)
+            if with_actions:
+                self.ctk.CTkButton(line, text="Pause", width=70, command=lambda jid=job.id: self._job_action("pause", jid)).pack(side="left", padx=2)
+                self.ctk.CTkButton(line, text="Resume", width=78, command=lambda jid=job.id: self._job_action("resume", jid)).pack(side="left", padx=2)
+                self.ctk.CTkButton(line, text="Retry Failed", width=96, command=lambda jid=job.id: self._job_action("retry", jid)).pack(side="left", padx=2)
+                self.ctk.CTkButton(line, text="Cancel", width=70, command=lambda jid=job.id: self._job_action("stop", jid)).pack(side="left", padx=2)
+                self.ctk.CTkButton(line, text="Open Folder", width=96, command=lambda folder=job.output_dir: open_folder(Path(folder))).pack(side="left", padx=2)
+
+    def _entry(self, parent, label: str, row: int, column: int, default: str = "", show: str | None = None):
+        wrapper = self.ctk.CTkFrame(parent, fg_color="transparent")
+        wrapper.grid(row=row, column=column, sticky="ew", padx=8, pady=6)
+        self.ctk.CTkLabel(wrapper, text=label, text_color="#9fb7aa").pack(anchor="w")
+        entry = self.ctk.CTkEntry(wrapper, show=show)
+        entry.insert(0, default)
+        entry.pack(fill="x")
+        return entry
+
+    def _plain_text(self, text: str) -> None:
+        box = self.ctk.CTkTextbox(self.body, height=420)
+        box.insert("1.0", text)
+        box.configure(state="disabled")
+        box.grid(row=0, column=0, sticky="nsew", pady=8)
+
+    def create_download_job_from_form(self) -> None:
+        try:
+            chapters = parse_chapter_range(self.new_range.get())
+            profile = self.sync.profile()
+            job = self.manager.create_job(
+                novel_title=self.new_title.get() or "Untitled Novel",
+                source_url=self.new_url.get(),
+                chapters=chapters,
+                output_dir=Path(self.new_folder.get()),
+                source_adapter=self.new_adapter.get(),
+                website_url=profile.base_url,
+                auto_upload=bool(self.new_auto_upload.get()),
+                browser_mode=True,
+            )
+            self.store.append_log(f"Created job {job.id}")
+            messagebox.showinfo(APP_NAME, f"Job created: {job.id}")
+            self.show_downloads()
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, friendly_error(exc))
+
+    def detect_source_from_form(self) -> None:
+        url = self.new_url.get().lower()
+        if "novelfire" in url:
+            self.new_adapter.set("novelfire")
+            messagebox.showinfo(APP_NAME, "Source detected: NovelFire")
+            return
+        messagebox.showinfo(APP_NAME, "Source not recognized yet. Use NovelFire or choose an advanced adapter.")
+
+    def open_recovery_request(self) -> None:
+        path_text = filedialog.askopenfilename(title="Open Recovery Request", filetypes=[("JSON files", "*.json")])
+        if not path_text:
+            return
+        try:
+            self.recovery_request = load_recovery_request(Path(path_text))
+            self.store.append_log(f"Opened Recovery Request {path_text}")
+            self.show_recovery_requests()
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, friendly_error(exc))
+
+    def _render_recovery_card(self) -> None:
+        for widget in self.recovery_card.winfo_children():
+            widget.destroy()
+        if not self.recovery_request:
+            self.ctk.CTkLabel(self.recovery_card, text="No Recovery Request opened yet.", text_color="#9fb7aa").pack(anchor="w", padx=12, pady=12)
+            return
+        info = self.recovery_request
+        lines = [
+            f"Novel: {info.novel_title} ({info.novel_id})",
+            f"Source: {info.source_type} | {info.source_url or 'not provided'}",
+            f"Target mode: {info.target_mode}",
+            f"Missing chapters: {len(info.chapters)}",
+            f"Chapter URL template: {info.chapter_url_template or 'not provided'}",
+            f"Request created: {info.created_at or 'not included'}",
+        ]
+        self.ctk.CTkLabel(self.recovery_card, text="\n".join(lines), justify="left").pack(anchor="w", padx=12, pady=12)
+        self.ctk.CTkButton(self.recovery_card, text="Download Missing Chapters", command=self.create_job_from_recovery).pack(anchor="w", padx=12, pady=6)
+        self.ctk.CTkButton(self.recovery_card, text="Upload Recovery Pack", command=self.queue_latest_pack_upload).pack(anchor="w", padx=12, pady=6)
+
+    def create_job_from_recovery(self) -> None:
+        if not self.recovery_request:
+            return
+        info = self.recovery_request
+        output_dir = self.paths.downloads_dir / info.novel_id / "reference"
+        job = self.manager.create_job(
+            novel_title=info.novel_title,
+            source_url=info.source_url,
+            chapters=info.chapters,
+            output_dir=output_dir,
+            source_adapter=info.source_type or "novelfire",
+            target_mode=info.target_mode,
+            website_url=self.sync.profile().base_url,
+            novel_id=info.novel_id,
+            auto_upload=True,
+            browser_mode=True,
+        )
+        self.store.append_log(f"Created recovery job {job.id}")
+        self.show_downloads()
+
+    def build_pack_from_form(self) -> None:
+        try:
+            result = build_pack(
+                source_dir=Path(self.pack_source.get()),
+                output_dir=self.paths.packs_dir,
+                novel_id=self.pack_novel_id.get() or "i-am-god",
+                novel_title=self.pack_novel_title.get() or "I Am God",
+                target_mode=self.pack_mode.get(),
+            )
+            validate_pack(result.path)
+            self.store.append_log(f"Built pack {result.path}")
+            messagebox.showinfo(APP_NAME, f"Pack created:\n{result.path}")
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, friendly_error(exc))
+
+    def test_connection(self) -> None:
+        profile = self.sync.save_profile(self.sync_url.get(), self.sync_token.get())
+        self.sync_result.delete("1.0", "end")
+        self.sync_result.insert("1.0", "Testing connection...\n")
+
+        def worker() -> None:
+            try:
+                payload = WebsiteClient(profile.base_url, profile.auth_token).desktop_health()
+                self.events.put(f"Website health OK: {payload}")
+            except Exception as exc:
+                self.events.put(f"Website health failed: {friendly_error(exc)}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def remember_website(self) -> None:
+        profile = self.sync.save_profile(self.sync_url.get(), self.sync_token.get())
+        self.store.append_log(f"Remembered website {profile.base_url}")
+        self.sync_result.insert("end", f"Remembered website: {profile.base_url}\n")
+
+    def check_authentication(self) -> None:
+        self.remember_website()
+
+        def worker() -> None:
+            try:
+                self.events.put(f"Authentication OK: {self.sync.auth_check()}")
+            except Exception as exc:
+                self.events.put(f"Authentication failed: {friendly_error(exc)}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def refresh_sync_status(self) -> None:
+        self.remember_website()
+
+        def worker() -> None:
+            try:
+                self.events.put(f"Sync status: {self.sync.sync_status()}")
+            except Exception as exc:
+                self.events.put(f"Sync failed: {friendly_error(exc)}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def select_pack_for_upload(self) -> None:
+        path_text = filedialog.askopenfilename(title="Upload GodTranslator Pack", filetypes=[("ZIP packs", "*.zip")])
+        if not path_text:
+            return
+        novel_id = Path(path_text).name.split("-")[0] or "imported-novel"
+        upload = self.sync.queue_upload(Path(path_text), novel_id=novel_id, content_type="original")
+        self.preview_and_execute_upload(upload.id)
+
+    def queue_latest_pack_upload(self) -> None:
+        packs = sorted(self.paths.packs_dir.glob("*.zip"), key=lambda path: path.stat().st_mtime, reverse=True)
+        if not packs:
+            messagebox.showinfo(APP_NAME, "No packs are ready yet.")
+            return
+        novel_id = packs[0].name.split("-")[0] or "imported-novel"
+        upload = self.sync.queue_upload(packs[0], novel_id=novel_id, content_type="original")
+        self.preview_and_execute_upload(upload.id)
+
+    def preview_and_execute_upload(self, upload_id: str) -> None:
+        if hasattr(self, "sync_result"):
+            self.sync_result.insert("end", f"Previewing upload {upload_id}...\n")
+
+        def worker() -> None:
+            try:
+                preview = self.sync.preview_upload(upload_id)
+                self.events.put(f"Preview ready: {preview.preview.get('estimated_import') or preview.preview.get('summary')}")
+                imported = self.sync.execute_upload(upload_id)
+                self.events.put(f"Import summary: {imported.result.get('summary')}")
+            except Exception as exc:
+                self.events.put(f"Upload failed: {friendly_error(exc)}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def open_current_novel_on_website(self) -> None:
+        self.sync.open_imported_novel(safe_slug(self.new_title.get() or "imported-novel"))
+
+    def _uploads_table(self, row: int = 0) -> None:
+        uploads = self.store.uploads()[:8]
+        frame = self.ctk.CTkFrame(self.body)
+        frame.grid(row=row, column=0, sticky="ew", pady=10)
+        self.ctk.CTkLabel(frame, text="Recent Imports", font=("Segoe UI", 18, "bold")).pack(anchor="w", padx=12, pady=(12, 4))
+        if not uploads:
+            self.ctk.CTkLabel(frame, text="No uploads yet.", text_color="#9fb7aa").pack(anchor="w", padx=12, pady=12)
+            return
+        for upload in uploads:
+            line = f"{Path(upload.pack_path).name} | {upload.status} | {upload.progress_percent}% | {upload.last_activity}"
+            self.ctk.CTkLabel(frame, text=line, anchor="w").pack(fill="x", padx=12, pady=5)
+
+    def _pump_events(self) -> None:
+        while not self.events.empty():
+            message = self.events.get()
+            self.store.append_log(message)
+            if hasattr(self, "sync_result"):
+                self.sync_result.insert("end", message + "\n")
+        self.root.after(1000, self._pump_events)
+
+    def _job_action(self, action: str, job_id: str) -> None:
+        try:
+            if action == "pause":
+                self.manager.pause(job_id)
+            elif action == "resume":
+                self.manager.resume(job_id)
+            elif action == "retry":
+                self.manager.retry_failed(job_id)
+            elif action == "stop":
+                self.manager.stop(job_id)
+            self.show_downloads()
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, friendly_error(exc))
+
+
+def parse_chapter_range(value: str) -> list[int]:
+    chapters: set[int] = set()
+    for part in value.replace(";", ",").split(","):
+        text = part.strip()
+        if not text:
+            continue
+        if "-" in text:
+            left, right = text.split("-", 1)
+            start, end = int(left), int(right)
+            chapters.update(range(min(start, end), max(start, end) + 1))
+        else:
+            chapters.add(int(text))
+    if not chapters:
+        raise ValueError("Enter at least one chapter.")
+    return sorted(chapters)
+
+
+def open_folder(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    import os
+
+    os.startfile(str(path))
+
+
+def format_seconds(value: float | None) -> str:
+    if value is None:
+        return "Unknown"
+    seconds = int(max(0, value))
+    minutes, seconds = divmod(seconds, 60)
+    if minutes:
+        return f"{minutes}m {seconds}s"
+    return f"{seconds}s"
+
+
+def safe_slug(value: str) -> str:
+    text = "".join(ch.lower() if ch.isalnum() else "-" for ch in value).strip("-")
+    while "--" in text:
+        text = text.replace("--", "-")
+    return text[:80] or "imported-novel"
+
+
+def friendly_error(exc: Exception) -> str:
+    text = str(exc) or exc.__class__.__name__
+    if "\n" in text:
+        text = text.splitlines()[0]
+    return text[:300]
