@@ -951,6 +951,9 @@ async function openTranslate(novelId, params = new URLSearchParams()) {
     const mode = form.translation_mode || "simple";
     const selectionMode = form.selection_mode || (form.all_untranslated ? "all-untranslated" : "next-untranslated");
     const speedPreset = form.speed_preset || (mode === "economy" ? "careful" : "balanced");
+    const nextPresetValues = ["25", "50", "100", "200", "500", "all"];
+    const nextCountMode = form.next_count_mode || (String(form.next_count || "25").toLowerCase() === "all" ? "all" : (nextPresetValues.includes(String(form.next_count || "25")) ? String(form.next_count || "25") : "custom"));
+    const customNextCount = nextCountMode === "custom" ? (form.custom_next_count || form.next_count || "") : "";
     state.lastEstimate = null;
     app.innerHTML = `
       ${renderBreadcrumbs()}
@@ -974,7 +977,7 @@ async function openTranslate(novelId, params = new URLSearchParams()) {
       <section class="draft-bar"><span id="draftStatus">${draft.saved_at ? `Draft saved ${timeAgo(draft.saved_at)}` : "No saved draft"}</span><div class="actions"><button id="restoreTranslateDraft" type="button" ${draft.saved_at ? "" : "disabled"}>Restore Draft</button><button id="discardTranslateDraft" type="button" ${draft.saved_at ? "" : "disabled"}>Discard Draft</button></div></section>
       <section class="translate-workspace">
         <div class="translate-steps" id="translateForm">
-          <section class="workspace-panel form-grid"><div class="wide"><h2>1. Mode & Chapters</h2><p class="muted">Simple mode keeps the required choices visible and leaves performance controls hidden.</p></div><label>Mode<select id="translationMode"><option value="simple" ${mode === "simple" ? "selected" : ""}>Simple</option><option value="fast" ${mode === "fast" ? "selected" : ""}>Fast</option><option value="advanced" ${mode === "advanced" ? "selected" : ""}>Advanced</option><option value="economy" ${mode === "economy" ? "selected" : ""}>Economy / Overnight</option></select></label><label>Novel<select id="translateNovel">${state.novels.map((n) => `<option value="${n.id}" ${n.id === novelId ? "selected" : ""}>${escapeHtml(n.title)}</option>`).join("")}</select></label><label>What to translate<select id="selectionMode"><option value="next-untranslated" ${selectionMode === "next-untranslated" ? "selected" : ""}>Next untranslated chapters</option><option value="specific" ${selectionMode === "specific" ? "selected" : ""}>Specific chapters</option><option value="all-untranslated" ${selectionMode === "all-untranslated" ? "selected" : ""}>All untranslated</option></select></label><label id="nextCountLabel">Next count<select id="nextCount"><option value="25" ${Number(form.next_count || 25) === 25 ? "selected" : ""}>Next 25</option><option value="50" ${Number(form.next_count) === 50 ? "selected" : ""}>Next 50</option><option value="100" ${Number(form.next_count) === 100 ? "selected" : ""}>Next 100</option></select></label><label id="chapterInputLabel">Chapters<input id="translateChapters" value="${escapeAttr(form.chapters || "")}" placeholder="26,53,60-70"><span class="field-error" id="chapterError"></span></label><p class="muted wide" id="chapterPreview">Choose what to translate.</p></section>
+          <section class="workspace-panel form-grid"><div class="wide"><h2>1. Mode & Chapters</h2><p class="muted">Simple mode keeps the required choices visible and leaves performance controls hidden.</p></div><label>Mode<select id="translationMode"><option value="simple" ${mode === "simple" ? "selected" : ""}>Simple</option><option value="fast" ${mode === "fast" ? "selected" : ""}>Fast</option><option value="advanced" ${mode === "advanced" ? "selected" : ""}>Advanced</option><option value="economy" ${mode === "economy" ? "selected" : ""}>Economy / Overnight</option></select></label><label>Novel<select id="translateNovel">${state.novels.map((n) => `<option value="${n.id}" ${n.id === novelId ? "selected" : ""}>${escapeHtml(n.title)}</option>`).join("")}</select></label><label>What to translate<select id="selectionMode"><option value="next-untranslated" ${selectionMode === "next-untranslated" ? "selected" : ""}>Next untranslated chapters</option><option value="specific" ${selectionMode === "specific" ? "selected" : ""}>Specific chapters</option><option value="all-untranslated" ${selectionMode === "all-untranslated" ? "selected" : ""}>All untranslated chapters</option></select></label><label id="nextCountLabel">Count<select id="nextCount"><option value="25" ${nextCountMode === "25" ? "selected" : ""}>25</option><option value="50" ${nextCountMode === "50" ? "selected" : ""}>50</option><option value="100" ${nextCountMode === "100" ? "selected" : ""}>100</option><option value="200" ${nextCountMode === "200" ? "selected" : ""}>200</option><option value="500" ${nextCountMode === "500" ? "selected" : ""}>500</option><option value="all" ${nextCountMode === "all" ? "selected" : ""}>All</option><option value="custom" ${nextCountMode === "custom" ? "selected" : ""}>Custom</option></select></label><label id="customNextCountLabel">Custom count<input id="customNextCount" type="number" min="1" step="1" value="${escapeAttr(customNextCount)}"><span class="field-error" id="customCountError"></span></label><label id="chapterInputLabel">Chapters<input id="translateChapters" value="${escapeAttr(form.chapters || "")}" placeholder="1-50,75,100-125"><span class="field-error" id="chapterError"></span></label><p class="muted wide" id="chapterPreview">Choose what to translate.</p></section>
           <section class="workspace-panel form-grid"><div class="wide"><h2>2. Translation Profile</h2><p class="muted">Optional style and glossary notes shape the job without changing source data.</p></div><label>Profile<select id="profile"><option ${form.profile === "Default literary translation" ? "selected" : ""}>Default literary translation</option><option ${form.profile === "Reference-guided polish" ? "selected" : ""}>Reference-guided polish</option></select></label><label class="wide">Style guide<textarea id="styleGuide" rows="3">${escapeHtml(form.style_guide || "")}</textarea></label><label class="wide">Glossary notes<textarea id="glossary" rows="3">${escapeHtml(form.glossary || "")}</textarea></label></section>
           <section class="workspace-panel form-grid"><div class="wide"><h2>3. Speed & Model</h2><p class="muted">Auto optimization keeps Simple mode focused while still using the selected speed intent.</p></div><label>Speed preset<select id="speedPreset"><option value="careful" ${speedPreset === "careful" ? "selected" : ""}>Careful - lowest pressure</option><option value="balanced" ${speedPreset === "balanced" ? "selected" : ""}>Balanced - recommended</option><option value="fast" ${speedPreset === "fast" ? "selected" : ""}>Fast - higher parallel processing</option><option value="maximum-safe" ${speedPreset === "maximum-safe" ? "selected" : ""}>Maximum Safe - highest safe throughput</option></select></label><label>Model<select id="model">${models.map((model) => `<option value="${escapeAttr(model.id)}" ${model.id === (form.model || novel.model || "gpt-4o-mini") ? "selected" : ""}>${escapeHtml(model.display_name)} - ${escapeHtml(model.pricing?.note || "Pricing not configured")}</option>`).join("")}</select></label><label class="inline-check"><input id="autoOptimizeSpeed" type="checkbox" ${form.auto_optimize_speed === false ? "" : "checked"}> Auto Optimize Speed</label><p class="muted wide" id="speedDescription">Speed is being optimized automatically.</p></section>
           <section class="workspace-panel form-grid"><div class="wide"><h2>4. Budget & Safety</h2><p class="muted">Budget caps are optional; launch stays locked until this form has a current estimate.</p></div><label>Max total budget<input id="maxTotalBudget" type="number" step="0.01" value="${escapeAttr(form.max_total_budget ?? "")}"><span class="field-error" id="budgetError"></span></label><label>Max cost per chapter<input id="maxPerChapterBudget" type="number" step="0.001" value="${escapeAttr(form.max_per_chapter_budget ?? "")}"></label><label class="inline-check"><input id="useReference" type="checkbox" ${form.use_reference === false ? "" : "checked"}> Use Reference when available</label><label class="inline-check"><input id="onlyUntranslated" type="checkbox" ${form.only_untranslated === false ? "" : "checked"}> Only untranslated</label><div class="advanced-settings wide"><h3>Advanced Performance</h3><div class="form-grid"><label>Retry limit<input id="retryCount" type="number" min="0" max="5" value="${escapeAttr(form.retry_count ?? 2)}"></label><label>Queue depth<input id="batchSize" type="number" min="1" max="5000" value="${escapeAttr(form.batch_size ?? 25)}"></label><label>Maximum workers<select id="translationConcurrency"><option value="" ${form.concurrency ? "" : "selected"}>Auto</option><option value="1" ${Number(form.concurrency) === 1 ? "selected" : ""}>1 worker</option><option value="2" ${Number(form.concurrency) === 2 ? "selected" : ""}>2 workers</option><option value="3" ${Number(form.concurrency) === 3 ? "selected" : ""}>3 workers</option><option value="4" ${Number(form.concurrency) === 4 ? "selected" : ""}>4 workers</option><option value="6" ${Number(form.concurrency) === 6 ? "selected" : ""}>6 workers</option><option value="8" ${Number(form.concurrency) === 8 ? "selected" : ""}>8 workers</option></select></label><label>Priority<select id="jobPriority"><option value="normal" ${form.priority === "high" ? "" : "selected"}>Normal</option><option value="high" ${form.priority === "high" ? "selected" : ""}>High</option></select></label><label class="inline-check"><input id="stopOnBudget" type="checkbox" ${form.stop_on_budget === false ? "" : "checked"}> Stop on budget</label></div></div></section>
@@ -986,6 +989,7 @@ async function openTranslate(novelId, params = new URLSearchParams()) {
     document.querySelector("#translateChapters").addEventListener("input", renderChapterPreview);
     document.querySelector("#selectionMode").addEventListener("change", renderChapterPreview);
     document.querySelector("#nextCount").addEventListener("change", renderChapterPreview);
+    document.querySelector("#customNextCount").addEventListener("input", renderChapterPreview);
     document.querySelector("#translationMode").addEventListener("change", toggleTranslationMode);
     document.querySelector("#speedPreset").addEventListener("change", updateSpeedDescription);
     document.querySelector("#autoOptimizeSpeed").addEventListener("change", updateSpeedDescription);
@@ -1012,20 +1016,26 @@ async function openTranslate(novelId, params = new URLSearchParams()) {
 
 function translatePayload() {
   const selectionMode = document.querySelector("#selectionMode").value;
+  const translationMode = document.querySelector("#translationMode").value;
+  const nextCountMode = document.querySelector("#nextCount").value;
+  const customNextCount = numberOrNull("#customNextCount");
+  const nextCount = nextCountMode === "custom" ? customNextCount : (nextCountMode === "all" ? "all" : Number(nextCountMode || 25));
   return {
     novel_id: document.querySelector("#translateNovel").value,
-    translation_mode: document.querySelector("#translationMode").value,
+    translation_mode: translationMode,
     speed_preset: document.querySelector("#speedPreset").value,
     auto_optimize_speed: document.querySelector("#autoOptimizeSpeed").checked,
     selection_mode: selectionMode,
-    next_count: numberOrNull("#nextCount"),
+    next_count: nextCount,
+    next_count_mode: nextCountMode,
+    custom_next_count: customNextCount,
     chapters: document.querySelector("#translateChapters").value,
-    all_untranslated: selectionMode === "all-untranslated",
+    all_untranslated: selectionMode === "all-untranslated" || (selectionMode === "next-untranslated" && nextCountMode === "all"),
     model: document.querySelector("#model").value || "gpt-4o-mini",
     max_total_budget: numberOrNull("#maxTotalBudget"),
     max_per_chapter_budget: numberOrNull("#maxPerChapterBudget"),
     retry_count: numberOrNull("#retryCount"),
-    batch_size: numberOrNull("#batchSize"),
+    batch_size: translationMode === "advanced" ? numberOrNull("#batchSize") : null,
     concurrency: numberOrNull("#translationConcurrency"),
     stop_on_budget: document.querySelector("#stopOnBudget").checked,
     use_reference: document.querySelector("#useReference").checked,
@@ -1043,35 +1053,58 @@ function renderChapterPreview() {
   const mode = document.querySelector("#selectionMode")?.value || "next-untranslated";
   const chapterLabel = document.querySelector("#chapterInputLabel");
   const nextLabel = document.querySelector("#nextCountLabel");
+  const customLabel = document.querySelector("#customNextCountLabel");
   if (chapterLabel) chapterLabel.hidden = mode !== "specific";
   if (nextLabel) nextLabel.hidden = mode !== "next-untranslated";
+  if (customLabel) customLabel.hidden = mode !== "next-untranslated" || document.querySelector("#nextCount")?.value !== "custom";
   if (mode === "all-untranslated") {
-    target.textContent = "Preview: all chapters with readable Original text and missing English edition.";
+    target.textContent = "Preview: all eligible untranslated chapters will be selected from the database when the job is created. Chapters without Original text and existing English editions are skipped unless retranslation is selected.";
     return;
   }
   if (mode === "next-untranslated") {
-    target.textContent = `Preview: next ${document.querySelector("#nextCount")?.value || 25} untranslated chapters will be selected from the database when the job is created.`;
+    const countMode = document.querySelector("#nextCount")?.value || "25";
+    const label = countMode === "custom" ? (document.querySelector("#customNextCount")?.value || "custom") : countMode;
+    target.textContent = countMode === "all"
+      ? "Preview: all eligible untranslated chapters will be selected from the database when the job is created."
+      : `Preview: the next ${label} eligible untranslated chapters will be selected from the database when the job is created.`;
     validateTranslateForm();
     return;
   }
-  const parsed = parseChapterInput(document.querySelector("#translateChapters")?.value || "");
+  const parsed = parseChapterInputDetailed(document.querySelector("#translateChapters")?.value || "");
   validateTranslateForm();
-  target.textContent = parsed.length
-    ? `Preview: ${parsed.length} chapter${parsed.length === 1 ? "" : "s"} selected (${parsed.slice(0, 12).join(", ")}${parsed.length > 12 ? ", ..." : ""}).`
+  target.textContent = parsed.chapters.length
+    ? `Preview: ${parsed.chapters.length} chapter${parsed.chapters.length === 1 ? "" : "s"} selected (${parsed.chapters.slice(0, 12).join(", ")}${parsed.chapters.length > 12 ? ", ..." : ""}). ${parsed.duplicatesRemoved ? `${parsed.duplicatesRemoved} duplicate${parsed.duplicatesRemoved === 1 ? "" : "s"} removed. ` : ""}${parsed.invalidTokens.length ? `Invalid: ${parsed.invalidTokens.join(", ")}.` : ""}`
     : "Enter chapters like 26,53,60-70.";
 }
 
 function parseChapterInput(value) {
+  return parseChapterInputDetailed(value).chapters;
+}
+
+function parseChapterInputDetailed(value) {
   const chapters = new Set();
+  const invalidTokens = [];
+  let rawCount = 0;
   String(value || "").split(",").map((item) => item.trim()).filter(Boolean).forEach((part) => {
     if (/^\d+\s*-\s*\d+$/.test(part)) {
       const [a, b] = part.split("-").map((item) => Number(item.trim()));
-      for (let i = Math.min(a, b); i <= Math.max(a, b); i += 1) chapters.add(i);
-    } else if (/^\d+$/.test(part)) {
+      if (a <= 0 || b <= 0) {
+        invalidTokens.push(part);
+      } else {
+        for (let i = Math.min(a, b); i <= Math.max(a, b); i += 1) {
+          rawCount += 1;
+          chapters.add(i);
+        }
+      }
+    } else if (/^\d+$/.test(part) && Number(part) > 0) {
+      rawCount += 1;
       chapters.add(Number(part));
+    } else {
+      invalidTokens.push(part);
     }
   });
-  return [...chapters].sort((a, b) => a - b);
+  const ordered = [...chapters].sort((a, b) => a - b);
+  return {chapters: ordered, invalidTokens, duplicatesRemoved: Math.max(0, rawCount - ordered.length)};
 }
 
 function toggleTranslationMode() {
@@ -1106,10 +1139,22 @@ async function estimateTranslation(event) {
   if (!validateTranslateForm()) return toast("Fix the highlighted fields first.");
   const estimate = await api("/api/translation/estimate", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(translatePayload())});
   state.lastEstimate = estimate;
-  const missingOriginal = Math.max(0, Number(estimate.selected_count || 0) - Number(estimate.original_readable || 0));
+  const missingOriginal = Number(estimate.missing_original_count ?? Math.max(0, Number(estimate.selected_count || 0) - Number(estimate.original_readable || 0)));
   const referenceMissing = Math.max(0, Number(estimate.selected_count || 0) - Number(estimate.reference_available || 0));
   const tokens = estimate.token_breakdown || {};
-  document.querySelector("#estimateResult").innerHTML = `<div class="metric-grid">${metric("Selected", estimate.selected_count)}${metric("Eligible", estimate.eligible_count)}${metric("Already translated", estimate.ai_existing || 0)}${metric("Missing Original", missingOriginal)}${metric("Reference available", estimate.reference_available || 0)}${metric("Reference missing", referenceMissing)}${metric("Speed mode", titleCase(estimate.speed_preset || "balanced"))}${metric("Expected workers", estimate.expected_workers || 1)}${metric("Approx time", durationEstimateText(estimate.duration_estimate))}${metric("Approx cost", `$${Number(estimate.estimated_cost || 0).toFixed(4)}`)}${metric("Budget margin", budgetMarginText(estimate))}${metric("Original tokens", tokens.original_tokens ?? estimate.approx_input_tokens ?? 0)}${metric("Reference tokens", tokens.reference_tokens ?? 0)}${metric("Rules/glossary", tokens.instruction_glossary_tokens ?? 0)}${metric("Output tokens", tokens.estimated_output_tokens ?? estimate.approx_output_tokens ?? 0)}</div><p class="muted">${escapeHtml(estimate.pricing_note)} ${estimate.auto_optimize_speed ? "Speed is being optimized automatically within the configured worker bounds." : ""}</p>`;
+  const selection = estimate.selection || {};
+  const invalidSummary = [
+    ...(estimate.invalid_tokens || []).map((item) => String(item)),
+    ...(estimate.invalid_chapter_numbers || []).map((item) => `Chapter ${item}`),
+  ];
+  const largeWarning = Number(estimate.eligible_count || 0) >= 100
+    ? `<div class="warning-panel"><strong>Large-job safety check</strong><p>Chapter count: ${estimate.selected_count}. Eligible count: ${estimate.eligible_count}. Estimated cost: $${Number(estimate.estimated_cost || 0).toFixed(4)}. Estimated duration: ${durationEstimateText(estimate.duration_estimate)}. Selected speed mode: ${titleCase(estimate.speed_preset || "balanced")}. Expected workers: ${estimate.expected_workers || 1}. Budget margin: ${budgetMarginText(estimate)}.</p><p>The existing bounded scheduler will create one persistent job with one item per chapter; workers process items independently and stay within global and per-job concurrency limits.</p></div>`
+    : "";
+  const allConfirmation = isAllTranslationSelection()
+    ? `<label class="inline-check confirmation-check"><input id="confirmAllUntranslated" type="checkbox"> Translate all eligible chapters?</label><p class="muted">Total chapters: ${selection.total_chapters ?? estimate.selected_count}. Eligible: ${estimate.eligible_count}. Estimated cost: $${Number(estimate.estimated_cost || 0).toFixed(4)}. Estimated duration: ${durationEstimateText(estimate.duration_estimate)}. Budget limit: ${numberOrNull("#maxTotalBudget") === null ? "No cap" : `$${Number(numberOrNull("#maxTotalBudget")).toFixed(2)}`}. Speed preset: ${titleCase(estimate.speed_preset || "balanced")}.</p>`
+    : "";
+  document.querySelector("#estimateResult").innerHTML = `<div class="metric-grid">${metric("Selected", estimate.selected_count)}${metric("Eligible", estimate.eligible_count)}${metric("Already translated", estimate.already_translated_count ?? estimate.ai_existing ?? 0)}${metric("Missing Original", missingOriginal)}${metric("Invalid chapters", estimate.invalid_chapter_count || 0)}${metric("Duplicates removed", estimate.duplicates_removed || 0)}${metric("Reference available", estimate.reference_available || 0)}${metric("Reference missing", referenceMissing)}${metric("Speed mode", titleCase(estimate.speed_preset || "balanced"))}${metric("Expected workers", estimate.expected_workers || 1)}${metric("Approx time", durationEstimateText(estimate.duration_estimate))}${metric("Approx cost", `$${Number(estimate.estimated_cost || 0).toFixed(4)}`)}${metric("Budget margin", budgetMarginText(estimate))}${metric("Original tokens", tokens.original_tokens ?? estimate.approx_input_tokens ?? 0)}${metric("Reference tokens", tokens.reference_tokens ?? 0)}${metric("Rules/glossary", tokens.instruction_glossary_tokens ?? 0)}${metric("Output tokens", tokens.estimated_output_tokens ?? estimate.approx_output_tokens ?? 0)}</div>${invalidSummary.length ? `<p class="field-error">Invalid selection entries: ${escapeHtml(invalidSummary.join(", "))}</p>` : ""}${largeWarning}${allConfirmation}<p class="muted">${escapeHtml(estimate.pricing_note)} ${estimate.auto_optimize_speed ? "Speed is being optimized automatically within the configured worker bounds." : ""}</p>`;
+  document.querySelector("#confirmAllUntranslated")?.addEventListener("change", validateTranslateForm);
   validateTranslateForm();
 }
 
@@ -1971,30 +2016,51 @@ function validateTranslateForm() {
   const selectionMode = document.querySelector("#selectionMode")?.value || "next-untranslated";
   const chaptersInput = document.querySelector("#translateChapters");
   const chapterError = document.querySelector("#chapterError");
+  const customCountError = document.querySelector("#customCountError");
   const budgetError = document.querySelector("#budgetError");
   const estimateButton = document.querySelector("#estimateBtn");
   const createButton = document.querySelector("#createJobBtn");
   const launchReason = document.querySelector("#launchReason");
   if (!chaptersInput || !chapterError || !budgetError) return true;
   const raw = chaptersInput.value.trim();
-  const parsed = parseChapterInput(raw);
-  const invalidChapter = selectionMode === "specific" && (!raw || parsed.length === 0 || /[^\d,\-\s]/.test(raw));
+  const parsed = parseChapterInputDetailed(raw);
+  const invalidChapter = selectionMode === "specific" && (!raw || parsed.chapters.length === 0 || parsed.invalidTokens.length > 0);
+  const nextCountMode = document.querySelector("#nextCount")?.value || "25";
+  const customCount = numberOrNull("#customNextCount");
+  const maxEligible = currentNovelEligibleMax();
+  const invalidCustomCount = selectionMode === "next-untranslated" && nextCountMode === "custom" && (!customCount || customCount < 1 || customCount > maxEligible);
   const total = numberOrNull("#maxTotalBudget");
   const per = numberOrNull("#maxPerChapterBudget");
   const invalidBudget = total !== null && per !== null && per > total;
+  const overBudget = estimateExceedsBudget(state.lastEstimate);
+  const noEligible = state.lastEstimate && Number(state.lastEstimate.eligible_count || 0) <= 0;
+  const needsAllConfirmation = state.lastEstimate && isAllTranslationSelection() && !document.querySelector("#confirmAllUntranslated")?.checked;
   chapterError.textContent = invalidChapter ? "Enter chapters like 26,53,60-70 or choose all untranslated." : "";
-  budgetError.textContent = invalidBudget ? "Per-chapter budget cannot exceed total budget." : "";
-  const valid = !invalidChapter && !invalidBudget;
-  if (estimateButton) estimateButton.disabled = !valid;
-  if (createButton) createButton.disabled = !valid || !state.lastEstimate;
-  if (launchReason) {
-    launchReason.textContent = !valid
-      ? "Fix the highlighted fields before estimating or launching."
-      : state.lastEstimate
-        ? "Estimate is current. Launch Job will create queued work for this novel."
-        : "Run an estimate before Launch Job is available.";
+  if (customCountError) {
+    customCountError.textContent = invalidCustomCount
+      ? `Enter a count from 1${maxEligible > 0 ? ` to ${maxEligible}` : ""}.`
+      : "";
   }
-  return valid;
+  budgetError.textContent = invalidBudget ? "Per-chapter budget cannot exceed total budget." : (overBudget ? "Estimated cost exceeds the configured budget." : "");
+  const valid = !invalidChapter && !invalidCustomCount && !invalidBudget;
+  if (estimateButton) estimateButton.disabled = !valid;
+  if (createButton) createButton.disabled = !valid || !state.lastEstimate || overBudget || noEligible || needsAllConfirmation;
+  if (launchReason) {
+    if (!valid) {
+      launchReason.textContent = "Fix the highlighted fields before estimating or launching.";
+    } else if (!state.lastEstimate) {
+      launchReason.textContent = "Run an estimate before Launch Job is available.";
+    } else if (overBudget) {
+      launchReason.textContent = "Launch Job is disabled because the estimate exceeds the configured budget.";
+    } else if (noEligible) {
+      launchReason.textContent = "Launch Job is disabled because no eligible chapters were found.";
+    } else if (needsAllConfirmation) {
+      launchReason.textContent = "Confirm the all-chapters launch before creating the job.";
+    } else {
+      launchReason.textContent = "Estimate is current. Launch Job will create persistent queued chapter items for this novel.";
+    }
+  }
+  return valid && !overBudget && !noEligible && !needsAllConfirmation;
 }
 
 function preferredSource(chapter) {
@@ -2046,6 +2112,29 @@ function budgetMarginText(estimate) {
   if (!limit) return "No cap";
   const remaining = limit - Number(estimate.estimated_cost || 0);
   return remaining >= 0 ? `$${remaining.toFixed(4)} left` : `$${Math.abs(remaining).toFixed(4)} over`;
+}
+
+function estimateExceedsBudget(estimate) {
+  if (!estimate) return false;
+  const total = numberOrNull("#maxTotalBudget");
+  const per = numberOrNull("#maxPerChapterBudget");
+  const eligible = Math.max(1, Number(estimate.eligible_count || 0));
+  const cost = Number(estimate.estimated_cost || 0);
+  return (total !== null && cost > total) || (per !== null && cost / eligible > per);
+}
+
+function isAllTranslationSelection() {
+  const selectionMode = document.querySelector("#selectionMode")?.value || "next-untranslated";
+  return selectionMode === "all-untranslated" || (selectionMode === "next-untranslated" && document.querySelector("#nextCount")?.value === "all");
+}
+
+function currentNovelEligibleMax() {
+  const novelId = document.querySelector("#translateNovel")?.value || state.currentNovelId;
+  const novel = state.novels.find((item) => item.id === novelId) || {};
+  if (document.querySelector("#onlyUntranslated")?.checked === false) {
+    return Number(novel.original_count || novel.chapter_count || 0);
+  }
+  return Number(novel.missing_english_count ?? novel.remaining_count ?? 0);
 }
 
 function formatDuration(seconds) {

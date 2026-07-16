@@ -405,6 +405,22 @@ h3 { margin: 0 0 0.45rem; }
   font-size: 0.82rem;
 }
 
+.warning-panel {
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+  margin-top: 0.85rem;
+  padding: 0.8rem;
+}
+
+.warning-panel p {
+  margin: 0.35rem 0 0;
+}
+
+.confirmation-check {
+  margin-top: 0.85rem;
+}
+
 .advanced-settings {
   border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
   border-radius: 14px;

@@ -1294,7 +1294,10 @@ class Database:
             })
         return rows_out
 
-    def all_untranslated_chapters(self, novel_id: str, limit: int = 5000) -> list[int]:
+    def all_untranslated_chapters(self, novel_id: str, limit: int | None = 5000, only_untranslated: bool = True) -> list[int]:
+        limit_clause = "LIMIT ?" if limit else ""
+        params: tuple[Any, ...] = (novel_id, limit) if limit else (novel_id,)
+        untranslated_clause = "AND (ai_text IS NULL OR LENGTH(TRIM(ai_text)) = 0)" if only_untranslated else ""
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -1302,13 +1305,65 @@ class Database:
                 FROM {self.table('chapters')}
                 WHERE novel_id = ?
                     AND original_text IS NOT NULL AND LENGTH(TRIM(original_text)) > 0
-                    AND (ai_text IS NULL OR LENGTH(TRIM(ai_text)) = 0)
+                    {untranslated_clause}
                 ORDER BY chapter_number
-                LIMIT ?
+                {limit_clause}
                 """,
-                (novel_id, limit),
+                params,
             ).fetchall()
         return [int(row["chapter_number"]) for row in rows]
+
+    def translation_inventory_summary(self, novel_id: str, chapters: list[int] | None = None) -> dict[str, Any]:
+        where = "WHERE novel_id = ?"
+        params: list[Any] = [novel_id]
+        if chapters is not None:
+            if not chapters:
+                return {
+                    "selected_count": 0,
+                    "eligible_count": 0,
+                    "missing_original_count": 0,
+                    "already_translated_count": 0,
+                    "invalid_chapter_numbers": [],
+                    "available_eligible_count": 0,
+                    "total_chapters": 0,
+                }
+            placeholders = ",".join("?" for _ in chapters)
+            where += f" AND chapter_number IN ({placeholders})"
+            params.extend(chapters)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT chapter_number, original_text, ai_text
+                FROM {self.table('chapters')}
+                {where}
+                ORDER BY chapter_number
+                """,
+                tuple(params),
+            ).fetchall()
+            available = conn.execute(
+                f"""
+                SELECT COUNT(*) AS total
+                FROM {self.table('chapters')}
+                WHERE novel_id = ?
+                    AND original_text IS NOT NULL AND LENGTH(TRIM(original_text)) > 0
+                    AND (ai_text IS NULL OR LENGTH(TRIM(ai_text)) = 0)
+                """,
+                (novel_id,),
+            ).fetchone()
+        existing = {int(row["chapter_number"]) for row in rows}
+        invalid = sorted(set(chapters or []) - existing)
+        missing_original = sum(1 for row in rows if not readable(row["original_text"]))
+        already = sum(1 for row in rows if readable(row["ai_text"]))
+        eligible = sum(1 for row in rows if readable(row["original_text"]) and not readable(row["ai_text"]))
+        return {
+            "selected_count": len(chapters) if chapters is not None else len(rows),
+            "eligible_count": eligible,
+            "missing_original_count": missing_original,
+            "already_translated_count": already,
+            "invalid_chapter_numbers": invalid,
+            "available_eligible_count": int(available["total"] or 0) if available else 0,
+            "total_chapters": len(rows),
+        }
 
     def performance_summary(self, model: str, novel_id: str | None = None) -> dict[str, Any]:
         with self.connect() as conn:
@@ -1357,6 +1412,12 @@ class Database:
         model = settings.get("model") or (self.novel(novel_id) or {}).get("model") or "gpt-4o-mini"
         pricing = model_pricing(model)
         eligible = [row for row in rows if row["eligible"]]
+        inventory = self.translation_inventory_summary(novel_id, chapters)
+        selection_diagnostics = dict(settings.get("_selection_diagnostics") or {})
+        invalid_chapter_numbers = sorted(set(inventory["invalid_chapter_numbers"]) | set(selection_diagnostics.get("invalid_chapter_numbers") or []))
+        missing_original_count = int(selection_diagnostics.get("missing_original_count", inventory["missing_original_count"]) or 0)
+        already_translated_count = int(selection_diagnostics.get("already_translated_count", inventory["already_translated_count"]) or 0)
+        available_eligible_count = int(selection_diagnostics.get("available_eligible_count", inventory["available_eligible_count"]) or 0)
         input_chars = sum(row["original_chars"] + (row["reference_chars"] if use_reference and row["has_reference"] else 0) for row in eligible)
         input_tokens = max(1, input_chars // 4) if eligible else 0
         output_tokens = max(1, sum(row["original_chars"] for row in eligible) // 5) if eligible else 0
@@ -1389,6 +1450,24 @@ class Database:
             "original_readable": sum(1 for row in rows if row["has_original"]),
             "reference_available": sum(1 for row in rows if row["has_reference"]),
             "ai_existing": sum(1 for row in rows if row["has_ai"]),
+            "missing_original_count": missing_original_count,
+            "already_translated_count": already_translated_count,
+            "invalid_chapter_numbers": invalid_chapter_numbers,
+            "invalid_chapter_count": len(invalid_chapter_numbers),
+            "duplicates_removed": int(selection_diagnostics.get("duplicates_removed") or 0),
+            "duplicate_chapters": selection_diagnostics.get("duplicate_chapters") or [],
+            "invalid_tokens": selection_diagnostics.get("invalid_tokens") or [],
+            "available_eligible_count": available_eligible_count,
+            "selection": {
+                **selection_diagnostics,
+                "selected_count": len(chapters),
+                "eligible_count": len(eligible),
+                "missing_original_count": missing_original_count,
+                "already_translated_count": already_translated_count,
+                "invalid_chapter_numbers": invalid_chapter_numbers,
+                "invalid_chapter_count": len(invalid_chapter_numbers),
+                "available_eligible_count": available_eligible_count,
+            },
             "approx_input_tokens": input_tokens,
             "approx_output_tokens": output_tokens,
             "token_breakdown": {
@@ -3420,7 +3499,8 @@ def normalized_translation_settings(settings: dict[str, Any]) -> dict[str, Any]:
         retry_count = preset_config["retry_count"]
     payload["retry_count"] = max(0, min(5, retry_count))
     payload["provider_timeout_seconds"] = max(30, min(600, optional_int(payload.get("provider_timeout_seconds")) or preset_config["timeout_seconds"]))
-    payload["batch_size"] = max(1, min(5000, optional_int(payload.get("batch_size")) or 25))
+    batch_size = optional_int(payload.get("batch_size"))
+    payload["batch_size"] = max(1, min(5000, batch_size)) if mode == "advanced" and batch_size else None
     payload["priority"] = "high" if str(payload.get("priority") or "normal").lower() == "high" else "normal"
     payload["use_reference"] = bool(payload.get("use_reference", True))
     payload["only_untranslated"] = bool(payload.get("only_untranslated", True))

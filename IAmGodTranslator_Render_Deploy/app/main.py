@@ -28,7 +28,7 @@ from app.content_import import payload_from_uploads
 from app.recovery import parse_uploads, recovery_request, recovery_diagnostic, reference_diagnostic
 
 
-VERSION = "10.6.0"
+VERSION = "10.6.1"
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_COOKIE = "gt_admin_session"
 SESSION_TTL_SECONDS = 60 * 60 * 12
@@ -817,15 +817,15 @@ def compare_chapter(novel_id: str, chapter_number: int, _: None = Depends(requir
 @app.post("/api/translation/estimate")
 def translation_estimate(payload: dict[str, Any] = Body(...), _: None = Depends(require_translator)) -> dict[str, object]:
     novel_id = payload.get("novel_id") or default_novel_id()
-    chapters = selected_chapters(novel_id, payload)
-    return database.estimate_translation(novel_id, chapters, payload)
+    selection = translation_selection(novel_id, payload)
+    return database.estimate_translation(novel_id, selection["chapters"], {**payload, "_selection_diagnostics": selection["diagnostics"]})
 
 
 @app.post("/api/translation/jobs")
 def create_translation_job(payload: dict[str, Any] = Body(...), _: None = Depends(require_translator)) -> dict[str, object]:
     novel_id = payload.get("novel_id") or default_novel_id()
-    chapters = selected_chapters(novel_id, payload)
-    job = database.create_translation_job(novel_id, chapters, payload)
+    selection = translation_selection(novel_id, payload)
+    job = database.create_translation_job(novel_id, selection["chapters"], {**payload, "_selection_diagnostics": selection["diagnostics"]})
     translation_runner.start(str(job["id"]))
     return {"ok": True, "job": job}
 
@@ -1092,24 +1092,108 @@ def store_platform_backup(raw: bytes, filename: str) -> dict[str, object]:
         return {"status": "failed", "error": exc.__class__.__name__, "bucket": bucket, "path": object_path}
 
 
-def selected_chapters(novel_id: str, payload: dict[str, Any]) -> list[int]:
+def translation_selection(novel_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     selection_mode = str(payload.get("selection_mode") or "").lower()
+    only_untranslated = bool(payload.get("only_untranslated", True))
     if payload.get("all_untranslated") or selection_mode == "all-untranslated":
-        return database.all_untranslated_chapters(novel_id)
+        chapters = database.all_untranslated_chapters(novel_id, limit=None, only_untranslated=only_untranslated)
+        inventory = database.translation_inventory_summary(novel_id)
+        return {
+            "chapters": chapters,
+            "diagnostics": {
+                "mode": "all-untranslated",
+                "requested": "all",
+                "server_side_selection": True,
+                "selected_count": len(chapters),
+                "total_chapters": inventory["total_chapters"],
+                "available_eligible_count": inventory["available_eligible_count"],
+                "missing_original_count": inventory["missing_original_count"],
+                "already_translated_count": inventory["already_translated_count"],
+                "duplicates_removed": 0,
+                "duplicate_chapters": [],
+                "invalid_tokens": [],
+                "invalid_chapter_numbers": [],
+            },
+        }
     if selection_mode == "next-untranslated":
-        count = bounded_int(payload.get("next_count"), 25, 1, 5000)
-        return database.all_untranslated_chapters(novel_id, limit=count)
-    text = str(payload.get("chapters") or "").strip()
-    chapters: set[int] = set()
+        count_value = str(payload.get("next_count") or payload.get("next_count_mode") or "25").lower()
+        if count_value == "all":
+            chapters = database.all_untranslated_chapters(novel_id, limit=None, only_untranslated=only_untranslated)
+            requested: int | str = "all"
+        else:
+            count = bounded_int(payload.get("next_count"), 25, 1, 5000)
+            chapters = database.all_untranslated_chapters(novel_id, limit=count, only_untranslated=only_untranslated)
+            requested = count
+        inventory = database.translation_inventory_summary(novel_id)
+        return {
+            "chapters": chapters,
+            "diagnostics": {
+                "mode": "next-untranslated",
+                "requested": requested,
+                "server_side_selection": True,
+                "selected_count": len(chapters),
+                "total_chapters": inventory["total_chapters"],
+                "available_eligible_count": inventory["available_eligible_count"],
+                "duplicates_removed": 0,
+                "duplicate_chapters": [],
+                "invalid_tokens": [],
+                "invalid_chapter_numbers": [],
+            },
+        }
+    parsed = parse_specific_chapters(str(payload.get("chapters") or ""))
+    return {
+        "chapters": parsed["chapters"],
+        "diagnostics": {
+            "mode": "specific",
+            "server_side_selection": False,
+            **parsed,
+        },
+    }
+
+
+def selected_chapters(novel_id: str, payload: dict[str, Any]) -> list[int]:
+    return translation_selection(novel_id, payload)["chapters"]
+
+
+def parse_specific_chapters(text: str) -> dict[str, Any]:
+    text = str(text or "").strip()
+    chapters: list[int] = []
+    seen: set[int] = set()
+    duplicate_chapters: set[int] = set()
+    invalid_tokens: list[str] = []
+    if not text:
+        return {"chapters": [], "duplicates_removed": 0, "duplicate_chapters": [], "invalid_tokens": []}
+    raw_count = 0
     for part in [chunk.strip() for chunk in text.split(",") if chunk.strip()]:
         if "-" in part:
-            left, right = part.split("-", 1)
-            start, end = int(left), int(right)
-            chapters.update(range(min(start, end), max(start, end) + 1))
+            pieces = [piece.strip() for piece in part.split("-", 1)]
+            if len(pieces) != 2 or not all(piece.isdigit() for piece in pieces):
+                invalid_tokens.append(part)
+                continue
+            start, end = int(pieces[0]), int(pieces[1])
+            if start <= 0 or end <= 0:
+                invalid_tokens.append(part)
+                continue
+            values = range(min(start, end), max(start, end) + 1)
+        elif part.isdigit() and int(part) > 0:
+            values = [int(part)]
         else:
-            chapters.add(int(part))
-    return sorted(chapters)
-
+            invalid_tokens.append(part)
+            continue
+        for chapter in values:
+            raw_count += 1
+            if chapter in seen:
+                duplicate_chapters.add(chapter)
+                continue
+            seen.add(chapter)
+            chapters.append(chapter)
+    return {
+        "chapters": sorted(chapters),
+        "raw_selected_count": raw_count,
+        "duplicates_removed": raw_count - len(seen),
+        "duplicate_chapters": sorted(duplicate_chapters),
+        "invalid_tokens": invalid_tokens,
+    }
 
 def default_novel_id() -> str:
     novels = database.novels()
