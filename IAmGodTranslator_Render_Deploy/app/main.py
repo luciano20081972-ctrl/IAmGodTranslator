@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import os
 import random
 import threading
@@ -32,6 +33,7 @@ VERSION = "10.6.1"
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_COOKIE = "gt_admin_session"
 SESSION_TTL_SECONDS = 60 * 60 * 12
+LOGGER = logging.getLogger(__name__)
 
 app = FastAPI(title="GodTranslator", version=VERSION)
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
@@ -1015,15 +1017,28 @@ def export_backup(novel_id: str, _: None = Depends(require_admin)) -> StreamingR
 
 
 @app.get("/api/admin/backups/manifest")
-def platform_backup_manifest(_: None = Depends(require_admin)) -> dict[str, object]:
-    payload = complete_platform_backup_payload()
-    return {"ok": True, "manifest": payload["manifest"]}
+def platform_backup_manifest(_: None = Depends(require_admin)) -> dict[str, object] | JSONResponse:
+    try:
+        return database.platform_backup_manifest_summary()
+    except Exception as exc:
+        return backup_error_response(
+            "table_counts",
+            "backup_manifest_failed",
+            "Backup manifest could not be loaded.",
+            exc,
+        )
 
 
 @app.get("/api/admin/backups/download")
-def download_platform_backup(_: None = Depends(require_admin)) -> StreamingResponse:
-    payload = complete_platform_backup_payload()
-    raw = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+def download_platform_backup(_: None = Depends(require_admin)) -> StreamingResponse | JSONResponse:
+    try:
+        payload = complete_platform_backup_payload()
+    except Exception as exc:
+        return backup_error_response("build_full_backup", "backup_build_failed", "Backup could not be created for download.", exc)
+    try:
+        raw = json.dumps(payload, ensure_ascii=False, indent=2, default=str).encode("utf-8")
+    except Exception as exc:
+        return backup_error_response("serialize_full_backup", "backup_serialize_failed", "Backup could not be serialized for download.", exc)
     return StreamingResponse(
         io.BytesIO(raw),
         media_type="application/json",
@@ -1032,10 +1047,19 @@ def download_platform_backup(_: None = Depends(require_admin)) -> StreamingRespo
 
 
 @app.post("/api/admin/backups/create")
-def create_platform_backup(payload: dict[str, Any] = Body(default={}), _: None = Depends(require_admin)) -> dict[str, object]:
-    backup = complete_platform_backup_payload()
-    raw = json.dumps(backup, ensure_ascii=False, indent=2).encode("utf-8")
-    storage = store_platform_backup(raw, platform_backup_filename(backup)) if bool(payload.get("store", True)) else {"status": "skipped", "location": None}
+def create_platform_backup(payload: dict[str, Any] = Body(default={}), _: None = Depends(require_admin)) -> dict[str, object] | JSONResponse:
+    try:
+        backup = complete_platform_backup_payload()
+    except Exception as exc:
+        return backup_error_response("build_full_backup", "backup_build_failed", "Backup could not be created.", exc)
+    try:
+        raw = json.dumps(backup, ensure_ascii=False, indent=2, default=str).encode("utf-8")
+    except Exception as exc:
+        return backup_error_response("serialize_full_backup", "backup_serialize_failed", "Backup could not be serialized.", exc)
+    try:
+        storage = store_platform_backup(raw, platform_backup_filename(backup)) if bool(payload.get("store", True)) else {"status": "skipped", "location": None}
+    except Exception as exc:
+        return backup_error_response("store_backup", "backup_store_failed", "Backup was created but could not be stored.", exc)
     return {"ok": True, "manifest": backup["manifest"], "storage": storage}
 
 
@@ -1052,6 +1076,19 @@ def complete_platform_backup_payload() -> dict[str, Any]:
     payload["manifest"]["size_bytes"] = len(raw_without_checksum)
     payload["manifest"]["sha256"] = hashlib.sha256(raw_without_checksum).hexdigest()
     return payload
+
+
+def backup_error_response(stage: str, code: str, message: str, exc: Exception, status_code: int = 500) -> JSONResponse:
+    LOGGER.warning("backup endpoint failed at stage=%s code=%s error_type=%s", stage, code, exc.__class__.__name__)
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "ok": False,
+            "error": {"code": code, "message": message, "stage": stage},
+            "message": message,
+            "stage": stage,
+        },
+    )
 
 
 def platform_backup_filename(payload: dict[str, Any]) -> str:
@@ -1088,7 +1125,9 @@ def store_platform_backup(raw: bytes, filename: str) -> dict[str, object]:
         return {"status": "stored", "bucket": bucket, "path": object_path}
     except urllib.error.HTTPError as exc:
         return {"status": "failed", "error": f"storage_http_{exc.code}", "bucket": bucket, "path": object_path}
-    except (urllib.error.URLError, TimeoutError) as exc:
+    except urllib.error.URLError:
+        return {"status": "failed", "error": "storage_unreachable", "bucket": bucket, "path": object_path}
+    except Exception as exc:
         return {"status": "failed", "error": exc.__class__.__name__, "bucket": bucket, "path": object_path}
 
 

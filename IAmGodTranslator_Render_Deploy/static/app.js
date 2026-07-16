@@ -81,12 +81,24 @@ async function apiOnce(path, options = {}) {
   try {
     payload = text ? JSON.parse(text) : null;
   } catch {
-    throw new Error(`The server returned a non-JSON response for ${path}.`);
+    const error = new Error(`HTTP ${response.status}: The server returned a non-JSON response for ${path}.`);
+    error.status = response.status;
+    error.nonJson = true;
+    throw error;
   }
   if (!response.ok) {
-    const detail = payload?.detail || payload?.message || `Request failed: ${response.status}`;
-    const error = new Error(detail);
+    const serverError = payload?.error || {};
+    const detail = serverError.message || payload?.message || payload?.detail || `Request failed: ${response.status}`;
+    const stage = serverError.stage || payload?.stage;
+    const code = serverError.code || payload?.code;
+    const detailParts = [`HTTP ${response.status}`, detail];
+    if (stage) detailParts.push(`Stage: ${stage}`);
+    if (code) detailParts.push(`Code: ${code}`);
+    const error = new Error(detailParts.join(" · "));
     error.status = response.status;
+    error.stage = stage || "";
+    error.code = code || "";
+    error.payload = payload;
     throw error;
   }
   if (connectionInterrupted) {
@@ -1324,7 +1336,7 @@ function renderRecoveryPreview(preview, novelId) {
 }
 
 async function openAdmin(tab = "overview") {
-  setLoading("Loading admin...");
+  setLoading(tab === "backups" ? "Loading backup manifest..." : "Loading admin...");
   await refreshSession();
   if (!state.admin) return renderAdminGate("Admin");
   try {
@@ -1337,7 +1349,7 @@ async function openAdmin(tab = "overview") {
       api(`/api/admin/missing/${state.currentNovelId}`),
       api(`/api/import-jobs?novel_id=${state.currentNovelId}`),
       api(`/api/translation/jobs?novel_id=${state.currentNovelId}`),
-      api("/api/admin/backups/manifest"),
+      api("/api/admin/backups/manifest").catch((error) => backupManifestError(error)),
       api("/api/admin/users"),
       api(`/api/admin/translation/performance?novel_id=${encodeURIComponent(state.currentNovelId)}`),
     ]);
@@ -1371,11 +1383,25 @@ function renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupM
     return `<section class="dashboard-grid"><div class="panel">${metric("Database", dbHealth.health?.reachable ? "Healthy" : "Needs Attention")}${metric("Schema", data.schema)}${metric("Expected Tables", dbHealth.health?.v10_chapters_table_exists ? "Healthy" : "Needs Attention")}${metric("Chapters", data.chapters)}</div><div class="panel"><h2>Technical Details</h2><details><summary>Show details</summary><pre>${escapeHtml(JSON.stringify(dbHealth.health, null, 2))}</pre></details></div></section>`;
   }
   if (tab === "jobs") return `<section class="table-card"><h2>Job Center</h2>${renderJobsTable(jobs.jobs || [])}</section><section class="table-card"><h2>Import Jobs</h2><table><thead><tr><th>Job</th><th>Mode</th><th>Status</th><th>Updated</th></tr></thead><tbody>${(imports.jobs || []).map((job) => `<tr><td>${job.id.slice(0, 8)}</td><td>${escapeHtml(job.target_mode)}</td><td>${escapeHtml(job.status)}</td><td>${escapeHtml(job.updated_at)}</td></tr>`).join("") || `<tr><td colspan="4">No import jobs.</td></tr>`}</tbody></table></section>`;
-  if (tab === "backups") return renderBackupsRecovery(backupManifest.manifest);
+  if (tab === "backups") return renderBackupsRecovery(backupManifest.manifest, backupManifest.error);
   if (tab === "recovery") return renderNovelRecoveryAdmin(missing.missing);
   if (tab === "users") return `<section class="table-card"><h2>Users & Roles</h2><table class="responsive-table"><thead><tr><th>User</th><th>Role</th><th>Updated</th></tr></thead><tbody>${(users.users || []).map((user) => `<tr><td data-label="User"><strong>${escapeHtml(user.display_name || user.email || user.user_id)}</strong><br><span>${escapeHtml(user.email || user.user_id)}</span></td><td data-label="Role">${escapeHtml(user.role || "user")}</td><td data-label="Updated">${timeAgo(user.updated_at)}</td></tr>`).join("") || `<tr><td colspan="3">No application profiles yet.</td></tr>`}</tbody></table></section>`;
   if (tab === "diagnostics") return `<section class="dashboard-grid"><div class="panel">${metric("Version", APP_VERSION)}${metric("DB", dbHealth.health?.ok === false ? "Unhealthy" : "Healthy")}${metric("Schema", data.schema)}${metric("Auth", state.authConfig?.configured ? "Configured" : "Missing")}${metric("OpenAI", "Configured/Missing hidden")}</div><div class="panel"><h2>Details</h2><details><summary>Show sanitized JSON</summary><pre>${escapeHtml(JSON.stringify({overview: data, db: dbHealth.health}, null, 2))}</pre></details></div></section>`;
-  return renderAdminOverview(data, dbHealth, jobs, imports, backupManifest.manifest);
+  return renderAdminOverview(data, dbHealth, jobs, imports, backupManifest.manifest, backupManifest.error);
+}
+
+function backupManifestError(error) {
+  return {
+    ok: false,
+    manifest: null,
+    error: {
+      status: error.status || 0,
+      stage: error.stage || "",
+      code: error.code || "",
+      message: error.message || "Backup manifest could not be loaded.",
+      non_json: Boolean(error.nonJson),
+    },
+  };
 }
 
 function renderContentAdmin(data) {
@@ -1609,11 +1635,11 @@ function renderTranslationPerformance(performance) {
   </section>`;
 }
 
-function renderAdminOverview(data, dbHealth, jobs, imports, manifest) {
+function renderAdminOverview(data, dbHealth, jobs, imports, manifest, manifestError = null) {
   const activeJobs = (jobs.jobs || []).filter((job) => ["queued", "running", "paused"].includes(job.status));
   const failedJobs = (jobs.jobs || []).filter((job) => job.status === "failed" || job.error);
-  const backupStatus = manifest?.sha256 ? "Protected" : "Needs Attention";
-  const lastBackup = manifest?.created_at ? timeAgo(manifest.created_at) : "No backup manifest yet";
+  const backupStatus = manifestError ? "Needs Attention" : (manifest?.checksum_available ? "Protected" : "Manifest Ready");
+  const lastBackup = manifestError ? "Manifest error" : (manifest?.latest_full_backup?.available ? timeAgo(manifest.latest_full_backup.created_at) : "No full backup recorded");
   return `<section class="overview-panel admin-overview">
     <div class="overview-copy">
       <p class="eyebrow">Admin Overview</p>
@@ -1622,7 +1648,7 @@ function renderAdminOverview(data, dbHealth, jobs, imports, manifest) {
       <div class="status-list">
         <span>${statusBadge("healthy")} Application healthy</span>
         <span>${statusBadge(dbHealth.health?.reachable ? "healthy" : "needs attention")} Database ${dbHealth.health?.reachable ? "reachable" : "needs attention"}</span>
-        <span>${statusBadge(manifest?.sha256 ? "protected" : "needs attention")} Backup ${escapeHtml(backupStatus)} · ${escapeHtml(lastBackup)}</span>
+        <span>${statusBadge(manifestError ? "needs attention" : "healthy")} Backup ${escapeHtml(backupStatus)} · ${escapeHtml(lastBackup)}</span>
       </div>
     </div>
     <div class="overview-metrics">
@@ -1642,20 +1668,23 @@ function renderAdminOverview(data, dbHealth, jobs, imports, manifest) {
   </section><section id="backupActionResult"></section>`;
 }
 
-function renderBackupsRecovery(manifest) {
-  const protectedState = manifest?.sha256 ? "Protected" : "Needs Attention";
-  const created = manifest?.created_at ? timeAgo(manifest.created_at) : "No manifest created yet";
-  const historyCreated = manifest?.created_at || "No manifest created yet";
+function renderBackupsRecovery(manifest, manifestError = null) {
+  const protectedState = manifestError ? "Needs Attention" : (manifest?.checksum_available ? "Protected" : "Manifest Ready");
+  const created = manifest?.created_at ? timeAgo(manifest.created_at) : "No manifest loaded";
+  const historyCreated = manifest?.latest_full_backup?.available ? manifest.latest_full_backup.created_at : "Create or download a full backup to calculate actual size and checksum.";
+  const manifestErrorPanel = manifestError ? `<section class="state-card error"><h2>Backup manifest could not be loaded.</h2><p>${escapeHtml(manifestError.message || "Manifest request failed.")}</p>${manifestError.status ? `<p class="muted">HTTP ${escapeHtml(manifestError.status)}</p>` : ""}${manifestError.stage ? `<p class="muted">Stage: ${escapeHtml(manifestError.stage)}</p>` : ""}</section>` : "";
+  const storage = manifest?.backup_storage || {};
   return `<section class="backup-workspace">
+    ${manifestErrorPanel}
     <section class="overview-panel">
       <div class="overview-copy"><p class="eyebrow">Backups & Recovery</p><h2>Protected recovery workflow</h2><p class="muted">Backups include v10 application tables and exclude secrets, API keys, tokens, cookies, and auth password material.</p></div>
       <div class="overview-metrics">${metric("Last Backup", created)}${metric("Protected State", protectedState)}${metric("Version", manifest?.app_version || APP_VERSION)}${metric("Schema", manifest?.schema || "")}</div>
     </section>
     <section class="backup-grid">
-      <article class="backup-section"><h2>Overview</h2><p class="muted">Format ${escapeHtml(manifest?.format_version || "unknown")} · ${manifest?.table_counts?.novels || 0} novels · ${manifest?.chapter_source_counts?.chapters || 0} chapters.</p><p class="muted">Checksum ${manifest?.sha256 ? escapeHtml(truncateMiddle(manifest.sha256, 24)) : "not available"} · ${formatBytes(manifest?.size_bytes || 0)}.</p></article>
-      <article class="backup-section"><h2>Create Backup</h2><p class="muted">Create a manifest, save it to Supabase backup storage when configured, or download a local copy.</p><div class="actions"><button id="createBackupBtn" class="primary" type="button">Create Backup</button><a class="button" href="/api/admin/backups/download">Download Local Copy</a></div></article>
-      <article class="backup-section"><h2>Backup History</h2><table class="responsive-table"><tbody><tr><td data-label="Created">${escapeHtml(historyCreated)}</td><td data-label="Format">${escapeHtml(manifest?.format_version || "")}</td><td data-label="Contents">${manifest?.table_counts?.novels || 0} novels / ${manifest?.chapter_source_counts?.chapters || 0} chapters</td><td data-label="Size">${formatBytes(manifest?.size_bytes || 0)}</td><td data-label="Storage">Manifest</td></tr></tbody></table></article>
-      <article class="backup-section"><h2>Restore</h2><p class="muted">Default restore mode adds missing data only. Restore preview reports add, skip, overwrite, and invalid counts before any apply step.</p><label>Safe restore mode<select id="restoreMode"><option value="add-missing">Add missing data only</option><option value="skip-existing">Skip existing data</option><option value="overwrite">Overwrite existing data</option></select></label><label>Backup JSON<input id="restoreFile" type="file" accept=".json,application/json"></label><div class="actions"><button id="restorePreviewBtn" type="button">Restore Preview</button></div></article>
+      <article class="backup-section"><h2>Overview</h2><p class="muted">Format ${escapeHtml(manifest?.format_version || "unknown")} · ${manifest?.table_counts?.novels ?? 0} novels · ${manifest?.chapter_source_counts?.chapters ?? 0} chapters.</p><p class="muted">Actual backup size and checksum are calculated only after Create Backup or Download Local Copy completes.</p>${objectDetails("Unavailable Tables", manifest?.table_errors || {})}</article>
+      <article class="backup-section"><h2>Create Backup</h2><p class="muted">Create a full backup, save it to Supabase backup storage when configured, or download a local copy.</p><div class="metric-grid">${metric("Storage", storage.configured ? "Configured" : "Not configured")}${metric("Bucket", storage.bucket || "godtranslator-backups")}</div><div class="actions"><button id="createBackupBtn" class="primary" type="button">Create Backup</button><a class="button" href="/api/admin/backups/download">Download Local Copy</a></div></article>
+      <article class="backup-section"><h2>Backup History</h2><table class="responsive-table"><tbody><tr><td data-label="Created">${escapeHtml(historyCreated)}</td><td data-label="Format">${escapeHtml(manifest?.format_version || "")}</td><td data-label="Contents">${manifest?.table_counts?.novels ?? 0} novels / ${manifest?.chapter_source_counts?.chapters ?? 0} chapters</td><td data-label="Size">Known after full backup</td><td data-label="Storage">${storage.configured ? "Configured" : "Manifest only"}</td></tr></tbody></table></article>
+      <article class="backup-section"><h2>Restore</h2><p class="muted">Default restore mode adds missing data only. Restore preview reports add, skip, overwrite, and invalid counts before any apply step.</p><label>Safe restore mode<select id="restoreMode"><option value="add-missing">Add missing data only</option><option value="skip-existing">Skip existing data</option><option value="overwrite">Overwrite existing data</option></select></label><label>Backup JSON<input id="restoreFile" type="file" accept=".json,application/json"></label><div class="actions"><button id="restorePreviewBtn" type="button" disabled>Restore Preview</button></div></article>
       <article class="backup-section"><h2>Novel Recovery</h2><p class="muted">Recover missing Reference chapters for a selected novel without overwriting readable chapter text.</p><div class="actions"><a class="button" href="#/admin/recovery">Open Novel Recovery</a><a class="button" href="/api/novels/${state.currentNovelId}/recovery/request">Download Recovery Request</a></div></article>
     </section>
   </section><section id="backupActionResult"></section><section id="restorePreviewResult"></section>`;
@@ -1676,6 +1705,10 @@ function bindAdminWorkspace() {
   });
   document.querySelectorAll("#createBackupBtn").forEach((button) => button.addEventListener("click", createBackupFromAdmin));
   document.querySelector("#restorePreviewBtn")?.addEventListener("click", restorePreviewFromFile);
+  document.querySelector("#restoreFile")?.addEventListener("change", (event) => {
+    const button = document.querySelector("#restorePreviewBtn");
+    if (button) button.disabled = !event.target.files?.[0];
+  });
   document.querySelector("#previewContentImport")?.addEventListener("click", previewContentImport);
   document.querySelector("#executeContentImport")?.addEventListener("click", executeContentImport);
   document.querySelector("#importNovel")?.addEventListener("change", (event) => {
@@ -1694,7 +1727,7 @@ function bindAdminWorkspace() {
 
 async function createBackupFromAdmin() {
   const target = document.querySelector("#backupActionResult");
-  if (target) target.innerHTML = `<section class="state-card"><div class="spinner"></div><p>Creating backup manifest...</p></section>`;
+  if (target) target.innerHTML = `<section class="state-card"><div class="spinner"></div><p>Creating full backup...</p></section>`;
   try {
     const payload = await api("/api/admin/backups/create", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({store: true})});
     if (target) target.innerHTML = `<section class="panel"><h2>Backup Created</h2><div class="metric-grid">${metric("Status", payload.storage?.status || "created")}${metric("Size", formatBytes(payload.manifest?.size_bytes || 0))}${metric("Checksum", String(payload.manifest?.sha256 || "").slice(0, 12))}</div></section>`;

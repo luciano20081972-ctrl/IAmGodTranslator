@@ -43,6 +43,25 @@ ENGLISH_EDITION_PRIORITY = {
     "machine": 5,
     "community": 6,
 }
+PLATFORM_BACKUP_APP_VERSION = "10.6.1"
+PLATFORM_BACKUP_TABLE_NAMES = [
+    "novels",
+    "chapters",
+    "chapter_editions",
+    "translation_jobs",
+    "translation_job_items",
+    "translation_performance",
+    "import_jobs",
+    "import_job_items",
+    "content_import_items",
+    "user_profiles",
+    "user_preferences",
+    "reading_progress",
+    "reading_history",
+    "bookmarks",
+    "favorites",
+    "translation_profiles",
+]
 
 
 @dataclass(frozen=True)
@@ -2935,28 +2954,10 @@ class Database:
         }
 
     def platform_backup_payload(self) -> dict[str, Any]:
-        table_names = [
-            "novels",
-            "chapters",
-            "chapter_editions",
-            "translation_jobs",
-            "translation_job_items",
-            "translation_performance",
-            "import_jobs",
-            "import_job_items",
-            "content_import_items",
-            "user_profiles",
-            "user_preferences",
-            "reading_progress",
-            "reading_history",
-            "bookmarks",
-            "favorites",
-            "translation_profiles",
-        ]
         tables: dict[str, list[dict[str, Any]]] = {}
         errors: dict[str, str] = {}
         with self.connect() as conn:
-            for name in table_names:
+            for name in PLATFORM_BACKUP_TABLE_NAMES:
                 try:
                     rows = conn.execute(f"SELECT * FROM {self.table(name)}").fetchall()
                     tables[name] = [dict(row) for row in rows]
@@ -2967,7 +2968,7 @@ class Database:
         table_counts = {name: len(rows) for name, rows in tables.items()}
         manifest = {
             "format_version": "godtranslator-v10-platform-backup.v1",
-            "app_version": "10.6.0",
+            "app_version": PLATFORM_BACKUP_APP_VERSION,
             "schema": self.config.schema,
             "created_at": utc_now(),
             "table_counts": table_counts,
@@ -2986,6 +2987,84 @@ class Database:
             "sha256": "",
         }
         return {"ok": True, "manifest": manifest, "tables": tables}
+
+    def platform_backup_manifest_summary(self) -> dict[str, Any]:
+        started = time.perf_counter()
+        table_counts: dict[str, int | None] = {}
+        errors: dict[str, str] = {}
+        chapter_source_counts = {
+            "chapters": 0,
+            "original": 0,
+            "english": 0,
+            "ai": 0,
+            "reference": 0,
+            "needs_translation": 0,
+        }
+        with self.connect() as conn:
+            for name in PLATFORM_BACKUP_TABLE_NAMES:
+                try:
+                    row = conn.execute(f"SELECT COUNT(*) AS total FROM {self.table(name)}").fetchone()
+                    table_counts[name] = int(row["total"] or 0)
+                except Exception as exc:
+                    table_counts[name] = None
+                    errors[name] = exc.__class__.__name__
+            try:
+                row = conn.execute(
+                    f"""
+                    SELECT COUNT(*) AS chapters,
+                        SUM(CASE WHEN original_text IS NOT NULL AND LENGTH(TRIM(original_text)) > 0 THEN 1 ELSE 0 END) AS original,
+                        SUM(CASE WHEN reference_text IS NOT NULL AND LENGTH(TRIM(reference_text)) > 0 THEN 1 ELSE 0 END) AS reference,
+                        SUM(CASE WHEN ai_text IS NOT NULL AND LENGTH(TRIM(ai_text)) > 0 THEN 1 ELSE 0 END) AS ai,
+                        SUM(CASE WHEN ai_text IS NOT NULL AND LENGTH(TRIM(ai_text)) > 0 THEN 1 ELSE 0 END) AS english,
+                        SUM(CASE WHEN original_text IS NOT NULL AND LENGTH(TRIM(original_text)) > 0 AND (ai_text IS NULL OR LENGTH(TRIM(ai_text)) = 0) THEN 1 ELSE 0 END) AS needs_translation
+                    FROM {self.table('chapters')}
+                    """
+                ).fetchone()
+                chapter_source_counts = {
+                    "chapters": int(row["chapters"] or 0),
+                    "original": int(row["original"] or 0),
+                    "english": int(row["english"] or 0),
+                    "ai": int(row["ai"] or 0),
+                    "reference": int(row["reference"] or 0),
+                    "needs_translation": int(row["needs_translation"] or 0),
+                }
+            except Exception as exc:
+                errors["chapter_source_counts"] = exc.__class__.__name__
+        storage_url_configured = bool(os.getenv("SUPABASE_URL"))
+        storage_key_configured = bool(os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_BACKUP_SERVICE_KEY"))
+        manifest = {
+            "format_version": "godtranslator-v10-platform-backup-manifest.v1",
+            "app_version": PLATFORM_BACKUP_APP_VERSION,
+            "schema": self.config.schema,
+            "created_at": utc_now(),
+            "generated_in_ms": round((time.perf_counter() - started) * 1000, 3),
+            "kind": "lightweight_manifest",
+            "table_names": PLATFORM_BACKUP_TABLE_NAMES,
+            "table_counts": table_counts,
+            "novel_count": table_counts.get("novels") or 0,
+            "chapter_count": chapter_source_counts["chapters"],
+            "chapter_source_counts": chapter_source_counts,
+            "excluded": ["secrets", "passwords", "api_keys", "tokens", "cookies", "auth_password_material"],
+            "table_errors": errors,
+            "backup_storage": {
+                "provider": "supabase",
+                "configured": storage_url_configured and storage_key_configured,
+                "url_configured": storage_url_configured,
+                "service_key_configured": storage_key_configured,
+                "bucket": os.getenv("SUPABASE_BACKUP_BUCKET") or "godtranslator-backups",
+            },
+            "latest_full_backup": {
+                "available": False,
+                "source": "not_tracked",
+                "message": "Actual backup size and checksum are available only after Create Backup or Download Local Copy completes.",
+            },
+            "estimated_size_bytes": None,
+            "actual_size_bytes": None,
+            "size_bytes": None,
+            "sha256": None,
+            "checksum_available": False,
+        }
+        return {"ok": True, "manifest": manifest}
 
     def restore_preview(self, backup: dict[str, Any], mode: str = "add-missing") -> dict[str, Any]:
         tables = backup.get("tables") if isinstance(backup.get("tables"), dict) else {}
