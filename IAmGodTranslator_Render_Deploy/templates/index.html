@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GodTranslator</title>
-  <link rel="stylesheet" href="/static/styles.css?v=10.6.0">
+  <link rel="stylesheet" href="/static/styles.css?v=10.6.1">
 </head>
 <body>
   <div class="shell">
@@ -22,9 +22,11 @@
         <a href="#/library">Library</a>
       </nav>
       <div class="shell-actions">
-        <button id="jobCenterBtn" type="button" title="Job center">Jobs</button>
-        <button id="personalizeBtn" type="button" title="Personalize">Theme</button>
-        <a class="account-chip" id="accountBtn" href="#/admin">Guest</a>
+        <button id="jobCenterBtn" type="button" title="Activity">Activity</button>
+        <details class="profile-menu" id="profileMenu">
+          <summary class="account-chip" id="accountBtn">Guest</summary>
+          <nav class="profile-menu-items" id="profileMenuItems" aria-label="Profile menu"></nav>
+        </details>
       </div>
     </header>
 
@@ -41,6 +43,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="/static/app.js?v=10.6.0"></script>
+  <script src="/static/app.js?v=10.6.1"></script>
 </body>
 </html>

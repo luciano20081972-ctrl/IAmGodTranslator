@@ -4,6 +4,8 @@ const commandDialog = document.querySelector("#commandDialog");
 const commandInput = document.querySelector("#commandInput");
 const commandResults = document.querySelector("#commandResults");
 const accountBtn = document.querySelector("#accountBtn");
+const profileMenu = document.querySelector("#profileMenu");
+const profileMenuItems = document.querySelector("#profileMenuItems");
 
 const CACHE_TTL_MS = 45_000;
 let activeRouteKey = window.location.hash || "#/home";
@@ -128,7 +130,14 @@ function route() {
   const params = new URLSearchParams(query);
   updateNav(parts[0] || "home");
   if (!parts.length || parts[0] === "home") return openHome();
-  if (parts[0] === "library") return openLibrary();
+  if (parts[0] === "library") {
+    const filter = params.get("filter");
+    if (["active", "all", "favorites", "archived"].includes(filter)) {
+      state.libraryView = {...state.libraryView, filter};
+      writeStored("gt-library-view", state.libraryView);
+    }
+    return openLibrary();
+  }
   if (parts[0] === "continue") return openContinueReading();
   if (parts[0] === "reader" && parts[1] && parts[2]) return openReader(parts[1], Number(parts[2]), parts[3] || state.source);
   if (parts[0] === "novel" && parts[1]) return openNovelDetail(parts[1]);
@@ -166,15 +175,51 @@ function renderNav() {
   ];
   nav.innerHTML = links.filter(([, , , allowed]) => allowed).map(([key, label, href]) => `<a data-nav="${key}" href="${href}">${label}</a>`).join("");
   if (accountBtn) {
-    accountBtn.textContent = state.admin ? "Admin Mode" : state.account?.display_name || state.account?.email || "Guest";
-    accountBtn.href = state.admin ? "#/admin" : "#/account";
+    accountBtn.innerHTML = `<span class="avatar-mini">${escapeHtml(initials(state.account?.display_name || state.account?.email || (state.admin ? "Admin" : "Guest")))}</span><span>${escapeHtml(profileLabel())}</span>`;
   }
+  renderProfileMenu();
   const jobButton = document.querySelector("#jobCenterBtn");
   if (jobButton) {
     jobButton.textContent = activityLabel();
     jobButton.hidden = !canTranslate();
     jobButton.dataset.relevant = canTranslate() ? "true" : "false";
   }
+}
+
+function profileLabel() {
+  if (state.account?.display_name) return state.account.display_name;
+  if (state.account?.email) return state.account.email;
+  if (state.admin) return "Admin Mode";
+  return "Guest";
+}
+
+function renderProfileMenu() {
+  if (!profileMenuItems) return;
+  const items = [
+    ["My Account", "#/account", true],
+    ["Continue Reading", continueReadingHref(), true],
+    ["Reading History", "#/history", true],
+    ["Bookmarks", "#/bookmarks", true],
+    ["Favorites", "#/library?filter=favorites", true],
+    ["Collections", "#/settings/library", true],
+    ["Desktop Sync", "#/settings/desktop", true],
+    ["Notifications", "#/settings/notifications", true],
+    ["Settings", "#/settings/appearance", true],
+    ["Accessibility", "#/settings/accessibility", true],
+    ["Translator Workspace", `#/translate/${state.currentNovelId}`, canTranslate()],
+    ["Admin", "#/admin", state.admin],
+  ].filter(([, , visible]) => visible);
+  const adminExit = state.admin ? `<button type="button" id="profileExitAdmin">Exit Admin Mode</button>` : "";
+  const accountExit = state.account ? `<button type="button" id="profileSignOut">Sign Out</button>` : `<a href="#/account">Sign In</a>`;
+  profileMenuItems.innerHTML = `
+    <div class="profile-menu-header"><strong>${escapeHtml(profileLabel())}</strong><span>${escapeHtml(state.role || "guest")}</span></div>
+    ${items.map(([label, href]) => `<a href="${escapeAttr(href)}">${escapeHtml(label)}</a>`).join("")}
+    <div class="profile-menu-divider"></div>
+    ${accountExit}
+    ${adminExit}`;
+  profileMenuItems.querySelectorAll("a").forEach((link) => link.addEventListener("click", () => { if (profileMenu) profileMenu.open = false; }));
+  profileMenuItems.querySelector("#profileSignOut")?.addEventListener("click", () => { if (profileMenu) profileMenu.open = false; signOut(); });
+  profileMenuItems.querySelector("#profileExitAdmin")?.addEventListener("click", () => { if (profileMenu) profileMenu.open = false; exitAdminMode(); });
 }
 
 function canTranslate() {
@@ -267,11 +312,13 @@ async function openHome() {
   try {
     const novels = await loadNovels(true);
     const personal = await loadPersonalHome(true);
+    const operations = await loadHomeOperations();
     const activeNovels = novels.filter((novel) => !novel.is_archived);
     const continueItem = normalizedContinueReading(personal?.continue_reading || latestLocalReading());
     const spotlight = activeNovels[0] || novels[0] || null;
     const recentRead = (personal?.history?.length ? personal.history : state.recent.chapters || []).slice(0, 5);
     const updates = [...activeNovels].sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || ""))).slice(0, 6);
+    const added = [...activeNovels].sort((a, b) => String(b.created_at || b.updated_at || "").localeCompare(String(a.created_at || a.updated_at || ""))).slice(0, 5);
     app.innerHTML = `
       <section class="home-hero">
         <div class="home-hero-copy">
@@ -281,7 +328,7 @@ async function openHome() {
           <div class="actions">
             <a class="button primary" href="${escapeAttr(continueReadingHref(continueItem))}">${continueItem ? "Continue Reading" : "Open Library"}</a>
             ${spotlight ? `<a class="button" href="#/novel/${encodeURIComponent(spotlight.id)}">Open ${escapeHtml(spotlight.title || "Novel")}</a>` : ""}
-            <a class="button" href="#/settings/appearance">Personalize</a>
+            <a class="button" href="#/settings/reader">Reader Settings</a>
           </div>
         </div>
         <div class="home-hero-panel">
@@ -300,7 +347,12 @@ async function openHome() {
       <section class="home-grid">
         ${renderLibrarySpotlight(spotlight)}
         ${renderRecentlyRead(recentRead)}
+        ${renderHomeFavorites(personal?.favorites || [])}
+        ${renderHomeBookmarks(personal?.bookmarks || [])}
+        ${renderReadingStats(activeNovels, personal)}
         ${renderRecentUpdates(updates)}
+        ${renderRecentlyAdded(added)}
+        ${renderHomeOperations(operations)}
         <section class="panel next-action"><h2>Next Action</h2>${renderNextAction(continueItem, spotlight)}</section>
       </section>`;
     bindCopyLinks(app);
@@ -308,6 +360,19 @@ async function openHome() {
   } catch (error) {
     setError(error.message);
   }
+}
+
+async function loadHomeOperations() {
+  if (!canTranslate() && !state.admin) return {};
+  const safe = async (promise) => {
+    try { return await promise; } catch { return null; }
+  };
+  const jobsPromise = canTranslate() ? safe(api(`/api/translation/jobs?novel_id=${encodeURIComponent(state.currentNovelId)}`)) : Promise.resolve(null);
+  const importsPromise = state.admin ? safe(api(`/api/import-jobs?novel_id=${encodeURIComponent(state.currentNovelId)}`)) : Promise.resolve(null);
+  const backupPromise = state.admin ? safe(api("/api/admin/backups/manifest")) : Promise.resolve(null);
+  const desktopPromise = state.admin ? safe(api(`/api/desktop/sync/status?novel_id=${encodeURIComponent(state.currentNovelId)}`)) : Promise.resolve(null);
+  const [jobs, imports, backup, desktop] = await Promise.all([jobsPromise, importsPromise, backupPromise, desktopPromise]);
+  return {jobs, imports, backup, desktop};
 }
 
 function renderLibrarySpotlight(novel) {
@@ -329,8 +394,46 @@ function renderRecentlyRead(items) {
   }).join("") || `<p class="empty-state">Open a chapter to build a recent reading trail.</p>`}</div></section>`;
 }
 
+function renderHomeFavorites(items) {
+  const favorites = (items || []).slice(0, 5);
+  return `<section class="panel"><h2>Favorites</h2><div class="stack-list">${favorites.map((item) => `<a class="list-row" href="#/novel/${encodeURIComponent(item.novel_id || item.id)}"><strong>${escapeHtml(item.title || item.novel_title || item.novel_id)}</strong><span>${escapeHtml(item.author || "Favorite")}</span></a>`).join("") || `<p class="empty-state">Favorite novels to keep them close.</p>`}</div></section>`;
+}
+
+function renderHomeBookmarks(items) {
+  const bookmarks = (items || []).slice(0, 5);
+  return `<section class="panel"><h2>Bookmarks</h2><div class="stack-list">${bookmarks.map((item) => `<a class="list-row" href="#/reader/${encodeURIComponent(item.novel_id)}/${item.chapter_number}/${safeReaderSource(item.source)}"><strong>${escapeHtml(item.novel_title || item.novel_id)}</strong><span>Chapter ${item.chapter_number}</span></a>`).join("") || `<p class="empty-state">Bookmark chapters to build quick return points.</p>`}</div></section>`;
+}
+
+function renderReadingStats(novels, personal) {
+  const history = personal?.history || state.recent.chapters || [];
+  const bookmarks = personal?.bookmarks || [];
+  const favorites = personal?.favorites || [];
+  const readable = sum(novels, "english_count") || sum(novels, "ai_count") || 0;
+  return `<section class="panel"><h2>Reading Statistics</h2><div class="metric-grid">${metric("Readable Chapters", readable)}${metric("Recent Reads", history.length)}${metric("Bookmarks", bookmarks.length)}${metric("Favorites", favorites.length)}</div></section>`;
+}
+
 function renderRecentUpdates(novels) {
   return `<section class="panel"><h2>Recent Updates</h2><div class="stack-list">${novels.map((novel) => `<a class="list-row" href="#/novel/${encodeURIComponent(novel.id)}"><strong>${escapeHtml(novel.title || novel.id)}</strong><span>${novel.english_count ?? novel.ai_count ?? 0} English / ${novel.original_count || 0} Original · ${timeAgo(novel.updated_at)}</span></a>`).join("") || `<p class="empty-state">No catalog updates yet.</p>`}</div></section>`;
+}
+
+function renderRecentlyAdded(novels) {
+  return `<section class="panel"><h2>Recently Added</h2><div class="stack-list">${novels.map((novel) => `<a class="list-row" href="#/novel/${encodeURIComponent(novel.id)}"><strong>${escapeHtml(novel.title || novel.id)}</strong><span>${escapeHtml(novel.author || "Catalog")} · ${timeAgo(novel.created_at || novel.updated_at)}</span></a>`).join("") || `<p class="empty-state">New imports will appear here.</p>`}</div></section>`;
+}
+
+function renderHomeOperations(operations) {
+  if (!canTranslate() && !state.admin) return "";
+  const activeJobs = (operations.jobs?.jobs || []).filter((job) => ["queued", "running", "paused"].includes(job.status));
+  const failedJobs = (operations.jobs?.jobs || []).filter((job) => job.status === "failed" || job.error);
+  const importJobs = operations.imports?.jobs || [];
+  const backup = operations.backup?.manifest;
+  const desktop = operations.desktop?.sync || {};
+  return `<section class="panel operations-panel"><h2>Operations</h2><div class="metric-grid">
+    ${canTranslate() ? metric("Running Jobs", activeJobs.length) : ""}
+    ${canTranslate() ? metric("Needs Attention", failedJobs.length) : ""}
+    ${state.admin ? metric("Imports", importJobs.length) : ""}
+    ${state.admin ? metric("Backup", backup ? "Manifest Ready" : "Unavailable") : ""}
+    ${state.admin ? metric("Desktop Sync", desktop.status || "Ready") : ""}
+  </div><div class="actions">${canTranslate() ? `<a class="button primary" href="#/activity">Open Activity</a><a class="button" href="#/translate/${state.currentNovelId}">Translate</a>` : ""}${state.admin ? `<a class="button" href="#/admin/backups">Backups</a><a class="button" href="#/admin/imports">Imports</a>` : ""}</div></section>`;
 }
 
 function renderNextAction(continueItem, spotlight) {
@@ -1759,27 +1862,49 @@ function formatBytes(bytes) {
 
 function openSettings(section = "appearance", intent = "") {
   const pref = state.preferences;
+  const sections = [
+    ["appearance", "Appearance"],
+    ["reader", "Reader"],
+    ["library", "Library"],
+    ["notifications", "Notifications"],
+    ["accessibility", "Accessibility"],
+    ["keyboard", "Keyboard"],
+    ["account", "Account"],
+    ["privacy", "Privacy"],
+    ["desktop", "Desktop"],
+    ["advanced", "Advanced"],
+  ];
+  const activeSection = sections.some(([key]) => key === section) ? section : "appearance";
   app.innerHTML = `
-    ${pageHeader("Personalization Studio", "Tune GodTranslator for reading, catalog browsing, and accessibility.", [["Theme", titleCase(pref.theme)], ["Density", titleCase(pref.density)], ["Motion", pref.reduceMotion ? "Reduced" : "Standard"]])}
+    ${pageHeader("Settings", "Tune reading, library, desktop sync, privacy, accessibility, and account behavior.", [["Theme", titleCase(pref.theme)], ["Density", titleCase(pref.density)], ["Mode", titleCase(pref.settingsDepth || "basic")]])}
     <section class="settings-layout">
       <nav class="settings-nav">
-        <a class="${section === "appearance" ? "active" : ""}" href="#/settings/appearance">Appearance</a>
-        <a class="${section === "library" ? "active" : ""}" href="#/settings/library">Library</a>
-        <a class="${section === "reader" ? "active" : ""}" href="#/settings/reader">Reader</a>
-        <a class="${section === "accessibility" ? "active" : ""}" href="#/settings/accessibility">Accessibility</a>
-        <a class="${section === "account" ? "active" : ""}" href="#/settings/account">Account</a>
+        ${sections.map(([key, label]) => `<a class="${activeSection === key ? "active" : ""}" href="#/settings/${key}">${label}</a>`).join("")}
       </nav>
-      ${section === "reader" ? renderReaderSettings(pref) : section === "library" ? renderLibrarySettings(pref) : section === "accessibility" ? renderAccessibilitySettings(pref) : section === "account" ? renderAccountSettings(intent) : renderAppearanceSettings(pref)}
+      ${renderSettingsSection(activeSection, pref, intent)}
     </section>`;
   document.querySelectorAll("[data-pref]").forEach((field) => field.addEventListener("input", savePreferenceFromField));
-  if (section === "account") bindAccountControls();
+  if (activeSection === "account") bindAccountControls();
   document.querySelector("#resetPrefs")?.addEventListener("click", () => {
     state.preferences = defaultPreferences();
     localStorage.setItem("gt-preferences", JSON.stringify(state.preferences));
     applyPreferences();
-    openSettings(section);
+    openSettings(activeSection);
     toast("Preferences reset.");
   });
+}
+
+function renderSettingsSection(section, pref, intent = "") {
+  if (section === "reader") return renderReaderSettings(pref);
+  if (section === "library") return renderLibrarySettings(pref);
+  if (section === "notifications") return renderNotificationSettings(pref);
+  if (section === "accessibility") return renderAccessibilitySettings(pref);
+  if (section === "keyboard") return renderKeyboardSettings(pref);
+  if (section === "account") return renderAccountSettings(intent);
+  if (section === "privacy") return renderPrivacySettings(pref);
+  if (section === "desktop") return renderDesktopSettings(pref);
+  if (section === "advanced") return renderAdvancedSettings(pref);
+  return renderAppearanceSettings(pref);
 }
 
 function renderAppearanceSettings(pref) {
@@ -1790,6 +1915,53 @@ function renderAppearanceSettings(pref) {
     <h3>Accent</h3>
     <div class="swatch-row">${["green", "teal", "blue", "purple", "amber"].map((item) => `<label class="swatch ${pref.accent === item ? "active" : ""}" data-accent-swatch="${item}"><input data-pref="accent" type="radio" name="accent" value="${item}" ${pref.accent === item ? "checked" : ""}><span></span>${titleCase(item)}</label>`).join("")}</div>
     <details open><summary>Advanced</summary><div class="preview-grid">${["compact", "comfortable", "spacious"].map((item) => radioCard("density", item, pref.density, `${titleCase(item)} density`, "spacing preview")).join("")}${radioToggle("interfaceBlur", pref.interfaceBlur, "Interface blur", "Soft translucent surfaces")}</div></details>
+    <div class="actions"><button id="resetPrefs" type="button">Reset to defaults</button></div>
+  </section>`;
+}
+
+function renderNotificationSettings(pref) {
+  return `<section class="studio-panel">
+    <div class="studio-heading"><h2>Notifications</h2><span>Saved ${state.account ? "to your account" : "locally"} when possible</span></div>
+    <h3>Basic</h3>
+    <div class="preview-grid">${radioToggle("notifyReading", pref.notifyReading, "Reading reminders", "Show resume prompts on Home")}${radioToggle("notifyJobs", pref.notifyJobs, "Translation jobs", "Show completed or attention-needed jobs")}${radioToggle("notifyImports", pref.notifyImports, "Imports and recovery", "Show content workflow summaries")}</div>
+    <details><summary>Advanced</summary><div class="preview-grid">${radioToggle("notifyBackups", pref.notifyBackups, "Backups", "Show backup completion or failure messages")}${radioToggle("quietNotifications", pref.quietNotifications, "Quiet mode", "Reduce non-critical notification noise")}</div></details>
+  </section>`;
+}
+
+function renderKeyboardSettings(pref) {
+  return `<section class="studio-panel">
+    <div class="studio-heading"><h2>Keyboard</h2><span>Shortcut behavior</span></div>
+    <h3>Basic</h3>
+    <div class="preview-grid">${radioToggle("keyboardShortcuts", pref.keyboardShortcuts, "Keyboard shortcuts", "Enable Ctrl/Cmd+K, reader navigation, and help")}${radioToggle("readerArrowKeys", pref.readerArrowKeys, "Reader arrow keys", "Use Left and Right for chapters")}</div>
+    <details open><summary>Advanced</summary><div class="shortcut-grid"><span>Ctrl/Cmd + K</span><strong>Global search and commands</strong><span>?</span><strong>Shortcut help</strong><span>Left / Right</span><strong>Previous / next chapter</strong><span>B</span><strong>Bookmark chapter</strong><span>F</span><strong>Focus mode</strong></div></details>
+  </section>`;
+}
+
+function renderPrivacySettings(pref) {
+  return `<section class="studio-panel">
+    <div class="studio-heading"><h2>Privacy</h2><span>Reading data and local state</span></div>
+    <h3>Basic</h3>
+    <div class="preview-grid">${radioToggle("saveLocalHistory", pref.saveLocalHistory, "Local recent history", "Remember recent novels and chapters on this device")}${radioToggle("syncAccountProgress", pref.syncAccountProgress, "Sync account progress", "Save reading position when signed in")}</div>
+    <details><summary>Advanced</summary><p class="muted">Reference text remains protected by role server-side. Secrets, tokens, provider bodies, and chapter text are not stored in settings preferences.</p></details>
+  </section>`;
+}
+
+function renderDesktopSettings(pref) {
+  return `<section class="studio-panel">
+    <div class="studio-heading"><h2>Desktop</h2><span>Companion sync preferences</span></div>
+    <h3>Basic</h3>
+    <div class="preview-grid">${radioToggle("desktopSyncPrompts", pref.desktopSyncPrompts, "Desktop sync prompts", "Show Desktop Companion next actions")}${radioToggle("desktopImportSummary", pref.desktopImportSummary, "Import summaries", "Show pack upload and import summaries")}</div>
+    <details open><summary>Advanced</summary><p class="muted">Secure desktop device authorization is planned for a later v11 phase. This page does not store passwords or raw tokens.</p><div class="actions"><a class="button" href="#/admin/imports">Open Import Center</a>${state.admin ? `<a class="button" href="#/admin/diagnostics">Diagnostics</a>` : ""}</div></details>
+  </section>`;
+}
+
+function renderAdvancedSettings(pref) {
+  return `<section class="studio-panel">
+    <div class="studio-heading"><h2>Advanced</h2><span>Progressive disclosure</span></div>
+    <h3>Basic</h3>
+    <div class="choice-grid">${["basic", "advanced", "expert"].map((item) => radioCard("settingsDepth", item, pref.settingsDepth || "basic", titleCase(item), item === "expert" ? "Show low-level operational controls when available" : `${titleCase(item)} controls`)).join("")}</div>
+    <details open><summary>Advanced</summary><div class="preview-grid">${radioToggle("showTechnicalIds", pref.showTechnicalIds, "Technical IDs", "Show compact IDs in operational pages")}${radioToggle("developerHints", pref.developerHints, "Developer hints", "Show additional diagnostic copy where safe")}</div></details>
+    <details><summary>Expert</summary><p class="muted">Expert controls never bypass permissions, budget limits, backup safety, or production data protections.</p></details>
     <div class="actions"><button id="resetPrefs" type="button">Reset to defaults</button></div>
   </section>`;
 }
@@ -2303,6 +2475,20 @@ function defaultPreferences() {
     readingWidth: 900,
     readerTone: "dark",
     textAlign: "left",
+    settingsDepth: "basic",
+    notifyReading: true,
+    notifyJobs: true,
+    notifyImports: true,
+    notifyBackups: true,
+    quietNotifications: false,
+    keyboardShortcuts: true,
+    readerArrowKeys: true,
+    saveLocalHistory: true,
+    syncAccountProgress: true,
+    desktopSyncPrompts: true,
+    desktopImportSummary: true,
+    showTechnicalIds: false,
+    developerHints: false,
   };
 }
 
@@ -2421,32 +2607,31 @@ function applyPreferences() {
 
 function bindShellControls() {
   document.querySelector("#globalSearchBtn")?.addEventListener("click", openCommandPalette);
-  document.querySelector("#personalizeBtn")?.addEventListener("click", () => { window.location.hash = "#/settings/appearance"; });
   document.querySelector("#jobCenterBtn")?.addEventListener("click", () => { window.location.hash = canTranslate() ? "#/activity" : "#/settings/account"; });
   commandInput?.addEventListener("input", renderCommandResults);
   commandDialog?.addEventListener("close", () => { if (commandInput) commandInput.value = ""; });
   document.addEventListener("keydown", (event) => {
     const target = event.target;
     const typing = target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+    if (state.preferences.keyboardShortcuts && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
       openCommandPalette();
     }
-    if (!typing && event.key === "?") {
+    if (state.preferences.keyboardShortcuts && !typing && event.key === "?") {
       event.preventDefault();
       showShortcutHelp();
     }
-    if (!typing && window.location.hash.startsWith("#/reader/")) {
+    if (state.preferences.keyboardShortcuts && !typing && window.location.hash.startsWith("#/reader/")) {
       const parts = window.location.hash.replace(/^#\/?/, "").split("/");
       const novelId = parts[1];
       const chapter = Number(parts[2]);
       if (event.key === "+") adjustReaderFont(1);
       if (event.key === "-") adjustReaderFont(-1);
-      if (event.key === "ArrowLeft") {
+      if (state.preferences.readerArrowKeys && event.key === "ArrowLeft") {
         const previous = neighborChapter(chapter, -1);
         if (previous) window.location.hash = `#/reader/${novelId}/${previous}/${state.source}`;
       }
-      if (event.key === "ArrowRight") {
+      if (state.preferences.readerArrowKeys && event.key === "ArrowRight") {
         const next = neighborChapter(chapter, 1);
         if (next) window.location.hash = `#/reader/${novelId}/${next}/${state.source}`;
       }
@@ -2482,20 +2667,33 @@ function showShortcutHelp() {
 function renderCommandResults() {
   if (!commandResults) return;
   const query = (commandInput?.value || "").trim().toLowerCase();
-  const commands = [
+  const primaryCommands = [
     ["Go Home", "#/home", true],
     ["Go to Library", "#/library", true],
     ["Continue Reading", continueReadingHref(), continueReadingHref() !== "#/library"],
-    ["Open Settings", "#/settings/appearance", true],
     ["Open Translate", `#/translate/${state.currentNovelId}`, canTranslate()],
     ["Open Activity", "#/activity", canTranslate()],
+    ["Show Shortcuts", "#shortcuts", true],
+  ];
+  const settingsCommands = [
+    ["Settings: Appearance", "#/settings/appearance", true],
+    ["Settings: Reader", "#/settings/reader", true],
+    ["Settings: Library", "#/settings/library", true],
+    ["Settings: Notifications", "#/settings/notifications", true],
+    ["Settings: Accessibility", "#/settings/accessibility", true],
+    ["Settings: Keyboard", "#/settings/keyboard", true],
+    ["Settings: Account", "#/settings/account", true],
+    ["Settings: Privacy", "#/settings/privacy", true],
+    ["Settings: Desktop", "#/settings/desktop", true],
+    ["Settings: Advanced", "#/settings/advanced", true],
+  ];
+  const adminCommands = [
     ["Manage Novels", "#/admin/novels", state.admin],
     ["Add Novel", "#/novels/add", state.admin],
     ["Open Novel Recovery", "#/admin/recovery", state.admin],
     ["Open Admin", "#/admin", state.admin],
-    ["Show Shortcuts", "#shortcuts", true],
   ];
-  const novelMatches = state.novels.map((novel) => [`Novel: ${novel.title}`, `#/novel/${novel.id}`, true]);
+  const novelMatches = state.novels.map((novel) => [`Novel: ${novel.title}${novel.author ? ` by ${novel.author}` : ""}`, `#/novel/${novel.id}`, true]);
   const chapterMatches = state.chapters.slice(0, 500).map((chapter) => [`Chapter ${chapter.chapter_number}: ${chapter.title}`, `#/reader/${state.currentNovelId}/${chapter.chapter_number}/${safeReaderSource()}`, true]);
   const recentMatches = [
     ...(state.recent.novels || []).map((item) => [`Recent Novel: ${item.label}`, item.href, true]),
@@ -2503,11 +2701,18 @@ function renderCommandResults() {
     ...(state.recent.jobs || []).map((item) => [`Recent Job: ${item.label}`, item.href, canTranslate()]),
     ...(state.recent.admin || []).map((item) => [`Recent Admin: ${item.label}`, item.href, state.admin]),
   ];
-  const rows = [...commands, ...recentMatches, ...novelMatches, ...chapterMatches]
+  const filterRows = (rows, limit = 8) => rows
     .filter(([, , allowed]) => allowed)
     .filter(([label]) => !query || label.toLowerCase().includes(query))
-    .slice(0, 20);
-  commandResults.innerHTML = rows.map(([label, href]) => `<a href="${href}" data-command-result>${escapeHtml(label)}</a>`).join("") || `<p class="muted">No matches.</p>`;
+    .slice(0, limit);
+  const sections = [
+    ["Commands", filterRows([...primaryCommands, ...adminCommands], 8)],
+    ["Settings Commands", filterRows(settingsCommands, 10)],
+    ["Novels", filterRows(novelMatches, 8)],
+    ["Chapters", filterRows(chapterMatches, 8)],
+    ["Recent", filterRows(recentMatches, 8)],
+  ].filter(([, rows]) => rows.length);
+  commandResults.innerHTML = sections.map(([title, rows]) => `<section class="command-section"><h2>${escapeHtml(title)}</h2>${rows.map(([label, href]) => `<a href="${href}" data-command-result>${escapeHtml(label)}</a>`).join("")}</section>`).join("") || `<p class="muted">No matches.</p>`;
   commandResults.querySelectorAll("[data-command-result]").forEach((link) => link.addEventListener("click", (event) => {
     if (link.getAttribute("href") === "#shortcuts") {
       event.preventDefault();
