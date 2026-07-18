@@ -21,7 +21,7 @@ JobStatus = Literal[
     "cancelled",
 ]
 TargetMode = Literal["reference", "original", "english", "mixed", "new_novel"]
-UploadStatus = Literal["queued", "previewed", "imported", "failed", "cancelled"]
+UploadStatus = Literal["queued", "previewing", "previewed", "uploading", "imported", "failed", "cancelled"]
 
 
 def utc_now() -> str:
@@ -215,7 +215,7 @@ class UploadJob:
             novel_id=str(payload.get("novel_id") or ""),
             content_type=str(payload.get("content_type") or "original"),
             website_url=str(payload.get("website_url") or "https://iamgodtranslator.onrender.com"),
-            status=payload.get("status") if payload.get("status") in {"queued", "previewed", "imported", "failed", "cancelled"} else "queued",
+            status=payload.get("status") if payload.get("status") in {"queued", "previewing", "previewed", "uploading", "imported", "failed", "cancelled"} else "queued",
             preview=dict(payload.get("preview") or {}),
             result=dict(payload.get("result") or {}),
             error=str(payload.get("error") or ""),
@@ -233,6 +233,10 @@ class WebsiteConnectionProfile:
     auth_token: str = ""
     last_health: str = "Not tested"
     last_sync_at: str = ""
+    website_version: str = ""
+    desktop_api_version: str = ""
+    last_auth: str = "Not checked"
+    token_storage: str = "memory_only"
 
     def safe_dict(self) -> dict[str, Any]:
         return {
@@ -241,4 +245,8 @@ class WebsiteConnectionProfile:
             "has_token": bool(self.auth_token),
             "last_health": self.last_health,
             "last_sync_at": self.last_sync_at,
+            "website_version": self.website_version,
+            "desktop_api_version": self.desktop_api_version,
+            "last_auth": self.last_auth,
+            "token_storage": self.token_storage,
         }

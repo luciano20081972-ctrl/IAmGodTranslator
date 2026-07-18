@@ -1,6 +1,6 @@
-# Desktop Companion Roadmap v10.6
+# Desktop Companion Roadmap v11
 
-v10.6 completes the first integrated website and desktop workflow:
+v11 makes the Desktop Companion a first-class acquisition and sync surface:
 
 - One-click website connection and remembered website profile.
 - Sync Center with health, pending uploads, failed uploads, queued uploads, and recent imports.
@@ -49,6 +49,20 @@ Delivered in this folder:
 - Sync status checks per novel.
 - Open imported novel action.
 - Import job polling and result summaries.
+- Version compatibility, pending upload, failed upload, queued upload, and last sync state.
+- Preview-before-execute import workflow.
+
+## Milestone 4 Status
+
+Delivered in v11 foundation:
+
+- Manual bearer token is kept in memory only.
+- Sync Center shows connection, version compatibility, upload queue, and recent import state.
+- Pack upload supports Preview, Execute Import, Retry, and Open Imported Novel.
+
+Remaining secure-production step:
+
+- Add website-issued desktop device authorization and OS-backed token storage before durable login is enabled.
 
 ## Milestone 5: Multi-Source Acquisition
 

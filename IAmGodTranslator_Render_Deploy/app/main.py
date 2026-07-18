@@ -30,6 +30,7 @@ from app.recovery import parse_uploads, recovery_request, recovery_diagnostic, r
 
 
 VERSION = "10.6.1"
+DESKTOP_API_VERSION = "11.0.0"
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_COOKIE = "gt_admin_session"
 SESSION_TTL_SECONDS = 60 * 60 * 12
@@ -223,7 +224,22 @@ def desktop_health() -> dict[str, object]:
     base = health()
     return {
         **base,
-        "desktop_api": "10.6.0",
+        "desktop_api": DESKTOP_API_VERSION,
+        "auth": {
+            "mode": "admin_session_or_supabase_bearer",
+            "passwords_accepted_by_desktop_api": False,
+            "recommended_storage": "desktop_device_authorization_token",
+            "current_desktop_client_storage": "memory_only_manual_bearer_token",
+        },
+        "sync_states": [
+            "Connected",
+            "Disconnected",
+            "Uploading",
+            "Downloading",
+            "Pending",
+            "Conflicts",
+            "Queued",
+        ],
         "supports": [
             "connection_test",
             "desktop_auth_check",
@@ -232,6 +248,8 @@ def desktop_health() -> dict[str, object]:
             "sync_status",
             "import_history",
             "recovery_request",
+            "version_compatibility",
+            "desktop_device_auth_design",
         ],
     }
 
@@ -651,7 +669,12 @@ def desktop_auth_check(request: Request, _: None = Depends(require_admin)) -> di
         "ok": True,
         "authenticated": True,
         "role": user.role if user else "admin",
-        "desktop_api": "10.6.0",
+        "version": VERSION,
+        "desktop_api": DESKTOP_API_VERSION,
+        "auth": {
+            "method": "admin_session_or_supabase_bearer",
+            "password_received": False,
+        },
     }
 
 
@@ -664,16 +687,21 @@ def desktop_sync_status(novel_id: str | None = None, _: None = Depends(require_a
     return {
         "ok": True,
         "version": VERSION,
+        "desktop_api": DESKTOP_API_VERSION,
         "schema": database.config.schema,
         "overview": overview,
         "novel": novel,
         "missing": missing,
         "recent_imports": imports,
         "sync": {
+            "state": "Connected",
+            "desktop_api": DESKTOP_API_VERSION,
+            "website_version": VERSION,
             "pack_preview": "/api/desktop/import/preview-pack",
             "pack_execute": "/api/desktop/import/execute-pack",
             "import_history": "/api/desktop/import-history",
             "recovery_request": "/api/novels/{novel_id}/recovery/request",
+            "auth": "Use an Admin session cookie or Supabase bearer token. Do not send or store an Admin password in Desktop Companion.",
         },
     }
 

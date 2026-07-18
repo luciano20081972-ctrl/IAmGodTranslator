@@ -1,4 +1,4 @@
-# Website API Integration Plan v10.6
+# Website API Integration Plan v11
 
 This document reviews the current GodTranslator website API surface available to the desktop companion and identifies missing endpoints needed for full sync.
 
@@ -46,6 +46,8 @@ Supported now:
 - Desktop API health, auth check, sync status, and import history.
 - Desktop pack preview and execution through Content Import.
 - Original, Reference, English, Mixed, and New Novel pack formats.
+- Version compatibility metadata through `desktop_api`, website `version`, Desktop version, and supported sync states.
+- Manual bearer-token support for the current desktop session without writing tokens to local JSON.
 
 Still future work:
 
@@ -126,12 +128,32 @@ Needed later:
 - Token can be stored by Windows Credential Manager or another secure OS-backed store.
 - No plaintext Admin passwords in config files.
 
+Current v11 foundation:
+
+- Desktop API accepts existing Admin session cookies or Supabase bearer tokens.
+- Desktop Companion does not send passwords to desktop endpoints.
+- Manual bearer tokens are memory-only and are discarded on desktop restart.
+- Durable auth is intentionally deferred until a device authorization endpoint and OS-backed storage are implemented.
+
 ## First Foundation Decision
 
 The desktop companion implements:
 
 - Public `/api/health` connection test.
-- Manual token/session entry for authenticated endpoints.
+- Manual token/session entry for authenticated endpoints, kept in memory only.
 - Reference Recovery preview/apply client against existing website APIs.
+- Generic pack upload queue with Preview, Execute Import, Retry, and Open Imported Novel actions.
+- Sync summaries with pending uploads, failed uploads, queued uploads, last sync, Desktop version, Website version, Desktop API version, and compatibility status.
 
-It documents all other upload/sync APIs for future website work and does not modify the production website.
+It documents device authorization and signed update packaging as remaining secure-production steps rather than storing unsafe credentials or implementing silent updates.
+
+## Recovery Round Trip
+
+1. Website exports a Recovery Request JSON for missing content.
+2. Desktop Companion opens the request.
+3. Desktop downloads the missing chapters through the normal visible-browser downloader.
+4. Desktop builds a GodTranslator recovery pack.
+5. Desktop uploads the pack for preview.
+6. Website applies the import only after explicit confirmation.
+
+Recovery remains missing-content-only. It does not create new chapter rows; Content Import handles chapter-row creation.

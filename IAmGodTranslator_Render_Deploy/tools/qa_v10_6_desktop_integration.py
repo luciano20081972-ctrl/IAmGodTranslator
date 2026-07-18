@@ -111,7 +111,9 @@ class WebsiteDesktopIntegrationTests(unittest.TestCase):
         self.assertEqual(self.main.VERSION, "10.6.1")
         health = self.main.desktop_health()
         self.assertTrue(health["ok"])
-        self.assertEqual(health["desktop_api"], "10.6.0")
+        self.assertEqual(health["desktop_api"], "11.0.0")
+        self.assertFalse(health["auth"]["passwords_accepted_by_desktop_api"])
+        self.assertIn("Connected", health["sync_states"])
         self.assertIn("pack_preview", health["supports"])
 
     def test_desktop_routes_registered(self) -> None:
@@ -129,9 +131,11 @@ class WebsiteDesktopIntegrationTests(unittest.TestCase):
         payload = self.main.desktop_sync_status("desktop-fixture")
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["version"], "10.6.1")
+        self.assertEqual(payload["desktop_api"], "11.0.0")
         self.assertEqual(payload["novel"]["id"], "desktop-fixture")
         self.assertEqual(payload["missing"]["missing_english"], [1])
         self.assertIn("pack_preview", payload["sync"])
+        self.assertIn("Do not send or store an Admin password", payload["sync"]["auth"])
 
     def test_import_history_limit_is_safe(self) -> None:
         payload = self.main.desktop_import_history(limit=500)
