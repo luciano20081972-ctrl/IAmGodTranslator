@@ -1809,11 +1809,16 @@ function renderContentImportCenter() {
       <label>New Novel Title<input id="importNovelTitle" placeholder="Required when creating a new novel"></label>
       <label>Author<input id="importAuthor" placeholder="Optional"></label>
       <label>Source URL<input id="importSourceUrl" placeholder="Optional"></label>
-      <label class="wide">2. Choose Import Type<div class="choice-grid">${["original", "english", "reference", "metadata", "cover", "glossary"].map((type) => `<label class="choice-card"><input type="checkbox" name="importType" value="${type}" ${["original", "english"].includes(type) ? "checked" : ""}><strong>${titleCase(type)}</strong><span>${type === "english" ? "Readable edition" : "Import content"}</span></label>`).join("")}</div></label>
-      <label>3. Choose Source<select id="importSourceType"><option value="simple">Simple Import (.txt / ZIP)</option><option value="godtranslator-pack">Advanced / Pack Import</option><option value="zip">ZIP / Downloader Pack Preview</option><option value="folder">Folder manifest JSON</option><option value="reference-pack">Reference Pack</option></select></label>
-      <label>Simple Import Content<select id="simpleImportContentType"><option value="original">Original</option><option value="english">English</option><option value="reference">Reference</option></select></label>
+      <label class="wide">Summary<textarea id="importSummary" rows="2" placeholder="Optional public summary"></textarea></label>
+      <label>Cover URL<input id="importCoverUrl" placeholder="Optional cover image URL"></label>
+      <label class="wide">2. Choose Import Type<div class="choice-grid">${["original", "english", "ai", "reference", "metadata", "cover", "glossary"].map((type) => `<label class="choice-card"><input type="checkbox" name="importType" value="${type}" ${["original", "english"].includes(type) ? "checked" : ""}><strong>${type === "ai" ? "AI" : titleCase(type)}</strong><span>${type === "english" ? "Readable edition" : type === "ai" ? "AI English edition metadata" : "Import content"}</span></label>`).join("")}</div></label>
+      <label>3. Choose Source<select id="importSourceType"><option value="simple">Simple Import (.txt / ZIP)</option><option value="godtranslator-pack">Advanced / Pack Import</option><option value="downloader-pack">Downloader Pack</option><option value="desktop-pack">Desktop Companion Pack</option><option value="mixed-pack">Mixed / Multi-edition Pack</option><option value="zip">ZIP / Downloader Pack Preview</option><option value="folder">Folder manifest JSON</option><option value="reference-pack">Reference Pack</option></select></label>
+      <label>Simple Import Content<select id="simpleImportContentType"><option value="original">Original</option><option value="english">English</option><option value="ai">AI</option><option value="reference">Reference</option></select></label>
+      <label>English Edition Type<select id="importEditionType"><option value="Imported">Imported</option><option value="Official">Official</option><option value="Edited">Edited</option><option value="Human">Human</option><option value="AI">AI</option><option value="Machine">Machine</option><option value="Community">Community</option></select></label>
       <label>Text files, ZIP, or JSON<input id="importPackFile" type="file" accept=".txt,.zip,.json,text/plain,application/json" multiple></label>
       <label class="wide">Content Items JSON<textarea id="importItemsJson" rows="8" placeholder='[{"chapter_number":1,"content_type":"original","title":"Chapter 1","text":"..."},{"chapter_number":1,"content_type":"english","edition_type":"Official","text":"..."}]'></textarea></label>
+      <label class="wide">Metadata JSON<textarea id="importMetadataJson" rows="3" placeholder='{"tags":["xianxia"],"genre":"Fantasy"}'></textarea></label>
+      <label class="wide">Glossary<textarea id="importGlossary" rows="3" placeholder="Optional glossary terms for this novel"></textarea></label>
       <label class="inline-check"><input id="importSkipExisting" type="checkbox" checked> Skip existing text</label>
       <label class="inline-check"><input id="importOverwrite" type="checkbox"> Overwrite existing text</label>
       <label class="inline-check"><input id="importAddMissing" type="checkbox" checked> Add only missing</label>
@@ -1879,6 +1884,11 @@ function contentImportPayloadFromForm() {
     const parsed = JSON.parse(rawItems);
     items = Array.isArray(parsed) ? parsed : parsed.items || [];
   }
+  const metadataRaw = document.querySelector("#importMetadataJson")?.value.trim();
+  const metadata = metadataRaw ? JSON.parse(metadataRaw) : null;
+  const glossary = document.querySelector("#importGlossary")?.value.trim();
+  const simpleContentType = document.querySelector("#simpleImportContentType")?.value || "english";
+  const editionType = simpleContentType === "ai" ? "AI" : (document.querySelector("#importEditionType")?.value || "Imported");
   const selectedNovel = document.querySelector("#importNovel")?.value || "";
   const title = document.querySelector("#importNovelTitle")?.value.trim();
   const importTypes = [...document.querySelectorAll("input[name='importType']:checked")].map((item) => item.value);
@@ -1887,9 +1897,16 @@ function contentImportPayloadFromForm() {
     novel: {
       id: selectedNovel || title,
       title: title || state.novels.find((novel) => novel.id === selectedNovel)?.title || selectedNovel,
+      summary: document.querySelector("#importSummary")?.value.trim(),
       author: document.querySelector("#importAuthor")?.value.trim(),
+      cover_url: document.querySelector("#importCoverUrl")?.value.trim(),
       source_url: document.querySelector("#importSourceUrl")?.value.trim(),
+      metadata: metadata || undefined,
     },
+    metadata: metadata || undefined,
+    glossary: glossary || undefined,
+    content_type: simpleContentType,
+    edition_type: editionType,
     import_types: importTypes,
     source_type: document.querySelector("#importSourceType")?.value,
     items,
@@ -1959,6 +1976,7 @@ function renderContentImportPreview(preview) {
       ${metric("Original Content to Add", contentToAdd.original || 0)}
       ${metric("English Content to Add", contentToAdd.english || 0)}
       ${metric("Reference Content to Add", contentToAdd.reference || 0)}
+      ${metric("AI Edition Imports", preview.edition_type_counts?.AI || 0)}
       ${metric("Expected Range", expectedRange)}
       ${metric("Would Update", preview.estimated_import?.would_update || 0)}
       ${metric("Would Skip", preview.estimated_import?.would_skip || 0)}
@@ -1967,11 +1985,13 @@ function renderContentImportPreview(preview) {
     </div>
     ${objectDetails("Rows to Create", preview.rows_to_create || [])}
     ${objectDetails("Content Types", preview.content_type_counts || {})}
+    ${objectDetails("Edition Types", preview.edition_type_counts || {})}
     ${objectDetails("Missing", preview.missing_chapters || {})}
     ${objectDetails("Duplicates", preview.duplicates || [])}
     ${objectDetails("Invalid Files", preview.invalid_files || [])}
     ${objectDetails("Warnings", [...(preview.warnings || []), ...(preview.pack_warnings || [])])}
     ${objectDetails("Preview Items", preview.items || [])}
+    <details><summary>Rollback Planning</summary><p class="muted">Import history records preview and item actions. Automatic rollback is intentionally deferred until it can be executed transactionally; use Backups & Recovery restore preview before destructive correction.</p></details>
   </section>`;
 }
 
@@ -1981,6 +2001,7 @@ function contentImportUploadParams() {
   const params = new URLSearchParams({
     novel_id: selectedNovel,
     content_type: document.querySelector("#simpleImportContentType")?.value || "english",
+    edition_type: document.querySelector("#simpleImportContentType")?.value === "ai" ? "AI" : (document.querySelector("#importEditionType")?.value || "Imported"),
     novel_title: title,
     author: document.querySelector("#importAuthor")?.value.trim() || "",
     source_url: document.querySelector("#importSourceUrl")?.value.trim() || "",
@@ -1995,10 +2016,26 @@ async function loadEditionManager() {
   try {
     const payload = await api(`/api/admin/content/editions/${encodeURIComponent(novelId)}`);
     const rows = payload.editions || [];
-    target.innerHTML = `<section class="table-card"><h2>English Editions</h2><table class="responsive-table"><thead><tr><th>Chapter</th><th>Edition</th><th>Default</th><th>Characters</th></tr></thead><tbody>${rows.map((edition) => `<tr><td data-label="Chapter">${edition.chapter_number}</td><td data-label="Edition"><strong>${escapeHtml(edition.edition_type)}</strong><br><span>${escapeHtml(edition.source_label || edition.edition_key)}</span></td><td data-label="Default">${edition.is_default ? "Yes" : "No"}</td><td data-label="Characters">${edition.character_count || 0}</td></tr>`).join("") || `<tr><td colspan="4">No English editions found.</td></tr>`}</tbody></table></section>`;
+    target.innerHTML = `<section class="table-card"><h2>English Editions</h2><table class="responsive-table"><thead><tr><th>Chapter</th><th>Edition</th><th>Default</th><th>Characters</th><th></th></tr></thead><tbody>${rows.map((edition) => `<tr><td data-label="Chapter">${edition.chapter_number}</td><td data-label="Edition"><strong>${escapeHtml(edition.edition_type)}</strong><br><span>${escapeHtml(edition.source_label || edition.edition_key)}</span></td><td data-label="Default">${edition.is_default ? "Yes" : "No"}</td><td data-label="Characters">${edition.character_count || 0}</td><td data-label="Actions" class="row-actions">${edition.is_default ? `<span class="badge ok">Default</span>` : `<button type="button" data-default-edition="${escapeAttr(edition.edition_key)}" data-chapter="${edition.chapter_number}">Make Default</button>`}</td></tr>`).join("") || `<tr><td colspan="5">No English editions found.</td></tr>`}</tbody></table></section>`;
+    target.querySelectorAll("[data-default-edition]").forEach((button) => button.addEventListener("click", setDefaultEnglishEdition));
   } catch (error) {
     target.innerHTML = `<section class="state-card error"><p>${escapeHtml(error.message)}</p></section>`;
   }
+}
+
+async function setDefaultEnglishEdition(event) {
+  const button = event.currentTarget;
+  const novelId = document.querySelector("#editionNovel")?.value || state.currentNovelId;
+  const chapterNumber = button.dataset.chapter;
+  const editionKey = button.dataset.defaultEdition;
+  await api(`/api/admin/content/editions/${encodeURIComponent(novelId)}/${chapterNumber}/default`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({edition_key: editionKey}),
+  });
+  invalidateCache("/api/novels");
+  toast("Default English edition updated.");
+  loadEditionManager();
 }
 
 function renderTranslationPerformance(performance) {

@@ -2558,6 +2558,7 @@ class Database:
         duplicate_keys: list[dict[str, Any]] = []
         counters = {"would_import": 0, "would_update": 0, "would_skip": 0, "duplicates": 0, "errors": 0}
         by_type: dict[str, int] = {}
+        edition_type_counts: dict[str, int] = {}
         content_to_add = {"original": 0, "english": 0, "reference": 0}
         content_to_update = {"original": 0, "english": 0, "reference": 0}
         missing_by_type = {"original": [], "english": [], "reference": []}
@@ -2567,6 +2568,9 @@ class Database:
         for item in items:
             content_type = item["content_type"]
             by_type[content_type] = by_type.get(content_type, 0) + 1
+            if content_type == "english":
+                edition_type = normalize_edition_type(item.get("edition_type") or "Imported")
+                edition_type_counts[edition_type] = edition_type_counts.get(edition_type, 0) + 1
             key = (
                 content_type,
                 item.get("chapter_number"),
@@ -2639,6 +2643,7 @@ class Database:
             "expected_chapter_range": {"start": expected_start, "end": expected_end} if expected_range_configured else None,
             "expected_chapter_count": expected_chapter_count,
             "content_type_counts": by_type,
+            "edition_type_counts": edition_type_counts,
             "content_to_add": content_to_add,
             "content_to_update": content_to_update,
             "missing_chapters": {key: sorted(set(value)) for key, value in missing_by_type.items()},
