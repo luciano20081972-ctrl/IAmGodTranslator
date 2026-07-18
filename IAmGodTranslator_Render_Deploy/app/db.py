@@ -61,6 +61,8 @@ PLATFORM_BACKUP_TABLE_NAMES = [
     "bookmarks",
     "favorites",
     "translation_profiles",
+    "backup_jobs",
+    "audit_events",
 ]
 
 
@@ -158,6 +160,8 @@ class Database:
         bookmarks = self.table("bookmarks")
         favorites = self.table("favorites")
         translation_profiles = self.table("translation_profiles")
+        backup_jobs = self.table("backup_jobs")
+        audit_events = self.table("audit_events")
         chapters_novel_chapter = self.index("chapters_novel_chapter")
         chapters_missing_ai = self.index("chapters_missing_ai")
         chapter_editions_lookup = self.index("chapter_editions_lookup")
@@ -431,6 +435,41 @@ class Database:
             is_default INTEGER NOT NULL DEFAULT 0,
             created_at {ts_type} NOT NULL,
             updated_at {ts_type} NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS {backup_jobs} (
+            id {uuid_type},
+            kind TEXT NOT NULL DEFAULT 'full_platform_backup',
+            destination TEXT NOT NULL DEFAULT 'local',
+            status TEXT NOT NULL DEFAULT 'queued',
+            safe_mode INTEGER NOT NULL DEFAULT 1,
+            current_table TEXT,
+            total_tables INTEGER NOT NULL DEFAULT 0,
+            completed_tables INTEGER NOT NULL DEFAULT 0,
+            total_rows INTEGER NOT NULL DEFAULT 0,
+            processed_rows INTEGER NOT NULL DEFAULT 0,
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            sha256 TEXT,
+            file_path TEXT,
+            storage_json TEXT,
+            error TEXT,
+            cancel_requested INTEGER NOT NULL DEFAULT 0,
+            created_at {ts_type} NOT NULL,
+            started_at {ts_type},
+            finished_at {ts_type},
+            updated_at {ts_type} NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS {audit_events} (
+            id {id_type},
+            event_type TEXT NOT NULL,
+            actor_id TEXT,
+            actor_role TEXT,
+            target_type TEXT,
+            target_id TEXT,
+            summary TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{{}}',
+            created_at {ts_type} NOT NULL
         );
         """
 
@@ -2233,6 +2272,159 @@ class Database:
             "recent_jobs": self.translation_jobs(limit=5),
         }
 
+    def create_backup_job(self, destination: str = "local", safe_mode: bool = True) -> dict[str, Any]:
+        summary = self.platform_backup_manifest_summary()["manifest"]
+        now = utc_now()
+        job_id = str(uuid.uuid4())
+        table_counts = summary.get("table_counts") or {}
+        total_rows = sum(int(value or 0) for value in table_counts.values() if value is not None)
+        with self.connect() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO {self.table('backup_jobs')} (
+                    id, kind, destination, status, safe_mode, current_table,
+                    total_tables, completed_tables, total_rows, processed_rows,
+                    size_bytes, sha256, file_path, storage_json, error,
+                    cancel_requested, created_at, started_at, finished_at, updated_at
+                )
+                VALUES (?, 'full_platform_backup', ?, 'queued', ?, NULL, ?, 0, ?, 0, 0, NULL, NULL, ?, NULL, 0, ?, NULL, NULL, ?)
+                """,
+                (
+                    job_id,
+                    normalize_backup_destination(destination),
+                    1 if safe_mode else 0,
+                    len(PLATFORM_BACKUP_TABLE_NAMES),
+                    total_rows,
+                    json.dumps({"status": "pending"}, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+        try:
+            self.record_audit_event("backup_creation", target_type="backup_job", target_id=job_id, summary="Backup job queued", metadata={"destination": destination})
+        except Exception as exc:
+            LOGGER.warning("backup queue audit skipped error_type=%s", exc.__class__.__name__)
+        return self.backup_job(job_id) or {"id": job_id, "status": "queued"}
+
+    def backup_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM {self.table('backup_jobs')}
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (max(1, min(int(limit or 20), 100)),),
+            ).fetchall()
+        return [normalize_backup_job(dict(row)) for row in rows]
+
+    def backup_job(self, job_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(f"SELECT * FROM {self.table('backup_jobs')} WHERE id = ?", (job_id,)).fetchone()
+        return normalize_backup_job(dict(row)) if row else None
+
+    def update_backup_job(self, job_id: str, **updates: Any) -> dict[str, Any]:
+        allowed = {
+            "status",
+            "current_table",
+            "completed_tables",
+            "total_rows",
+            "processed_rows",
+            "size_bytes",
+            "sha256",
+            "file_path",
+            "storage_json",
+            "error",
+            "cancel_requested",
+            "started_at",
+            "finished_at",
+        }
+        values = {key: value for key, value in updates.items() if key in allowed}
+        values["updated_at"] = utc_now()
+        assignments = ", ".join(f"{key} = ?" for key in values)
+        params = [json.dumps(value, ensure_ascii=False, default=str) if key == "storage_json" and isinstance(value, (dict, list)) else value for key, value in values.items()]
+        params.append(job_id)
+        with self.connect() as conn:
+            conn.execute(f"UPDATE {self.table('backup_jobs')} SET {assignments} WHERE id = ?", tuple(params))
+        return self.backup_job(job_id) or {"id": job_id, "status": "missing"}
+
+    def cancel_backup_job(self, job_id: str) -> dict[str, Any]:
+        job = self.backup_job(job_id)
+        if not job:
+            raise ValueError("backup_job_not_found")
+        if job["status"] in {"completed", "failed", "cancelled"}:
+            return job
+        updated = self.update_backup_job(job_id, cancel_requested=1, status="cancelled" if job["status"] == "queued" else job["status"])
+        try:
+            self.record_audit_event("backup_cancel", target_type="backup_job", target_id=job_id, summary="Backup cancellation requested")
+        except Exception as exc:
+            LOGGER.warning("backup cancel audit skipped error_type=%s", exc.__class__.__name__)
+        return updated
+
+    def backup_table_rows(self, table_name: str, limit: int = 250, offset: int = 0) -> list[dict[str, Any]]:
+        if table_name not in PLATFORM_BACKUP_TABLE_NAMES:
+            raise ValueError("unsupported_backup_table")
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM {self.table(table_name)} LIMIT ? OFFSET ?",
+                (max(1, min(int(limit or 250), 1000)), max(0, int(offset or 0))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_audit_event(
+        self,
+        event_type: str,
+        actor_id: str | None = None,
+        actor_role: str | None = None,
+        target_type: str = "",
+        target_id: str = "",
+        summary: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO {self.table('audit_events')} (
+                    event_type, actor_id, actor_role, target_type, target_id,
+                    summary, metadata_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_type,
+                    actor_id,
+                    actor_role,
+                    target_type,
+                    target_id,
+                    summary[:500],
+                    json.dumps(sanitize_audit_metadata(metadata or {}), ensure_ascii=False, default=str),
+                    now,
+                ),
+            )
+        return {"ok": True, "event_type": event_type, "created_at": now}
+
+    def audit_events(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, event_type, actor_id, actor_role, target_type, target_id, summary, metadata_json, created_at
+                FROM {self.table('audit_events')}
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (max(1, min(int(limit or 50), 200)),),
+            ).fetchall()
+        events = []
+        for row in rows:
+            event = dict(row)
+            try:
+                event["metadata"] = json.loads(event.pop("metadata_json") or "{}")
+            except Exception:
+                event["metadata"] = {}
+            events.append(event)
+        return events
+
     def mark_interrupted_jobs(self) -> None:
         now = utc_now()
         with self.connect() as conn:
@@ -3096,6 +3288,8 @@ class Database:
             "bookmarks": ["id"],
             "favorites": ["user_id", "novel_id"],
             "translation_profiles": ["id"],
+            "backup_jobs": ["id"],
+            "audit_events": ["id"],
         }
         changes: dict[str, dict[str, Any]] = {}
         valid_tables = 0
@@ -3228,6 +3422,65 @@ class Database:
             "public_chapters_table_exists": "chapters" in public_names,
             "public_table_count": len(public_names),
         }
+
+
+def normalize_backup_destination(value: str) -> str:
+    text = str(value or "local").strip().lower().replace("_", "-")
+    return text if text in {"local", "supabase"} else "local"
+
+
+def normalize_backup_job(row: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(row)
+    for key in ("safe_mode", "cancel_requested"):
+        payload[key] = bool(payload.get(key))
+    try:
+        payload["storage"] = json.loads(payload.pop("storage_json") or "{}")
+    except Exception:
+        payload["storage"] = {}
+    total_tables = int(payload.get("total_tables") or 0)
+    completed_tables = int(payload.get("completed_tables") or 0)
+    total_rows = int(payload.get("total_rows") or 0)
+    processed_rows = int(payload.get("processed_rows") or 0)
+    table_fraction = completed_tables / total_tables if total_tables else 0
+    row_fraction = processed_rows / total_rows if total_rows else table_fraction
+    payload["progress_percent"] = round(max(0, min(1, max(table_fraction, row_fraction))) * 100, 1)
+    return payload
+
+
+SENSITIVE_AUDIT_KEYWORDS = {
+    "secret",
+    "password",
+    "token",
+    "cookie",
+    "authorization",
+    "header",
+    "prompt",
+    "body",
+    "text",
+    "content",
+    "chapter_text",
+    "provider_body",
+}
+
+
+def sanitize_audit_metadata(value: Any, depth: int = 0) -> Any:
+    if depth > 4:
+        return "[truncated]"
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in value.items():
+            safe_key = str(key)
+            lowered = safe_key.lower()
+            if any(marker in lowered for marker in SENSITIVE_AUDIT_KEYWORDS):
+                sanitized[safe_key] = "[redacted]"
+            else:
+                sanitized[safe_key] = sanitize_audit_metadata(item, depth + 1)
+        return sanitized
+    if isinstance(value, list):
+        return [sanitize_audit_metadata(item, depth + 1) for item in value[:50]]
+    if isinstance(value, str):
+        return value[:300]
+    return value
 
 
 class PostgresConnection:

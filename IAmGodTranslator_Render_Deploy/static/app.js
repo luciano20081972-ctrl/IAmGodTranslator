@@ -1730,22 +1730,24 @@ async function openAdmin(tab = "overview") {
     await loadNovels(true);
     rememberRecent("admin", {label: titleCase(tab), href: `#/admin/${tab}`, at: new Date().toISOString()});
     localStorage.setItem("gt-last-admin-tab", tab);
-    const [overview, dbHealth, missing, imports, jobs, backupManifest, users, performance] = await Promise.all([
+    const [overview, dbHealth, missing, imports, jobs, backupManifest, backupJobs, users, performance, audit] = await Promise.all([
       api("/api/admin/overview"),
       api("/api/admin/db-health"),
       api(`/api/admin/missing/${state.currentNovelId}`),
       api(`/api/import-jobs?novel_id=${state.currentNovelId}`),
       api(`/api/translation/jobs?novel_id=${state.currentNovelId}`),
       api("/api/admin/backups/manifest").catch((error) => backupManifestError(error)),
+      api("/api/admin/backups/jobs").catch(() => ({jobs: []})),
       api("/api/admin/users"),
       api(`/api/admin/translation/performance?novel_id=${encodeURIComponent(state.currentNovelId)}`),
+      api("/api/admin/audit-events").catch(() => ({events: []})),
     ]);
-    const tabs = [["overview", "Overview"], ["content", "Content"], ["imports", "Imports"], ["editions", "Editions"], ["novels", "Novels"], ["translation", "Translation"], ["performance", "Performance"], ["jobs", "Jobs"], ["backups", "Backups & Recovery"], ["recovery", "Novel Recovery"], ["database", "Database"], ["users", "Users & Roles"], ["diagnostics", "Diagnostics"]];
+    const tabs = [["overview", "Overview"], ["content", "Content"], ["imports", "Imports"], ["editions", "Editions"], ["novels", "Novels"], ["translation", "Translation"], ["performance", "Performance"], ["jobs", "Jobs"], ["backups", "Backups"], ["recovery", "Recovery"], ["database", "Database"], ["users", "Users"], ["roles", "Roles"], ["diagnostics", "Diagnostics"], ["audit", "Audit Log"], ["system", "System Health"]];
     app.innerHTML = `
       ${pageHeader("Admin", "Operational workspace for content, translation, backups, recovery, users, and diagnostics.", [["Version", APP_VERSION], ["Schema", overview.overview.schema], ["Chapters", overview.overview.chapters], ["Missing English", overview.overview.needs_translation]])}
       <section class="admin-workspace">
         <nav class="admin-tabs">${tabs.map(([key, label]) => `<a class="${tab === key ? "active" : ""}" href="#/admin/${key}">${label}</a>`).join("")}</nav>
-        <div class="admin-content">${renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupManifest, users, performance)}</div>
+        <div class="admin-content">${renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupManifest, backupJobs, users, performance, audit)}</div>
       </section>
       <div class="actions"><button id="logoutBtn">Exit Admin Mode</button></div>`;
     bindJobButtons();
@@ -1758,7 +1760,7 @@ async function openAdmin(tab = "overview") {
   }
 }
 
-function renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupManifest, users, performance) {
+function renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupManifest, backupJobs, users, performance, audit) {
   const data = overview.overview || {};
   if (tab === "content") return renderContentAdmin(data);
   if (tab === "imports") return renderContentImportCenter();
@@ -1770,10 +1772,13 @@ function renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupM
     return `<section class="dashboard-grid"><div class="panel">${metric("Database", dbHealth.health?.reachable ? "Healthy" : "Needs Attention")}${metric("Schema", data.schema)}${metric("Expected Tables", dbHealth.health?.v10_chapters_table_exists ? "Healthy" : "Needs Attention")}${metric("Chapters", data.chapters)}</div><div class="panel"><h2>Technical Details</h2><details><summary>Show details</summary><pre>${escapeHtml(JSON.stringify(dbHealth.health, null, 2))}</pre></details></div></section>`;
   }
   if (tab === "jobs") return `<section class="table-card"><h2>Job Center</h2>${renderJobsTable(jobs.jobs || [])}</section><section class="table-card"><h2>Import Jobs</h2><table><thead><tr><th>Job</th><th>Mode</th><th>Status</th><th>Updated</th></tr></thead><tbody>${(imports.jobs || []).map((job) => `<tr><td>${job.id.slice(0, 8)}</td><td>${escapeHtml(job.target_mode)}</td><td>${escapeHtml(job.status)}</td><td>${escapeHtml(job.updated_at)}</td></tr>`).join("") || `<tr><td colspan="4">No import jobs.</td></tr>`}</tbody></table></section>`;
-  if (tab === "backups") return renderBackupsRecovery(backupManifest.manifest, backupManifest.error);
+  if (tab === "backups") return renderBackupsRecovery(backupManifest.manifest, backupManifest.error, backupJobs.jobs || []);
   if (tab === "recovery") return renderNovelRecoveryAdmin(missing.missing);
-  if (tab === "users") return `<section class="table-card"><h2>Users & Roles</h2><table class="responsive-table"><thead><tr><th>User</th><th>Role</th><th>Updated</th></tr></thead><tbody>${(users.users || []).map((user) => `<tr><td data-label="User"><strong>${escapeHtml(user.display_name || user.email || user.user_id)}</strong><br><span>${escapeHtml(user.email || user.user_id)}</span></td><td data-label="Role">${escapeHtml(user.role || "user")}</td><td data-label="Updated">${timeAgo(user.updated_at)}</td></tr>`).join("") || `<tr><td colspan="3">No application profiles yet.</td></tr>`}</tbody></table></section>`;
+  if (tab === "users") return renderUsersTable(users.users || []);
+  if (tab === "roles") return renderRolesOverview(users.users || []);
   if (tab === "diagnostics") return `<section class="dashboard-grid"><div class="panel">${metric("Version", APP_VERSION)}${metric("DB", dbHealth.health?.ok === false ? "Unhealthy" : "Healthy")}${metric("Schema", data.schema)}${metric("Auth", state.authConfig?.configured ? "Configured" : "Missing")}${metric("OpenAI", "Configured/Missing hidden")}</div><div class="panel"><h2>Details</h2><details><summary>Show sanitized JSON</summary><pre>${escapeHtml(JSON.stringify({overview: data, db: dbHealth.health}, null, 2))}</pre></details></div></section>`;
+  if (tab === "audit") return renderAuditLog(audit.events || []);
+  if (tab === "system") return renderSystemHealth(data, dbHealth, backupManifest.manifest, backupJobs.jobs || []);
   return renderAdminOverview(data, dbHealth, jobs, imports, backupManifest.manifest, backupManifest.error);
 }
 
@@ -1789,6 +1794,34 @@ function backupManifestError(error) {
       non_json: Boolean(error.nonJson),
     },
   };
+}
+
+function renderUsersTable(users) {
+  return `<section class="table-card"><h2>Users</h2><table class="responsive-table"><thead><tr><th>User</th><th>Role</th><th>Updated</th></tr></thead><tbody>${users.map((user) => `<tr><td data-label="User"><strong>${escapeHtml(user.display_name || user.email || user.user_id)}</strong><br><span>${escapeHtml(user.email || user.user_id)}</span></td><td data-label="Role">${escapeHtml(user.role || "user")}</td><td data-label="Updated">${timeAgo(user.updated_at)}</td></tr>`).join("") || `<tr><td colspan="3">No application profiles yet.</td></tr>`}</tbody></table></section>`;
+}
+
+function renderRolesOverview(users) {
+  const counts = users.reduce((acc, user) => {
+    const role = user.role || "user";
+    acc[role] = (acc[role] || 0) + 1;
+    return acc;
+  }, {});
+  return `<section class="dashboard-grid">
+    <div class="panel"><h2>Roles</h2><p class="muted">Role changes must remain explicit and audit logged. This view summarizes current profiles without exposing credentials.</p><div class="metric-grid">${metric("Admins", counts.admin || 0)}${metric("Translators", counts.translator || 0)}${metric("Users", counts.user || 0)}</div></div>
+    <div class="panel"><h2>Policy</h2><p class="muted">Admin, translator, and user permissions are enforced server-side. Role-change APIs should record audit event type role_change before they are expanded.</p></div>
+  </section>${renderUsersTable(users)}`;
+}
+
+function renderAuditLog(events) {
+  return `<section class="table-card"><h2>Audit Log</h2><p class="muted">Audit events store action summaries and sanitized metadata only. Secrets, prompts, headers, provider bodies, cookies, tokens, and chapter text are redacted.</p><table class="responsive-table"><thead><tr><th>Time</th><th>Event</th><th>Target</th><th>Summary</th></tr></thead><tbody>${events.map((event) => `<tr><td data-label="Time">${timeAgo(event.created_at)}</td><td data-label="Event">${escapeHtml(event.event_type)}</td><td data-label="Target">${escapeHtml([event.target_type, event.target_id].filter(Boolean).join(": "))}</td><td data-label="Summary">${escapeHtml(event.summary || "")}</td></tr>`).join("") || `<tr><td colspan="4">No audit events yet.</td></tr>`}</tbody></table></section>`;
+}
+
+function renderSystemHealth(data, dbHealth, manifest, backupJobs) {
+  const runningBackups = backupJobs.filter((job) => ["queued", "running"].includes(job.status)).length;
+  return `<section class="dashboard-grid">
+    <div class="panel"><h2>System Health</h2><div class="metric-grid">${metric("Database", dbHealth.health?.reachable ? "Healthy" : "Needs Attention")}${metric("Schema", data.schema)}${metric("Backup safe mode", manifest?.kind === "lightweight_manifest" ? "Enabled" : "Needs Check")}${metric("Running backups", runningBackups)}${metric("Manifest response", manifest?.kind || "Unavailable")}${metric("OpenAI", "Configured/Missing hidden")}</div></div>
+    <div class="panel"><h2>Operational Guardrails</h2><p class="muted">Admin page load reads aggregate manifests and job metadata only. Full backups, restores, imports, and translations require explicit actions.</p>${objectDetails("Table Counts", manifest?.table_counts || {})}</div>
+  </section>`;
 }
 
 function renderContentAdmin(data) {
@@ -2092,7 +2125,7 @@ function renderAdminOverview(data, dbHealth, jobs, imports, manifest, manifestEr
   </section><section id="backupActionResult"></section>`;
 }
 
-function renderBackupsRecovery(manifest, manifestError = null) {
+function renderBackupsRecovery(manifest, manifestError = null, backupJobs = []) {
   const protectedState = manifestError ? "Needs Attention" : (manifest?.checksum_available ? "Protected" : "Manifest Ready");
   const created = manifest?.created_at ? timeAgo(manifest.created_at) : "No manifest loaded";
   const historyCreated = manifest?.latest_full_backup?.available ? manifest.latest_full_backup.created_at : "Create or download a full backup to calculate actual size and checksum.";
@@ -2105,13 +2138,19 @@ function renderBackupsRecovery(manifest, manifestError = null) {
       <div class="overview-metrics">${metric("Last Backup", created)}${metric("Protected State", protectedState)}${metric("Version", manifest?.app_version || APP_VERSION)}${metric("Schema", manifest?.schema || "")}</div>
     </section>
     <section class="backup-grid">
-      <article class="backup-section"><h2>Overview</h2><p class="muted">Format ${escapeHtml(manifest?.format_version || "unknown")} · ${manifest?.table_counts?.novels ?? 0} novels · ${manifest?.chapter_source_counts?.chapters ?? 0} chapters.</p><p class="muted">Actual backup size and checksum are calculated only after Create Backup or Download Local Copy completes.</p>${objectDetails("Unavailable Tables", manifest?.table_errors || {})}</article>
-      <article class="backup-section"><h2>Create Backup</h2><p class="muted">Create a full backup, save it to Supabase backup storage when configured, or download a local copy.</p><div class="metric-grid">${metric("Storage", storage.configured ? "Configured" : "Not configured")}${metric("Bucket", storage.bucket || "godtranslator-backups")}</div><div class="actions"><button id="createBackupBtn" class="primary" type="button">Create Backup</button><a class="button" href="/api/admin/backups/download">Download Local Copy</a></div></article>
+      <article class="backup-section"><h2>Manifest</h2><p class="muted">Format ${escapeHtml(manifest?.format_version || "unknown")} · ${manifest?.table_counts?.novels ?? 0} novels · ${manifest?.chapter_source_counts?.chapters ?? 0} chapters.</p><p class="muted">This view uses aggregate SQL only and never creates a full backup on page load.</p>${objectDetails("Unavailable Tables", manifest?.table_errors || {})}</article>
+      <article class="backup-section"><h2>Create Backup</h2><p class="muted">Queue a background full backup. The worker streams rows table by table, tracks checksum after creation, and navigation will not cancel the job.</p><div class="metric-grid">${metric("Storage", storage.configured ? "Configured" : "Not configured")}${metric("Bucket", storage.bucket || "godtranslator-backups")}${metric("Mode", "Safe by default")}</div><div class="actions"><button id="createBackupBtn" class="primary" type="button">Queue Backup Job</button><a class="button" href="/api/admin/backups/download">Legacy Download</a></div></article>
+      <article class="backup-section"><h2>Backup Jobs</h2>${renderBackupJobs(backupJobs)}</article>
       <article class="backup-section"><h2>Backup History</h2><table class="responsive-table"><tbody><tr><td data-label="Created">${escapeHtml(historyCreated)}</td><td data-label="Format">${escapeHtml(manifest?.format_version || "")}</td><td data-label="Contents">${manifest?.table_counts?.novels ?? 0} novels / ${manifest?.chapter_source_counts?.chapters ?? 0} chapters</td><td data-label="Size">Known after full backup</td><td data-label="Storage">${storage.configured ? "Configured" : "Manifest only"}</td></tr></tbody></table></article>
-      <article class="backup-section"><h2>Restore</h2><p class="muted">Default restore mode adds missing data only. Restore preview reports add, skip, overwrite, and invalid counts before any apply step.</p><label>Safe restore mode<select id="restoreMode"><option value="add-missing">Add missing data only</option><option value="skip-existing">Skip existing data</option><option value="overwrite">Overwrite existing data</option></select></label><label>Backup JSON<input id="restoreFile" type="file" accept=".json,application/json"></label><div class="actions"><button id="restorePreviewBtn" type="button" disabled>Restore Preview</button></div></article>
+      <article class="backup-section"><h2>Restore</h2><p class="muted">Default restore mode adds missing data only. Restore stages are Select, Validate, Compatibility, Dry Run, Exact Changes, Confirm, Background Apply, Verify.</p><label>Safe restore mode<select id="restoreMode"><option value="add-missing">Add missing data only</option><option value="skip-existing">Skip existing data</option><option value="overwrite">Overwrite existing data</option></select></label><label>Backup JSON<input id="restoreFile" type="file" accept=".json,application/json"></label><div class="actions"><button id="restorePreviewBtn" type="button" disabled>Restore Preview</button></div></article>
       <article class="backup-section"><h2>Novel Recovery</h2><p class="muted">Recover missing Reference chapters for a selected novel without overwriting readable chapter text.</p><div class="actions"><a class="button" href="#/admin/recovery">Open Novel Recovery</a><a class="button" href="/api/novels/${state.currentNovelId}/recovery/request">Download Recovery Request</a></div></article>
     </section>
   </section><section id="backupActionResult"></section><section id="restorePreviewResult"></section>`;
+}
+
+function renderBackupJobs(jobs) {
+  if (!jobs.length) return `<p class="muted">No backup jobs yet.</p>`;
+  return `<table class="responsive-table"><thead><tr><th>Status</th><th>Progress</th><th>Table</th><th>Checksum</th><th></th></tr></thead><tbody>${jobs.map((job) => `<tr><td data-label="Status">${escapeHtml(job.status)}</td><td data-label="Progress">${job.progress_percent ?? 0}% · ${job.processed_rows || 0}/${job.total_rows || 0} rows</td><td data-label="Table">${escapeHtml(job.current_table || "-")}</td><td data-label="Checksum">${escapeHtml(String(job.sha256 || "").slice(0, 12) || "after completion")}</td><td data-label="Action">${["queued", "running"].includes(job.status) ? `<button type="button" data-cancel-backup="${escapeAttr(job.id)}">Cancel</button>` : `<span class="muted">${escapeHtml(job.storage?.status || "")}</span>`}</td></tr>`).join("")}</tbody></table>`;
 }
 
 function renderNovelRecoveryAdmin(missing) {
@@ -2128,6 +2167,7 @@ function bindAdminWorkspace() {
     openAdmin("recovery");
   });
   document.querySelectorAll("#createBackupBtn").forEach((button) => button.addEventListener("click", createBackupFromAdmin));
+  document.querySelectorAll("[data-cancel-backup]").forEach((button) => button.addEventListener("click", cancelBackupJob));
   document.querySelector("#restorePreviewBtn")?.addEventListener("click", restorePreviewFromFile);
   document.querySelector("#restoreFile")?.addEventListener("change", (event) => {
     const button = document.querySelector("#restorePreviewBtn");
@@ -2151,13 +2191,35 @@ function bindAdminWorkspace() {
 
 async function createBackupFromAdmin() {
   const target = document.querySelector("#backupActionResult");
-  if (target) target.innerHTML = `<section class="state-card"><div class="spinner"></div><p>Creating full backup...</p></section>`;
+  if (target) target.innerHTML = `<section class="state-card"><div class="spinner"></div><p>Queueing background backup job...</p></section>`;
   try {
-    const payload = await api("/api/admin/backups/create", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({store: true})});
-    if (target) target.innerHTML = `<section class="panel"><h2>Backup Created</h2><div class="metric-grid">${metric("Status", payload.storage?.status || "created")}${metric("Size", formatBytes(payload.manifest?.size_bytes || 0))}${metric("Checksum", String(payload.manifest?.sha256 || "").slice(0, 12))}</div></section>`;
+    const payload = await api("/api/admin/backups/jobs", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({store: true, safe_mode: true})});
+    if (target) target.innerHTML = `<section class="panel"><h2>Backup Job Queued</h2><div class="metric-grid">${metric("Status", payload.job?.status || "queued")}${metric("Progress", `${payload.job?.progress_percent ?? 0}%`)}${metric("Destination", payload.job?.destination || "local")}</div><p class="muted">You can navigate away; the job status is persisted.</p></section>`;
+    pollBackupJob(payload.job.id);
   } catch (error) {
     if (target) target.innerHTML = `<section class="state-card error"><p>${escapeHtml(error.message)}</p></section>`;
   }
+}
+
+async function pollBackupJob(jobId) {
+  const target = document.querySelector("#backupActionResult");
+  if (!jobId || !target) return;
+  try {
+    const payload = await api(`/api/admin/backups/jobs/${encodeURIComponent(jobId)}`);
+    const job = payload.job || {};
+    target.innerHTML = `<section class="panel"><h2>Backup Job</h2><div class="metric-grid">${metric("Status", job.status)}${metric("Progress", `${job.progress_percent ?? 0}%`)}${metric("Current Table", job.current_table || "-")}${metric("Rows", `${job.processed_rows || 0}/${job.total_rows || 0}`)}${metric("Size", formatBytes(job.size_bytes || 0))}${metric("Checksum", String(job.sha256 || "").slice(0, 12) || "after completion")}</div></section>`;
+    if (["queued", "running"].includes(job.status)) setTimeout(() => pollBackupJob(jobId), 1500);
+  } catch (error) {
+    target.innerHTML = `<section class="state-card error"><p>${escapeHtml(error.message)}</p></section>`;
+  }
+}
+
+async function cancelBackupJob(event) {
+  const jobId = event.currentTarget.dataset.cancelBackup;
+  if (!jobId) return;
+  await api(`/api/admin/backups/jobs/${encodeURIComponent(jobId)}/cancel`, {method: "POST"});
+  toast("Backup cancellation requested.");
+  openAdmin("backups");
 }
 
 async function restorePreviewFromFile() {
