@@ -32,7 +32,7 @@ const state = {
   supabaseClient: null,
   lastEstimate: null,
   preferences: loadPreferences(),
-  libraryView: readStored("gt-library-view", {search: "", filter: "active", sort: "updated"}),
+  libraryView: readStored("gt-library-view", {search: "", filter: "active", sort: "updated", view: "grid", collection: ""}),
   recent: readStored("gt-recent", {novels: [], chapters: [], jobs: [], searches: [], admin: []}),
   cache: new Map(),
 };
@@ -132,8 +132,13 @@ function route() {
   if (!parts.length || parts[0] === "home") return openHome();
   if (parts[0] === "library") {
     const filter = params.get("filter");
-    if (["active", "all", "favorites", "archived"].includes(filter)) {
+    if (["active", "all", "favorites", "pinned", "completed", "in-progress", "want-to-read", "paused", "collection", "archived"].includes(filter)) {
       state.libraryView = {...state.libraryView, filter};
+      writeStored("gt-library-view", state.libraryView);
+    }
+    const collection = params.get("collection");
+    if (collection) {
+      state.libraryView = {...state.libraryView, filter: "collection", collection};
       writeStored("gt-library-view", state.libraryView);
     }
     return openLibrary();
@@ -224,6 +229,10 @@ function renderProfileMenu() {
 
 function canTranslate() {
   return state.admin || state.role === "translator";
+}
+
+function canViewReference() {
+  return canTranslate();
 }
 
 function setLoading(label = "Loading...") {
@@ -478,18 +487,22 @@ function activityLabel() {
 }
 
 function safeReaderSource(source = state.source) {
-  if (source === "reference" && state.admin) return "reference";
+  if (source === "reference" && canViewReference()) return "reference";
   return source === "original" ? "original" : "english";
 }
 
 function readerSourceOptions() {
-  return canTranslate() ? ["english", "original", "reference"] : ["english", "original"];
+  return canViewReference() ? ["english", "original", "reference"] : ["english", "original"];
 }
 
 async function openLibrary() {
   setLoading("Opening library...");
   try {
     const novels = await loadNovels(true);
+    if (!state.admin && state.libraryView.filter === "archived") {
+      state.libraryView = {...state.libraryView, filter: "active"};
+      writeStored("gt-library-view", state.libraryView);
+    }
     const active = novels.filter((novel) => !novel.is_archived);
     app.innerHTML = `
       ${pageHeader("Library", "Browse the catalog, filter by status, and open a title without the Home reading dashboard.", libraryStats(novels))}
@@ -504,20 +517,23 @@ async function openLibrary() {
           ${metric("Archived", novels.length - active.length)}
         </div>
       </section>
+      ${renderCollectionShelf()}
       <section class="toolbar">
         <input class="search" id="librarySearch" type="search" value="${escapeAttr(state.libraryView.search)}" placeholder="Search novels">
-        <select id="libraryFilter"><option value="active" ${state.libraryView.filter === "active" ? "selected" : ""}>Active</option><option value="all" ${state.libraryView.filter === "all" ? "selected" : ""}>All</option><option value="favorites" ${state.libraryView.filter === "favorites" ? "selected" : ""}>Favorites</option><option value="archived" ${state.libraryView.filter === "archived" ? "selected" : ""}>Archived</option></select>
+        <select id="libraryFilter"><option value="active" ${state.libraryView.filter === "active" ? "selected" : ""}>Active</option><option value="all" ${state.libraryView.filter === "all" ? "selected" : ""}>All</option><option value="favorites" ${state.libraryView.filter === "favorites" ? "selected" : ""}>Favorites</option><option value="pinned" ${state.libraryView.filter === "pinned" ? "selected" : ""}>Pinned</option><option value="completed" ${state.libraryView.filter === "completed" ? "selected" : ""}>Completed</option><option value="in-progress" ${state.libraryView.filter === "in-progress" ? "selected" : ""}>In Progress</option><option value="want-to-read" ${state.libraryView.filter === "want-to-read" ? "selected" : ""}>Want to Read</option><option value="paused" ${state.libraryView.filter === "paused" ? "selected" : ""}>Paused</option><option value="collection" ${state.libraryView.filter === "collection" ? "selected" : ""}>Collection</option>${state.admin ? `<option value="archived" ${state.libraryView.filter === "archived" ? "selected" : ""}>Archived</option>` : ""}</select>
         <select id="librarySort"><option value="updated" ${state.libraryView.sort === "updated" ? "selected" : ""}>Recently updated</option><option value="title" ${state.libraryView.sort === "title" ? "selected" : ""}>Title</option><option value="progress" ${state.libraryView.sort === "progress" ? "selected" : ""}>Translation progress</option></select>
+        <select id="libraryViewMode"><option value="grid" ${libraryViewMode() === "grid" ? "selected" : ""}>Grid</option><option value="compact" ${libraryViewMode() === "compact" ? "selected" : ""}>Compact Grid</option><option value="list" ${libraryViewMode() === "list" ? "selected" : ""}>List</option><option value="covers" ${libraryViewMode() === "covers" ? "selected" : ""}>Large Covers</option></select>
         <button id="resetLibraryFilters" type="button">Reset Filters</button>
       </section>
-      <section class="novel-grid" id="novelGrid"></section>
+      <section class="novel-grid ${libraryViewClass()}" id="novelGrid"></section>
     `;
-    ["librarySearch", "libraryFilter", "librarySort"].forEach((id) => document.querySelector(`#${id}`).addEventListener("input", renderLibraryCards));
+    ["librarySearch", "libraryFilter", "librarySort", "libraryViewMode"].forEach((id) => document.querySelector(`#${id}`).addEventListener("input", renderLibraryCards));
     document.querySelector("#resetLibraryFilters").addEventListener("click", () => {
-      state.libraryView = {search: "", filter: "active", sort: "updated"};
+      state.libraryView = {search: "", filter: "active", sort: "updated", view: "grid", collection: ""};
       writeStored("gt-library-view", state.libraryView);
       openLibrary();
     });
+    bindCollectionControls();
     renderLibraryCards();
     restoreScrollPosition();
   } catch (error) {
@@ -532,13 +548,21 @@ function renderLibraryCards() {
   const query = rawQuery.toLowerCase();
   const filter = document.querySelector("#libraryFilter").value;
   const sort = document.querySelector("#librarySort").value;
-  state.libraryView = {search: rawQuery, filter, sort};
+  const view = document.querySelector("#libraryViewMode").value;
+  if (filter === "collection" && !state.libraryView.collection && collections()[0]) {
+    state.libraryView.collection = collections()[0].id;
+  }
+  state.libraryView = {...state.libraryView, search: rawQuery, filter, sort, view};
   writeStored("gt-library-view", state.libraryView);
   if (query) rememberRecent("searches", {label: query, href: "#/library", at: new Date().toISOString()});
+  grid.className = `novel-grid ${libraryViewClass()}`;
   let novels = state.novels.filter((novel) => {
     if (filter === "active" && novel.is_archived) return false;
-    if (filter === "archived" && !novel.is_archived) return false;
+    if (filter === "archived" && (!state.admin || !novel.is_archived)) return false;
     if (filter === "favorites" && !favoriteIds().has(novel.id)) return false;
+    if (filter === "pinned" && !pinnedIds().has(novel.id)) return false;
+    if (["completed", "in-progress", "want-to-read", "paused"].includes(filter) && readingStatus(novel.id) !== filter) return false;
+    if (filter === "collection" && !collectionNovelIds(state.libraryView.collection).has(novel.id)) return false;
     if (!query) return true;
     return `${novel.title} ${novel.author || ""}`.toLowerCase().includes(query);
   });
@@ -549,7 +573,74 @@ function renderLibraryCards() {
   });
   grid.innerHTML = novels.map(renderNovelCard).join("") || `<div class="empty-state">No novels match this view.</div>`;
   grid.querySelectorAll("[data-favorite]").forEach((button) => button.addEventListener("click", toggleFavorite));
+  grid.querySelectorAll("[data-pin]").forEach((button) => button.addEventListener("click", togglePinnedNovel));
   bindCopyLinks(grid);
+}
+
+function libraryViewMode() {
+  return ["grid", "compact", "list", "covers"].includes(state.libraryView.view) ? state.libraryView.view : "grid";
+}
+
+function libraryViewClass() {
+  return `library-view-${libraryViewMode()}`;
+}
+
+function pinnedIds() {
+  return new Set(Array.isArray(state.preferences.pinnedNovels) ? state.preferences.pinnedNovels : []);
+}
+
+function readingStatus(novelId) {
+  return state.preferences.readingStatuses?.[novelId] || "in-progress";
+}
+
+function collections() {
+  return Array.isArray(state.preferences.collections) ? state.preferences.collections : [];
+}
+
+function collectionNovelIds(collectionId) {
+  const collection = collections().find((item) => item.id === collectionId);
+  return new Set(collection?.novel_ids || []);
+}
+
+function persistPreferenceState(message = "Preferences saved.") {
+  localStorage.setItem("gt-preferences", JSON.stringify(state.preferences));
+  applyPreferences();
+  saveRemotePreferences();
+  if (message) toast(message);
+}
+
+function renderCollectionShelf() {
+  const items = collections();
+  return `<section class="collection-shelf">
+    <div><h2>Collections</h2><p class="muted">Create shelves for favorites, catch-up lists, and reading plans.</p></div>
+    <form id="createCollectionForm" class="collection-create"><input id="newCollectionName" placeholder="New collection name"><button type="submit">Create</button></form>
+    <div class="collection-links">${items.map((item) => `<a class="${state.libraryView.collection === item.id ? "active" : ""}" href="#/library?collection=${encodeURIComponent(item.id)}">${escapeHtml(item.name)} <span>${(item.novel_ids || []).length}</span></a>`).join("") || `<span class="muted">No collections yet.</span>`}</div>
+  </section>`;
+}
+
+function bindCollectionControls() {
+  document.querySelector("#createCollectionForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const name = document.querySelector("#newCollectionName")?.value.trim();
+    if (!name) return toast("Name the collection first.");
+    const existing = collections();
+    const id = collectionIdFor(name, existing);
+    state.preferences.collections = [...existing, {id, name, novel_ids: []}];
+    persistPreferenceState("Collection created.");
+    openLibrary();
+  });
+}
+
+function collectionIdFor(name, existing) {
+  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "collection";
+  let id = base;
+  let suffix = 2;
+  const used = new Set(existing.map((item) => item.id));
+  while (used.has(id)) {
+    id = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  return id;
 }
 
 function renderContinueReading(progress) {
@@ -598,26 +689,53 @@ async function toggleFavorite(event) {
   }
 }
 
+function togglePinnedNovel(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  const novelId = event.currentTarget.dataset.pin;
+  const current = pinnedIds();
+  state.preferences.pinnedNovels = current.has(novelId)
+    ? [...current].filter((id) => id !== novelId)
+    : [novelId, ...current];
+  persistPreferenceState(current.has(novelId) ? "Novel unpinned." : "Novel pinned.");
+  renderLibraryCards();
+}
+
+function setNovelReadingStatus(novelId, status) {
+  const allowed = new Set(["completed", "in-progress", "want-to-read", "paused"]);
+  state.preferences.readingStatuses = state.preferences.readingStatuses || {};
+  state.preferences.readingStatuses[novelId] = allowed.has(status) ? status : "in-progress";
+  persistPreferenceState("Reading status saved.");
+}
+
 function renderNovelCard(novel) {
   const pct = progress(novel);
   const favorite = favoriteIds().has(novel.id);
+  const pinned = pinnedIds().has(novel.id);
+  const status = readingStatus(novel.id);
   const chapterCount = Number(novel.chapter_count || 0);
   const readLabel = chapterCount ? "Read" : "Open";
   const missingEnglish = novel.missing_counts_known === false ? "Unknown" : novel.missing_english_count ?? novel.remaining_count;
+  const metadata = novel.metadata || {};
+  const tags = Array.isArray(metadata.tags) ? metadata.tags.slice(0, 4) : [];
+  const metaLine = [novel.genre || metadata.genre, novel.language || metadata.language, novel.desktop_sync_state || metadata.desktop_sync_state].filter(Boolean);
   return `
     <article class="novel-card">
       <a class="cover" href="#/novel/${encodeURIComponent(novel.id)}">
         ${novel.cover_url ? `<img src="${escapeAttr(novel.cover_url)}" alt="">` : `<span class="cover-fallback">${escapeHtml(initials(novel.title || novel.id))}</span>`}
       </a>
       <div class="novel-card-body">
-        <div class="status-row"><span class="badge ok">${novel.is_archived ? "Archived" : "Active"}</span>${state.account ? `<button class="ghost-btn" data-favorite="${escapeAttr(novel.id)}">${favorite ? "Favorited" : "Favorite"}</button>` : ""}<span>${pct}% English</span></div>
+        <div class="status-row"><span class="badge ok">${novel.is_archived ? "Archived" : "Active"}</span><span class="badge">${titleCase(status)}</span>${pinned ? `<span class="badge ok">Pinned</span>` : ""}${state.account ? `<button class="ghost-btn" data-favorite="${escapeAttr(novel.id)}">${favorite ? "Favorited" : "Favorite"}</button>` : ""}<button class="ghost-btn" data-pin="${escapeAttr(novel.id)}">${pinned ? "Unpin" : "Pin"}</button><span>${pct}% English</span></div>
         <h2>${escapeHtml(novel.title || novel.id)}</h2>
         ${novel.author ? `<p class="muted">${escapeHtml(novel.author)}</p>` : ""}
+        ${novel.summary ? `<p class="card-summary">${escapeHtml(novel.summary)}</p>` : ""}
+        ${metaLine.length ? `<p class="muted">${metaLine.map(escapeHtml).join(" · ")}</p>` : ""}
+        ${tags.length ? `<p class="tag-row">${tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</p>` : ""}
         <div class="mini-progress"><span style="width:${pct}%"></span></div>
         <div class="metric-grid">
           ${metric("Chapters", novel.chapter_count)}
           ${metric("Original", novel.original_count)}
-          ${state.admin ? metric("Reference", novel.reference_count) : ""}
+          ${canViewReference() ? metric("Reference", novel.reference_count) : ""}
           ${metric("English", novel.english_count ?? novel.ai_count)}
           ${metric("Missing English", missingEnglish)}
         </div>
@@ -639,7 +757,7 @@ function libraryStats(novels) {
     ["Original", sum(novels, "original_count")],
     ["English", sum(novels, "english_count")],
   ];
-  if (state.admin) stats.splice(3, 0, ["Reference", sum(novels, "reference_count")]);
+  if (canViewReference()) stats.splice(3, 0, ["Reference", sum(novels, "reference_count")]);
   return stats;
 }
 
@@ -652,6 +770,7 @@ async function openNovelDetail(novelId) {
     await loadNovels();
     const detail = await api(`/api/novels/${encodeURIComponent(novelId)}`);
     const library = await api(`/api/novels/${encodeURIComponent(novelId)}/library?limit=8`);
+    const translationJobs = canTranslate() ? await api(`/api/translation/jobs?novel_id=${encodeURIComponent(novelId)}`).catch(() => null) : null;
     const listNovel = state.novels.find((item) => item.id === novelId) || {};
     const baseNovel = {...listNovel, ...(detail.novel || {})};
     const detailCounts = detail.counts || {};
@@ -676,15 +795,15 @@ async function openNovelDetail(novelId) {
       metric("Expected Range", novel.expected_range_configured ? novel.expected_range_label : "Expected range not set"),
       metric("Original", novel.missing_counts_known === false ? "Unknown" : novel.original_count),
       metric("English", novel.missing_counts_known === false ? "Unknown" : novel.english_count ?? novel.ai_count),
-      state.admin ? metric("Reference", novel.missing_counts_known === false ? "Unknown" : novel.reference_count) : "",
+      canViewReference() ? metric("Reference", novel.missing_counts_known === false ? "Unknown" : novel.reference_count) : "",
     ].join("") : [
       metric("Chapters", novel.chapter_count),
       metric("Original", novel.original_count),
-      state.admin ? metric("Reference", novel.reference_count) : "",
+      canViewReference() ? metric("Reference", novel.reference_count) : "",
       metric("English", novel.english_count ?? novel.ai_count),
       metric("Missing Original", novel.missing_counts_known === false ? "Unknown" : novel.missing_original_count ?? 0),
       metric("Missing English", novel.missing_counts_known === false ? "Unknown" : novel.missing_english_count ?? novel.remaining_count),
-      state.admin ? metric("Missing Reference", novel.missing_counts_known === false ? "Unknown" : novel.missing_reference_count ?? 0) : "",
+      canViewReference() ? metric("Missing Reference", novel.missing_counts_known === false ? "Unknown" : novel.missing_reference_count ?? 0) : "",
     ].join("");
     const primaryActions = noChapterInventory && state.admin ? `
       <a class="button primary" href="#/admin/imports">Import First Chapters</a>
@@ -711,16 +830,67 @@ async function openNovelDetail(novelId) {
         </div>
       </section>
       <nav class="section-tabs"><a class="active" href="#/novel/${encodeURIComponent(novel.id)}">Overview</a><a href="#/chapters/${encodeURIComponent(novel.id)}">Chapters</a>${canTranslate() ? `<a href="#/translate/${encodeURIComponent(novel.id)}">Translation</a>` : ""}${state.admin ? `<a href="#/admin/novels">Admin Tools</a>` : ""}</nav>
+      ${renderNovelDashboardControls(novel)}
       ${renderNovelInventoryNotice(novel)}
       <section class="split-panels">
-        <div class="panel"><h2>Overview</h2><p>Reading coverage is ${novel.reading_coverage ?? pct}% and translation coverage is ${novel.translation_coverage ?? pct}% based on readable Original and English chapter text.</p>${Array.isArray(novel.metadata?.tags) && novel.metadata.tags.length ? `<p class="tag-row">${novel.metadata.tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</p>` : ""}</div>
+        <div class="panel"><h2>Overview</h2><p>Reading coverage is ${novel.reading_coverage ?? pct}% and translation coverage is ${novel.translation_coverage ?? pct}% based on readable Original and English chapter text.</p>${Array.isArray(novel.metadata?.tags) && novel.metadata.tags.length ? `<p class="tag-row">${novel.metadata.tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</p>` : ""}${renderTranslationSummary(novel, translationJobs)}</div>
         <div class="panel"><h2>Recent Chapters</h2>${(library.chapters || []).map((chapter) => `<a class="chapter-link" href="#/reader/${novel.id}/${chapter.chapter_number}/${safeReaderSource()}"><strong>Chapter ${chapter.chapter_number}</strong><span>${escapeHtml(chapter.title)}</span></a>`).join("") || `<p class="empty-state">No chapters found.</p>`}</div>
       </section>`;
     bindCopyLinks(app);
+    bindNovelDashboardControls(novel.id);
     restoreScrollPosition();
   } catch (error) {
     setError(error.message);
   }
+}
+
+function renderNovelDashboardControls(novel) {
+  const pinned = pinnedIds().has(novel.id);
+  const status = readingStatus(novel.id);
+  const collectionOptions = collections();
+  const selected = collectionOptions.find((item) => collectionNovelIds(item.id).has(novel.id))?.id || "";
+  return `<section class="novel-dashboard-controls">
+    <label>Reading Status<select id="novelReadingStatus">${["in-progress", "want-to-read", "completed", "paused"].map((item) => `<option value="${item}" ${status === item ? "selected" : ""}>${titleCase(item)}</option>`).join("")}</select></label>
+    <button id="pinNovelBtn" type="button">${pinned ? "Unpin Novel" : "Pin Novel"}</button>
+    <label>Collection<select id="novelCollection"><option value="">No collection</option>${collectionOptions.map((item) => `<option value="${escapeAttr(item.id)}" ${selected === item.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label>
+    <button id="saveNovelCollectionBtn" type="button" ${collectionOptions.length ? "" : "disabled"} title="${collectionOptions.length ? "Save collection" : "Create a collection from Library first"}">Save Collection</button>
+  </section>`;
+}
+
+function renderTranslationSummary(novel, translationJobs = null) {
+  const completed = Number(novel.english_count ?? novel.ai_count ?? 0);
+  const remaining = Number(novel.missing_english_count ?? novel.remaining_count ?? 0);
+  const total = completed + remaining;
+  if (!total) return "";
+  const jobs = translationJobs?.jobs || [];
+  const active = jobs.find((job) => ["queued", "running", "paused"].includes(job.status));
+  const recent = jobs.find((job) => job.status === "completed") || jobs[0];
+  const activeProgress = active ? `${titleCase(active.status)} ${active.completed_items || 0}/${active.total_items || 0}` : "None";
+  const throughput = active ? jobThroughput(active).summary : recent ? jobThroughput(recent).summary : "Measure in Activity";
+  const time = active ? jobThroughput(active).remaining : "Estimate in Translate";
+  const cost = active ? `$${Number(active.estimated_cost || 0).toFixed(4)}` : "Estimate in Translate";
+  return `<div class="metric-grid">${metric("Translated", completed)}${metric("Remaining", remaining)}${metric("Estimated Cost", cost)}${metric("Estimated Time", time)}${metric("Active Job", activeProgress)}${metric("Recent Throughput", throughput)}</div>`;
+}
+
+function bindNovelDashboardControls(novelId) {
+  document.querySelector("#novelReadingStatus")?.addEventListener("change", (event) => setNovelReadingStatus(novelId, event.target.value));
+  document.querySelector("#pinNovelBtn")?.addEventListener("click", () => {
+    const current = pinnedIds();
+    state.preferences.pinnedNovels = current.has(novelId) ? [...current].filter((id) => id !== novelId) : [novelId, ...current];
+    persistPreferenceState(current.has(novelId) ? "Novel unpinned." : "Novel pinned.");
+    openNovelDetail(novelId);
+  });
+  document.querySelector("#saveNovelCollectionBtn")?.addEventListener("click", () => {
+    const collectionId = document.querySelector("#novelCollection")?.value || "";
+    state.preferences.collections = collections().map((item) => {
+      const ids = new Set(item.novel_ids || []);
+      ids.delete(novelId);
+      if (item.id === collectionId) ids.add(novelId);
+      return {...item, novel_ids: [...ids]};
+    });
+    persistPreferenceState(collectionId ? "Collection updated." : "Collection cleared.");
+    openNovelDetail(novelId);
+  });
 }
 
 async function openNovels(mode = "") {
@@ -826,7 +996,7 @@ async function loadChapters(novelId) {
 function renderChapters(payload) {
   const novel = payload.novel;
   const counts = payload.counts || {};
-  const showReference = state.admin;
+  const showReference = canViewReference();
   const stats = [
     ["Chapters", counts.total_chapter_rows],
     ["Original", counts.original_readable],
@@ -2556,6 +2726,9 @@ function defaultPreferences() {
     syncAccountProgress: true,
     desktopSyncPrompts: true,
     desktopImportSummary: true,
+    pinnedNovels: [],
+    readingStatuses: {},
+    collections: [],
     showTechnicalIds: false,
     developerHints: false,
   };

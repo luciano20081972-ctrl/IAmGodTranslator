@@ -35,7 +35,7 @@ def main() -> None:
     require("paragraph copy", "data-copy-paragraph" in APP_JS and "copyParagraphText" in APP_JS)
     require("duplicate heading suppression", "isDuplicateChapterHeading" in APP_JS and "lines.shift()" in APP_JS)
     require("bounded prefetch neighbors only", "prefetchNeighborChapters" in APP_JS and "[neighborChapter(chapterNumber, -1), neighborChapter(chapterNumber, 1)]" in APP_JS)
-    require("reference remains role gated", 'return canTranslate() ? ["english", "original", "reference"] : ["english", "original"]' in APP_JS)
+    require("reference remains role gated", 'return canViewReference() ? ["english", "original", "reference"] : ["english", "original"]' in APP_JS)
     require("single chapter body endpoint", "chapterTextPath(novelId, chapterNumber, source)" in APP_JS)
 
     for css in (

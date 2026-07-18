@@ -615,6 +615,59 @@ body[data-focus="strong"] select:focus-visible {
   gap: 0.7rem;
 }
 
+.collection-shelf {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(16rem, 22rem);
+  gap: 0.9rem;
+  align-items: end;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.026);
+  padding: 1rem;
+  margin: 1rem 0;
+}
+
+.collection-shelf h2 {
+  margin: 0 0 0.25rem;
+}
+
+.collection-create {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.55rem;
+}
+
+.collection-links {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.collection-links a {
+  display: inline-flex;
+  gap: 0.45rem;
+  align-items: center;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  padding: 0.45rem 0.7rem;
+  font-weight: 800;
+}
+
+.collection-links a.active,
+.collection-links a:hover {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--line));
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.collection-links span {
+  color: var(--soft);
+}
+
 .home-grid {
   grid-template-columns: minmax(0, 1.1fr) minmax(280px, .9fr);
   align-items: start;
@@ -945,6 +998,18 @@ body[data-focus="strong"] select:focus-visible {
   gap: 1rem;
 }
 
+.novel-grid.library-view-compact {
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+}
+
+.novel-grid.library-view-list {
+  grid-template-columns: 1fr;
+}
+
+.novel-grid.library-view-covers {
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+}
+
 .novel-card, .panel, .table-card, .state-card {
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -958,6 +1023,27 @@ body[data-focus="strong"] select:focus-visible {
   display: grid;
   grid-template-rows: auto 1fr;
   min-height: 100%;
+}
+
+.library-view-list .novel-card {
+  grid-template-columns: minmax(7rem, 10rem) minmax(0, 1fr);
+  grid-template-rows: 1fr;
+}
+
+.library-view-list .cover {
+  min-height: 100%;
+}
+
+.library-view-compact .cover {
+  min-height: 12rem;
+}
+
+.library-view-compact .metric-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.library-view-covers .cover {
+  min-height: 24rem;
 }
 
 .novel-card:hover {
@@ -1161,8 +1247,53 @@ body[data-focus="strong"] select:focus-visible {
   grid-template-rows: auto auto auto auto 1fr auto;
   gap: 0.35rem;
   padding: var(--density-pad, 1rem);
+  min-width: 0;
 }
 .novel-card-body h2 { margin: 0; }
+
+.card-summary {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--muted);
+}
+
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.35rem 0;
+}
+
+.tag-row span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  padding: 0.25rem 0.5rem;
+  font-size: 0.82rem;
+}
+
+.novel-dashboard-controls {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.7rem;
+  align-items: end;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.028);
+  padding: 1rem;
+  margin: 1rem 0;
+}
+
+.novel-dashboard-controls label {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.novel-dashboard-controls select {
+  margin-top: 0.3rem;
+}
 .card-stats {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1956,12 +2087,14 @@ pre {
   }
   .novel-hero,
   .split-panels,
+  .novel-dashboard-controls,
   .translate-workspace,
   .translate-hero,
   .compare-grid,
   .home-hero,
   .home-grid,
   .library-intro,
+  .collection-shelf,
   .overview-panel,
   .quick-actions-panel,
   .backup-grid,
@@ -1977,6 +2110,15 @@ pre {
   .translate-hero h1 { white-space: normal; }
   .translate-hero-summary > strong { white-space: normal; }
   .management-grid { grid-template-columns: 1fr; }
+  .collection-create { grid-template-columns: 1fr; }
+  .collection-links a { width: 100%; justify-content: space-between; }
+  .library-view-list .novel-card {
+    grid-template-columns: 1fr;
+  }
+  .novel-grid.library-view-covers,
+  .novel-grid.library-view-compact {
+    grid-template-columns: 1fr;
+  }
   .admin-workspace .admin-tabs {
     position: static;
     display: flex;
