@@ -1553,6 +1553,44 @@ body[data-zen="on"] .app-header {
 
 .reader-heading p { color: var(--muted); }
 
+.reader-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.7rem;
+  max-width: min(680px, 100%);
+  margin: 1rem auto 0;
+}
+
+.reader-progress {
+  height: 0.45rem;
+  max-width: min(680px, 100%);
+  margin: 0.8rem auto 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+  overflow: hidden;
+}
+
+.reader-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+}
+
+.reader-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.8rem;
+  align-items: end;
+  max-width: var(--reader-width, 900px);
+  margin: 0 auto 0.85rem;
+}
+
+.reader-tools label {
+  color: var(--muted);
+  font-weight: 800;
+}
+
 .reader-text {
   border: 1px solid rgba(207, 231, 216, 0.08);
   border-radius: 18px;
@@ -1564,6 +1602,7 @@ body[data-zen="on"] .app-header {
 }
 
 .reader-text p {
+  position: relative;
   margin: 0 0 1.2em;
   color: #f2eadf;
   font-family: Georgia, "Times New Roman", serif;
@@ -1571,6 +1610,28 @@ body[data-zen="on"] .app-header {
   line-height: var(--reader-line-height, 1.78);
   margin-bottom: var(--reader-paragraph-spacing, 1.2em);
   text-align: var(--reader-align, left);
+}
+
+.reader-text mark {
+  border-radius: 0.25rem;
+  background: color-mix(in srgb, var(--warning) 62%, transparent);
+  color: inherit;
+  padding: 0 0.12rem;
+}
+
+.copy-paragraph {
+  float: right;
+  min-height: 1.8rem;
+  margin: 0 0 0.35rem 0.65rem;
+  padding: 0.25rem 0.45rem;
+  border-radius: 8px;
+  font-size: 0.72rem;
+  opacity: 0.2;
+}
+
+.reader-text p:focus-within .copy-paragraph,
+.reader-text p:hover .copy-paragraph {
+  opacity: 1;
 }
 
 body[data-reader-font="sans"] .reader-text p { font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
@@ -1940,6 +2001,10 @@ pre {
   }
   .reader-tabs label, .spacer { margin-left: 0; flex: 1 1 100%; }
   .reader-tabs input, #chapterPicker { width: 100%; }
+  .reader-meta,
+  .reader-tools {
+    grid-template-columns: 1fr;
+  }
   .chapter-drawer,
   .reader-settings-sheet {
     left: 0.5rem;

@@ -891,18 +891,20 @@ function renderReader(novelId, chapterNumber, source, payload) {
   const next = neighborChapter(chapterNumber, 1);
   const novel = state.novels.find((item) => item.id === novelId) || {};
   const options = readerSourceOptions();
+  const metrics = readerMetrics(payload, chapterNumber);
   rememberRecent("chapters", {novel_id: novelId, chapter_number: chapterNumber, source, label: `Chapter ${chapterNumber}`, href: `#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}`, at: new Date().toISOString()});
   document.documentElement.style.setProperty("--reader-font", `${state.fontSize}px`);
   document.body.dataset.zen = state.zen ? "on" : "off";
   app.innerHTML = `
     <section class="reader-panel ${state.zen ? "zen" : ""}">
-      <div class="reader-nav"><a class="button" href="#/novel/${novelId}">Novel</a><button id="openChapterDrawer" type="button">Chapters</button><div class="spacer"></div><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous</button><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next</button><button id="bookmarkChapter" type="button">Bookmark</button><button id="zenToggle" type="button">${state.zen ? "Exit Focus" : "Focus"}</button></div>
+      <div class="reader-nav"><a class="button" href="#/novel/${novelId}">Back to Novel</a><button id="openChapterDrawer" type="button">Chapter List</button><div class="spacer"></div><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous</button><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next</button><button id="bookmarkChapter" type="button">Bookmark</button><button id="zenToggle" type="button">${state.zen ? "Exit Focus" : "Focus"}</button></div>
       <div class="reader-tabs"><div class="segmented reader-source-switch">${options.map((item) => `<button data-source="${item}" class="${item === source ? "active" : ""}">${sourceLabels[item]}</button>`).join("")}</div><label class="font-control">Text size<input id="fontSize" type="range" min="16" max="25" value="${state.fontSize}"></label><button id="readerSettingsToggle" type="button">Reader Settings</button><button type="button" data-copy-link="#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}">Copy Link</button></div>
       ${renderChapterDrawer(novelId, chapterNumber, source)}
       ${renderReaderSettingsSheet()}
-      <header class="reader-heading"><span>${escapeHtml(novel.title || sourceLabels[source])} · ${sourceLabels[source]}</span><h1>Chapter ${chapterNumber}</h1><p>${escapeHtml(payload.title || `Chapter ${chapterNumber}`)}</p></header>
+      <header class="reader-heading"><span>${escapeHtml(novel.title || sourceLabels[source])} · ${sourceLabels[source]}</span><h1>Chapter ${chapterNumber}</h1><p>${escapeHtml(payload.title || `Chapter ${chapterNumber}`)}</p><div class="reader-meta">${metric("Read Time", metrics.readTime)}${metric("Novel Progress", metrics.chapterProgress)}<div class="metric"><span>Position</span><strong id="readerProgressText">0%</strong></div></div><div class="reader-progress"><span id="readerScrollProgress" style="width:0%"></span></div></header>
+      <section class="reader-tools"><label>Search chapter<input id="readerTextSearch" type="search" placeholder="Find text in this chapter"></label><span id="readerSearchCount" class="muted">No search active</span></section>
       <article class="reader-text">${renderReaderText(payload, source)}</article>
-      <div class="reader-bottom"><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous</button><button id="bottomChapterDrawer" type="button">Chapters</button><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next</button><button id="backToTop" type="button" hidden>Back to Top</button></div>
+      <div class="reader-bottom"><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous</button><button id="bottomChapterDrawer" type="button">Chapter List</button><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next</button><button id="backToTop" type="button" hidden>Back to Top</button></div>
     </section>`;
   document.querySelectorAll("[data-go]").forEach((button) => button.addEventListener("click", () => { if (button.dataset.go) window.location.hash = `#/reader/${novelId}/${button.dataset.go}/${state.source}`; }));
   document.querySelectorAll("[data-source]").forEach((button) => button.addEventListener("click", () => { window.location.hash = `#/reader/${novelId}/${chapterNumber}/${button.dataset.source}`; }));
@@ -916,18 +918,76 @@ function renderReader(novelId, chapterNumber, source, payload) {
   document.querySelector("#readerSettingsToggle")?.addEventListener("click", toggleReaderSettingsSheet);
   document.querySelector("#closeReaderSettings")?.addEventListener("click", toggleReaderSettingsSheet);
   document.querySelector("#zenToggleSheet")?.addEventListener("click", () => document.querySelector("#zenToggle")?.click());
+  document.querySelector("#readerTextSearch")?.addEventListener("input", searchReaderText);
+  document.querySelectorAll("[data-copy-paragraph]").forEach((button) => button.addEventListener("click", copyParagraphText));
   document.querySelector("#backToTop")?.addEventListener("click", () => window.scrollTo({top: 0, behavior: state.preferences.reduceMotion ? "auto" : "smooth"}));
   bindCopyLinks(app);
   bindReaderProgress(novelId, chapterNumber, source);
   restoreReaderScroll(novelId, chapterNumber, source);
   updateBackToTop();
+  updateReaderProgressUi();
 }
 
 function renderReaderText(payload, source) {
   if (!payload.ok) return `<div class="empty-state">${escapeHtml(sourceLabels[source])} is not available for this chapter.</div>`;
   const lines = paragraphs(payload.text);
   if (lines.length && isDuplicateChapterHeading(lines[0], payload)) lines.shift();
-  return lines.map((line) => `<p>${escapeHtml(line.replace(/^#{1,6}\s*/, ""))}</p>`).join("");
+  return lines.map((line, index) => {
+    const clean = line.replace(/^#{1,6}\s*/, "");
+    return `<p data-reader-paragraph="${escapeAttr(clean)}"><button class="copy-paragraph" type="button" data-copy-paragraph="${index}" title="Copy paragraph">Copy</button><span>${escapeHtml(clean)}</span></p>`;
+  }).join("");
+}
+
+function readerMetrics(payload, chapterNumber) {
+  const text = payload?.ok ? String(payload.text || "") : "";
+  const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
+  const minutes = Math.max(1, Math.ceil(wordCount / 250));
+  const currentIndex = state.chapters.findIndex((chapter) => chapter.chapter_number === chapterNumber);
+  const chapterProgress = currentIndex >= 0 && state.chapters.length ? `${currentIndex + 1}/${state.chapters.length}` : "Unknown";
+  return {readTime: `${minutes} min`, chapterProgress};
+}
+
+function searchReaderText(event) {
+  const query = event.target.value.trim();
+  const count = highlightReaderParagraphs(query);
+  const target = document.querySelector("#readerSearchCount");
+  if (target) target.textContent = query ? `${count} ${count === 1 ? "match" : "matches"}` : "No search active";
+}
+
+function highlightReaderParagraphs(query) {
+  const paragraphs = [...document.querySelectorAll("[data-reader-paragraph]")];
+  const normalized = query.toLowerCase();
+  let count = 0;
+  paragraphs.forEach((paragraph) => {
+    const text = paragraph.dataset.readerParagraph || "";
+    const textSpan = paragraph.querySelector("span");
+    if (!textSpan) return;
+    if (!normalized) {
+      textSpan.innerHTML = escapeHtml(text);
+      paragraph.hidden = false;
+      return;
+    }
+    const found = text.toLowerCase().includes(normalized);
+    paragraph.hidden = !found;
+    if (found) {
+      count += 1;
+      const pattern = new RegExp(`(${escapeRegExp(query)})`, "ig");
+      textSpan.innerHTML = escapeHtml(text).replace(pattern, "<mark>$1</mark>");
+    }
+  });
+  return count;
+}
+
+function copyParagraphText(event) {
+  const paragraph = event.currentTarget.closest("[data-reader-paragraph]");
+  const text = paragraph?.dataset.readerParagraph || "";
+  if (!text) return;
+  if (!navigator.clipboard?.writeText) return toast("Clipboard is unavailable in this browser.");
+  navigator.clipboard.writeText(text).then(() => toast("Paragraph copied.")).catch(() => toast("Unable to copy paragraph."));
+}
+
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function renderChapterDrawer(novelId, chapterNumber, source) {
@@ -2164,8 +2224,17 @@ function bindReaderProgress(novelId, chapterNumber, source) {
     localStorage.setItem(readerScrollKey(novelId, chapterNumber, source), String(percent));
     saveProgressDebounced(novelId, chapterNumber, source, percent);
     updateBackToTop();
+    updateReaderProgressUi(percent);
   }, 700);
   window.addEventListener("scroll", readerScrollHandler, {passive: true});
+}
+
+function updateReaderProgressUi(percent = readerScrollPercent()) {
+  const rounded = Math.round(percent);
+  const text = document.querySelector("#readerProgressText");
+  const bar = document.querySelector("#readerScrollProgress");
+  if (text) text.textContent = `${rounded}%`;
+  if (bar) bar.style.width = `${rounded}%`;
 }
 
 function updateBackToTop() {
