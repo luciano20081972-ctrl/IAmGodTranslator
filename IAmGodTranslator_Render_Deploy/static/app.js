@@ -6,11 +6,13 @@ const commandResults = document.querySelector("#commandResults");
 const accountBtn = document.querySelector("#accountBtn");
 const profileMenu = document.querySelector("#profileMenu");
 const profileMenuItems = document.querySelector("#profileMenuItems");
+const activityBanner = document.querySelector("#activityBanner");
 
 const CACHE_TTL_MS = 45_000;
 let activeRouteKey = window.location.hash || "#/home";
 let connectionInterrupted = false;
 let readerScrollHandler = null;
+let activityIndicatorRequest = 0;
 
 const state = {
   novels: [],
@@ -189,6 +191,7 @@ function renderNav() {
     jobButton.hidden = !canTranslate();
     jobButton.dataset.relevant = canTranslate() ? "true" : "false";
   }
+  refreshActivityIndicator();
 }
 
 function profileLabel() {
@@ -484,6 +487,47 @@ function openContinueReading() {
 
 function activityLabel() {
   return "Activity";
+}
+
+async function refreshActivityIndicator() {
+  const requestId = ++activityIndicatorRequest;
+  const jobButton = document.querySelector("#jobCenterBtn");
+  if (!canTranslate()) {
+    if (jobButton) jobButton.hidden = true;
+    if (activityBanner) {
+      activityBanner.hidden = true;
+      activityBanner.innerHTML = "";
+    }
+    return;
+  }
+  try {
+    const payload = await cachedApi("/api/translation/jobs", 15_000);
+    if (requestId !== activityIndicatorRequest) return;
+    const jobs = payload.jobs || [];
+    const active = jobs.filter((job) => ["queued", "running", "paused"].includes(job.status));
+    const attention = jobs.filter((job) => job.status === "failed" || job.error || Number(job.failed_items || 0) > 0);
+    if (jobButton) {
+      jobButton.hidden = false;
+      jobButton.textContent = active.length ? `Activity ${active.length}` : "Activity";
+      jobButton.title = attention.length ? `${attention.length} job needs attention` : "Activity";
+      jobButton.dataset.relevant = active.length || attention.length ? "true" : "false";
+    }
+    if (!activityBanner) return;
+    if (!active.length && !attention.length) {
+      activityBanner.hidden = true;
+      activityBanner.innerHTML = "";
+      return;
+    }
+    const primary = active[0] || attention[0];
+    const throughput = primary ? jobThroughput(primary).summary : "";
+    activityBanner.hidden = false;
+    activityBanner.innerHTML = `<strong>${active.length ? `${active.length} active translation job${active.length === 1 ? "" : "s"}` : `${attention.length} translation job${attention.length === 1 ? "" : "s"} need attention`}</strong><span>${escapeHtml(jobNovelTitle(primary))} · ${escapeHtml(primary?.status || "unknown")} · ${escapeHtml(throughput)}</span><a class="button" href="#/activity">Open Activity</a>`;
+  } catch {
+    if (activityBanner) {
+      activityBanner.hidden = true;
+      activityBanner.innerHTML = "";
+    }
+  }
 }
 
 function safeReaderSource(source = state.source) {
@@ -1295,8 +1339,8 @@ async function openTranslate(novelId, params = new URLSearchParams()) {
     const form = params.get("chapter") ? {...draft, selection_mode: "specific", chapters: params.get("chapter"), all_untranslated: false} : draft;
     const mode = form.translation_mode || "simple";
     const selectionMode = form.selection_mode || (form.all_untranslated ? "all-untranslated" : "next-untranslated");
-    const speedPreset = form.speed_preset || (mode === "economy" ? "careful" : "balanced");
-    const nextPresetValues = ["25", "50", "100", "200", "500", "all"];
+    const speedPreset = form.speed_preset || (mode === "economy" ? "economy" : "balanced");
+    const nextPresetValues = ["25", "50", "100", "200", "500", "1000", "all"];
     const nextCountMode = form.next_count_mode || (String(form.next_count || "25").toLowerCase() === "all" ? "all" : (nextPresetValues.includes(String(form.next_count || "25")) ? String(form.next_count || "25") : "custom"));
     const customNextCount = nextCountMode === "custom" ? (form.custom_next_count || form.next_count || "") : "";
     state.lastEstimate = null;
@@ -1322,9 +1366,9 @@ async function openTranslate(novelId, params = new URLSearchParams()) {
       <section class="draft-bar"><span id="draftStatus">${draft.saved_at ? `Draft saved ${timeAgo(draft.saved_at)}` : "No saved draft"}</span><div class="actions"><button id="restoreTranslateDraft" type="button" ${draft.saved_at ? "" : "disabled"}>Restore Draft</button><button id="discardTranslateDraft" type="button" ${draft.saved_at ? "" : "disabled"}>Discard Draft</button></div></section>
       <section class="translate-workspace">
         <div class="translate-steps" id="translateForm">
-          <section class="workspace-panel form-grid"><div class="wide"><h2>1. Mode & Chapters</h2><p class="muted">Simple mode keeps the required choices visible and leaves performance controls hidden.</p></div><label>Mode<select id="translationMode"><option value="simple" ${mode === "simple" ? "selected" : ""}>Simple</option><option value="fast" ${mode === "fast" ? "selected" : ""}>Fast</option><option value="advanced" ${mode === "advanced" ? "selected" : ""}>Advanced</option><option value="economy" ${mode === "economy" ? "selected" : ""}>Economy / Overnight</option></select></label><label>Novel<select id="translateNovel">${state.novels.map((n) => `<option value="${n.id}" ${n.id === novelId ? "selected" : ""}>${escapeHtml(n.title)}</option>`).join("")}</select></label><label>What to translate<select id="selectionMode"><option value="next-untranslated" ${selectionMode === "next-untranslated" ? "selected" : ""}>Next untranslated chapters</option><option value="specific" ${selectionMode === "specific" ? "selected" : ""}>Specific chapters</option><option value="all-untranslated" ${selectionMode === "all-untranslated" ? "selected" : ""}>All untranslated chapters</option></select></label><label id="nextCountLabel">Count<select id="nextCount"><option value="25" ${nextCountMode === "25" ? "selected" : ""}>25</option><option value="50" ${nextCountMode === "50" ? "selected" : ""}>50</option><option value="100" ${nextCountMode === "100" ? "selected" : ""}>100</option><option value="200" ${nextCountMode === "200" ? "selected" : ""}>200</option><option value="500" ${nextCountMode === "500" ? "selected" : ""}>500</option><option value="all" ${nextCountMode === "all" ? "selected" : ""}>All</option><option value="custom" ${nextCountMode === "custom" ? "selected" : ""}>Custom</option></select></label><label id="customNextCountLabel">Custom count<input id="customNextCount" type="number" min="1" step="1" value="${escapeAttr(customNextCount)}"><span class="field-error" id="customCountError"></span></label><label id="chapterInputLabel">Chapters<input id="translateChapters" value="${escapeAttr(form.chapters || "")}" placeholder="1-50,75,100-125"><span class="field-error" id="chapterError"></span></label><p class="muted wide" id="chapterPreview">Choose what to translate.</p></section>
+          <section class="workspace-panel form-grid"><div class="wide"><h2>1. Mode & Chapters</h2><p class="muted">Simple mode keeps the required choices visible and leaves performance controls hidden.</p></div><label>Mode<select id="translationMode"><option value="simple" ${mode === "simple" ? "selected" : ""}>Simple</option><option value="fast" ${mode === "fast" ? "selected" : ""}>Fast</option><option value="advanced" ${mode === "advanced" ? "selected" : ""}>Advanced</option><option value="economy" ${mode === "economy" ? "selected" : ""}>Economy / Overnight</option></select></label><label>Novel<select id="translateNovel">${state.novels.map((n) => `<option value="${n.id}" ${n.id === novelId ? "selected" : ""}>${escapeHtml(n.title)}</option>`).join("")}</select></label><label>What to translate<select id="selectionMode"><option value="next-untranslated" ${selectionMode === "next-untranslated" ? "selected" : ""}>Next untranslated chapters</option><option value="specific" ${selectionMode === "specific" ? "selected" : ""}>Specific chapters</option><option value="all-untranslated" ${selectionMode === "all-untranslated" ? "selected" : ""}>All untranslated chapters</option></select></label><label id="nextCountLabel">Count<select id="nextCount"><option value="25" ${nextCountMode === "25" ? "selected" : ""}>25</option><option value="50" ${nextCountMode === "50" ? "selected" : ""}>50</option><option value="100" ${nextCountMode === "100" ? "selected" : ""}>100</option><option value="200" ${nextCountMode === "200" ? "selected" : ""}>200</option><option value="500" ${nextCountMode === "500" ? "selected" : ""}>500</option><option value="1000" ${nextCountMode === "1000" ? "selected" : ""}>1000</option><option value="all" ${nextCountMode === "all" ? "selected" : ""}>All</option><option value="custom" ${nextCountMode === "custom" ? "selected" : ""}>Custom</option></select></label><label id="customNextCountLabel">Custom count<input id="customNextCount" type="number" min="1" step="1" value="${escapeAttr(customNextCount)}"><span class="field-error" id="customCountError"></span></label><label id="chapterInputLabel">Chapters<input id="translateChapters" value="${escapeAttr(form.chapters || "")}" placeholder="1-50,75,100-125"><span class="field-error" id="chapterError"></span></label><p class="muted wide" id="chapterPreview">Choose what to translate.</p></section>
           <section class="workspace-panel form-grid"><div class="wide"><h2>2. Translation Profile</h2><p class="muted">Optional style and glossary notes shape the job without changing source data.</p></div><label>Profile<select id="profile"><option ${form.profile === "Default literary translation" ? "selected" : ""}>Default literary translation</option><option ${form.profile === "Reference-guided polish" ? "selected" : ""}>Reference-guided polish</option></select></label><label class="wide">Style guide<textarea id="styleGuide" rows="3">${escapeHtml(form.style_guide || "")}</textarea></label><label class="wide">Glossary notes<textarea id="glossary" rows="3">${escapeHtml(form.glossary || "")}</textarea></label></section>
-          <section class="workspace-panel form-grid"><div class="wide"><h2>3. Speed & Model</h2><p class="muted">Auto optimization keeps Simple mode focused while still using the selected speed intent.</p></div><label>Speed preset<select id="speedPreset"><option value="careful" ${speedPreset === "careful" ? "selected" : ""}>Careful - lowest pressure</option><option value="balanced" ${speedPreset === "balanced" ? "selected" : ""}>Balanced - recommended</option><option value="fast" ${speedPreset === "fast" ? "selected" : ""}>Fast - higher parallel processing</option><option value="maximum-safe" ${speedPreset === "maximum-safe" ? "selected" : ""}>Maximum Safe - highest safe throughput</option></select></label><label>Model<select id="model">${models.map((model) => `<option value="${escapeAttr(model.id)}" ${model.id === (form.model || novel.model || "gpt-4o-mini") ? "selected" : ""}>${escapeHtml(model.display_name)} - ${escapeHtml(model.pricing?.note || "Pricing not configured")}</option>`).join("")}</select></label><label class="inline-check"><input id="autoOptimizeSpeed" type="checkbox" ${form.auto_optimize_speed === false ? "" : "checked"}> Auto Optimize Speed</label><p class="muted wide" id="speedDescription">Speed is being optimized automatically.</p></section>
+          <section class="workspace-panel form-grid"><div class="wide"><h2>3. Speed & Model</h2><p class="muted">Each preset maps to concrete worker, retry, and timeout settings while the scheduler keeps global limits bounded.</p></div><label>Speed preset<select id="speedPreset"><option value="careful" ${speedPreset === "careful" ? "selected" : ""}>Careful - lowest pressure</option><option value="balanced" ${speedPreset === "balanced" ? "selected" : ""}>Balanced - recommended</option><option value="fast" ${speedPreset === "fast" ? "selected" : ""}>Fast - higher parallel processing</option><option value="maximum-safe" ${speedPreset === "maximum-safe" ? "selected" : ""}>Maximum Safe - highest safe throughput</option><option value="economy" ${speedPreset === "economy" ? "selected" : ""}>Economy - lowest background pressure</option><option value="overnight" ${speedPreset === "overnight" ? "selected" : ""}>Overnight - unattended low pressure</option><option value="custom" ${speedPreset === "custom" ? "selected" : ""}>Custom - use advanced controls</option></select></label><label>Model<select id="model">${models.map((model) => `<option value="${escapeAttr(model.id)}" ${model.id === (form.model || novel.model || "gpt-4o-mini") ? "selected" : ""}>${escapeHtml(model.display_name)} - ${escapeHtml(model.pricing?.note || "Pricing not configured")}</option>`).join("")}</select></label><label class="inline-check"><input id="autoOptimizeSpeed" type="checkbox" ${speedPreset === "custom" ? "disabled" : ""} ${form.auto_optimize_speed === false || speedPreset === "custom" ? "" : "checked"}> Auto Optimize Speed</label><p class="muted wide" id="speedDescription">Speed is being optimized automatically.</p></section>
           <section class="workspace-panel form-grid"><div class="wide"><h2>4. Budget & Safety</h2><p class="muted">Budget caps are optional; launch stays locked until this form has a current estimate.</p></div><label>Max total budget<input id="maxTotalBudget" type="number" step="0.01" value="${escapeAttr(form.max_total_budget ?? "")}"><span class="field-error" id="budgetError"></span></label><label>Max cost per chapter<input id="maxPerChapterBudget" type="number" step="0.001" value="${escapeAttr(form.max_per_chapter_budget ?? "")}"></label><label class="inline-check"><input id="useReference" type="checkbox" ${form.use_reference === false ? "" : "checked"}> Use Reference when available</label><label class="inline-check"><input id="onlyUntranslated" type="checkbox" ${form.only_untranslated === false ? "" : "checked"}> Only untranslated</label><div class="advanced-settings wide"><h3>Advanced Performance</h3><div class="form-grid"><label>Retry limit<input id="retryCount" type="number" min="0" max="5" value="${escapeAttr(form.retry_count ?? 2)}"></label><label>Queue depth<input id="batchSize" type="number" min="1" max="5000" value="${escapeAttr(form.batch_size ?? 25)}"></label><label>Maximum workers<select id="translationConcurrency"><option value="" ${form.concurrency ? "" : "selected"}>Auto</option><option value="1" ${Number(form.concurrency) === 1 ? "selected" : ""}>1 worker</option><option value="2" ${Number(form.concurrency) === 2 ? "selected" : ""}>2 workers</option><option value="3" ${Number(form.concurrency) === 3 ? "selected" : ""}>3 workers</option><option value="4" ${Number(form.concurrency) === 4 ? "selected" : ""}>4 workers</option><option value="6" ${Number(form.concurrency) === 6 ? "selected" : ""}>6 workers</option><option value="8" ${Number(form.concurrency) === 8 ? "selected" : ""}>8 workers</option></select></label><label>Priority<select id="jobPriority"><option value="normal" ${form.priority === "high" ? "" : "selected"}>Normal</option><option value="high" ${form.priority === "high" ? "selected" : ""}>High</option></select></label><label class="inline-check"><input id="stopOnBudget" type="checkbox" ${form.stop_on_budget === false ? "" : "checked"}> Stop on budget</label></div></div></section>
         </div>
         <aside class="estimate-panel"><h2>5. Estimate</h2><section id="estimateResult"><p class="muted">Run an estimate before creating a job. Estimates are approximate.</p></section><p class="muted" id="launchReason">Run an estimate before Launch Job is available.</p><div class="actions"><button id="estimateBtn" class="primary">Estimate</button><button id="createJobBtn" disabled>Launch Job</button></div></aside>
@@ -1336,7 +1380,7 @@ async function openTranslate(novelId, params = new URLSearchParams()) {
     document.querySelector("#nextCount").addEventListener("change", renderChapterPreview);
     document.querySelector("#customNextCount").addEventListener("input", renderChapterPreview);
     document.querySelector("#translationMode").addEventListener("change", toggleTranslationMode);
-    document.querySelector("#speedPreset").addEventListener("change", updateSpeedDescription);
+    document.querySelector("#speedPreset").addEventListener("change", toggleTranslationMode);
     document.querySelector("#autoOptimizeSpeed").addEventListener("change", updateSpeedDescription);
     document.querySelector("#estimateBtn").addEventListener("click", estimateTranslation);
     document.querySelector("#createJobBtn").addEventListener("click", createTranslationJob);
@@ -1362,13 +1406,15 @@ async function openTranslate(novelId, params = new URLSearchParams()) {
 function translatePayload() {
   const selectionMode = document.querySelector("#selectionMode").value;
   const translationMode = document.querySelector("#translationMode").value;
+  const speedPreset = document.querySelector("#speedPreset").value;
+  const useAdvancedControls = translationMode === "advanced" || speedPreset === "custom";
   const nextCountMode = document.querySelector("#nextCount").value;
   const customNextCount = numberOrNull("#customNextCount");
   const nextCount = nextCountMode === "custom" ? customNextCount : (nextCountMode === "all" ? "all" : Number(nextCountMode || 25));
   return {
     novel_id: document.querySelector("#translateNovel").value,
     translation_mode: translationMode,
-    speed_preset: document.querySelector("#speedPreset").value,
+    speed_preset: speedPreset,
     auto_optimize_speed: document.querySelector("#autoOptimizeSpeed").checked,
     selection_mode: selectionMode,
     next_count: nextCount,
@@ -1380,8 +1426,8 @@ function translatePayload() {
     max_total_budget: numberOrNull("#maxTotalBudget"),
     max_per_chapter_budget: numberOrNull("#maxPerChapterBudget"),
     retry_count: numberOrNull("#retryCount"),
-    batch_size: translationMode === "advanced" ? numberOrNull("#batchSize") : null,
-    concurrency: numberOrNull("#translationConcurrency"),
+    batch_size: useAdvancedControls ? numberOrNull("#batchSize") : null,
+    concurrency: useAdvancedControls ? numberOrNull("#translationConcurrency") : null,
     stop_on_budget: document.querySelector("#stopOnBudget").checked,
     use_reference: document.querySelector("#useReference").checked,
     only_untranslated: document.querySelector("#onlyUntranslated").checked,
@@ -1456,9 +1502,9 @@ function toggleTranslationMode() {
   const mode = document.querySelector("#translationMode")?.value || "simple";
   const advanced = document.querySelector(".advanced-settings");
   const speedPreset = document.querySelector("#speedPreset");
-  if (advanced) advanced.hidden = mode !== "advanced";
-  if (speedPreset && mode === "economy") speedPreset.value = "careful";
+  if (speedPreset && mode === "economy" && !["economy", "overnight"].includes(speedPreset.value)) speedPreset.value = "economy";
   if (speedPreset && mode === "fast" && speedPreset.value === "careful") speedPreset.value = "fast";
+  if (advanced) advanced.hidden = mode !== "advanced" && speedPreset?.value !== "custom";
   updateSpeedDescription();
   renderChapterPreview();
 }
@@ -1472,8 +1518,16 @@ function updateSpeedDescription() {
     balanced: "Balanced is recommended for most translation jobs.",
     fast: "Fast uses higher parallel processing when capacity allows.",
     "maximum-safe": "Maximum Safe uses the highest safe adaptive throughput currently available.",
+    economy: "Economy uses one low-pressure worker for budget-conscious queues.",
+    overnight: "Overnight uses low-pressure workers with longer timeouts and additional retries.",
+    custom: "Custom uses the advanced worker, queue, retry, and timeout controls supplied with this job.",
   };
-  const suffix = auto ? " Speed is being optimized automatically." : " Auto optimization is off for this job.";
+  const autoToggle = document.querySelector("#autoOptimizeSpeed");
+  if (autoToggle) {
+    autoToggle.disabled = preset === "custom";
+    if (preset === "custom") autoToggle.checked = false;
+  }
+  const suffix = preset === "custom" ? " Auto optimization is off so custom controls are honored." : (auto ? " Speed is being optimized automatically." : " Auto optimization is off for this job.");
   const economy = mode === "economy" ? " Economy / Overnight prioritizes low pressure and is not intended for immediate completion. " : "";
   const target = document.querySelector("#speedDescription");
   if (target) target.textContent = `${economy}${descriptions[preset] || descriptions.balanced}${suffix}`;

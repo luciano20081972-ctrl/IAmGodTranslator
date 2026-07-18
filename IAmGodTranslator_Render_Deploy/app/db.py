@@ -1459,7 +1459,13 @@ class Database:
             "model": model,
             "translation_mode": settings["translation_mode"],
             "speed_preset": settings["speed_preset"],
+            "speed_preset_label": settings["speed_preset_label"],
+            "speed_preset_description": settings["speed_preset_description"],
             "auto_optimize_speed": settings["auto_optimize_speed"],
+            "concurrency": settings["concurrency"],
+            "max_workers": settings["max_workers"],
+            "retry_count": settings["retry_count"],
+            "provider_timeout_seconds": settings["provider_timeout_seconds"],
             "expected_workers": speed["expected_workers"],
             "duration_estimate": speed,
             "pricing_note": pricing["note"],
@@ -3544,6 +3550,9 @@ SPEED_PRESETS: dict[str, dict[str, Any]] = {
     "balanced": {"label": "Balanced", "concurrency": 3, "max_workers": 4, "retry_count": 2, "timeout_seconds": 180, "description": "Recommended for most translation jobs."},
     "fast": {"label": "Fast", "concurrency": 4, "max_workers": 6, "retry_count": 2, "timeout_seconds": 150, "description": "Higher parallel processing when capacity allows."},
     "maximum-safe": {"label": "Maximum Safe", "concurrency": 6, "max_workers": 8, "retry_count": 1, "timeout_seconds": 120, "description": "Highest safe adaptive throughput currently available."},
+    "economy": {"label": "Economy", "concurrency": 1, "max_workers": 1, "retry_count": 3, "timeout_seconds": 300, "description": "Lowest background pressure for budget-conscious jobs."},
+    "overnight": {"label": "Overnight", "concurrency": 1, "max_workers": 2, "retry_count": 4, "timeout_seconds": 420, "description": "Long-running low-pressure preset intended for unattended queues."},
+    "custom": {"label": "Custom", "concurrency": 3, "max_workers": 4, "retry_count": 2, "timeout_seconds": 180, "description": "Uses the advanced worker, retry, and timeout controls supplied with the job."},
 }
 
 
@@ -3559,7 +3568,13 @@ def normalized_translation_settings(settings: dict[str, Any]) -> dict[str, Any]:
     auto = bool(payload.get("auto_optimize_speed", True))
     max_workers = optional_int(payload.get("max_workers"))
     concurrency = optional_int(payload.get("concurrency"))
-    if mode != "advanced":
+    if preset == "custom":
+        auto = False
+        if concurrency is None:
+            concurrency = preset_config["concurrency"]
+        if max_workers is None:
+            max_workers = concurrency
+    elif mode != "advanced":
         concurrency = preset_config["concurrency"]
         max_workers = preset_config["max_workers"] if auto else preset_config["concurrency"]
     elif concurrency is None:
@@ -3579,7 +3594,7 @@ def normalized_translation_settings(settings: dict[str, Any]) -> dict[str, Any]:
     payload["retry_count"] = max(0, min(5, retry_count))
     payload["provider_timeout_seconds"] = max(30, min(600, optional_int(payload.get("provider_timeout_seconds")) or preset_config["timeout_seconds"]))
     batch_size = optional_int(payload.get("batch_size"))
-    payload["batch_size"] = max(1, min(5000, batch_size)) if mode == "advanced" and batch_size else None
+    payload["batch_size"] = max(1, min(5000, batch_size)) if (mode == "advanced" or preset == "custom") and batch_size else None
     payload["priority"] = "high" if str(payload.get("priority") or "normal").lower() == "high" else "normal"
     payload["use_reference"] = bool(payload.get("use_reference", True))
     payload["only_untranslated"] = bool(payload.get("only_untranslated", True))
