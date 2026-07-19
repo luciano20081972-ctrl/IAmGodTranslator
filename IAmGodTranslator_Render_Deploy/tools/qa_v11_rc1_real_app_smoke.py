@@ -109,7 +109,8 @@ def seed_database(db_path: Path) -> None:
     db.ensure_user_profile("qa-translator", "translator@example.invalid", "translator", "Translator QA", None)
     db.save_user_preferences("qa-user", {"theme": "light", "collections": [{"id": "qa", "name": "QA", "novel_ids": ["full-novel"]}]})
     db.create_translation_job("partial-novel", [1, 2, 3, 4, 5], {"model": "gpt-4o-mini", "batch_size": 5, "speed_preset": "balanced"})
-    db.create_backup_job(destination="local", safe_mode=True)
+    seeded_backup = db.create_backup_job(destination="local", safe_mode=True)
+    db.update_backup_job(seeded_backup["id"], status="cancelled", cancel_requested=1)
     db.record_audit_event("qa_seed", actor_role="admin", target_type="fixture", target_id="rc1", summary="RC1 fixture seeded", metadata={"safe": True})
 
 
@@ -222,7 +223,7 @@ def smoke_http(session: requests.Session, admin: requests.Session, work_dir: Pat
     after_manifest = working_set_bytes(pid)
     require("backup manifest lightweight", manifest.get("manifest", {}).get("kind") == "lightweight_manifest")
 
-    backup_job = assert_json(admin.post(f"{BASE_URL}/api/admin/backups/jobs", json={"store": False, "safe_mode": True}, timeout=10), 200)["job"]
+    backup_job = assert_json(admin.post(f"{BASE_URL}/api/admin/backups/jobs", json={"store": False, "safe_mode": True}, timeout=10), 202)["job"]
     for _ in range(80):
         status = assert_json(admin.get(f"{BASE_URL}/api/admin/backups/jobs/{backup_job['id']}", timeout=10), 200)["job"]
         if status["status"] in {"completed", "failed", "cancelled"}:

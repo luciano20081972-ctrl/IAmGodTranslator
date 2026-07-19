@@ -1,15 +1,18 @@
-name: GodTranslator v11 RC2 Release Gate
+name: GodTranslator v11 RC Release Gate
 
 on:
   push:
     branches:
       - v11.0.0-rc2-postgres-auth-qa
+      - v11.0.0-rc3-production-hotfix-integration
     paths-ignore:
       - IAmGodTranslator_Render_Deploy/V11_RC2_QA_REPORT.md
+      - IAmGodTranslator_Render_Deploy/V11_RC3_HOTFIX_INTEGRATION_REPORT.md
   pull_request:
     branches:
       - main
       - v11.0.0-rc2-postgres-auth-qa
+      - v11.0.0-rc3-production-hotfix-integration
   workflow_dispatch:
 
 permissions:

@@ -66,13 +66,19 @@ def backup_cancel_fixture() -> dict[str, object]:
 
 
 def restore_and_audit_fixture() -> dict[str, object]:
-    db = build_db("phase7-restore", chapters=4, large_text=False)
-    use_database(db)
-    backup = app_main.complete_platform_backup_payload()
-    preview = db.restore_preview(backup, mode="add-missing")
-    require("restore preview is valid", preview["valid"])
-    require("restore preview default remains add missing", preview["default_mode"] == "add-missing")
-    require("restore preview stages include background", "background_restore" in preview["stages"])
+    with tempfile.TemporaryDirectory() as temp:
+        os.environ["GT_BACKUP_WORK_DIR"] = temp
+        db = build_db("phase7-restore", chapters=4, large_text=False)
+        use_database(db)
+        job = db.create_backup_job(destination="local")
+        app_main.run_platform_backup_job(job["id"], store=False)
+        completed = db.backup_job(job["id"])
+        require("restore backup job completed", completed["status"] == "completed")
+        backup = json.loads(Path(completed["file_path"]).read_text(encoding="utf-8"))
+        preview = db.restore_preview(backup, mode="add-missing")
+        require("restore preview is valid", preview["valid"])
+        require("restore preview default remains add missing", preview["default_mode"] == "add-missing")
+        require("restore preview stages include background", "background_restore" in preview["stages"])
     db.record_audit_event(
         "role_change",
         actor_role="admin",
@@ -105,7 +111,7 @@ def static_checks() -> dict[str, object]:
         "/api/admin/backups/jobs",
         "Audit Log",
         "System Health",
-        "Restore stages are Select, Validate, Compatibility, Dry Run, Exact Changes, Confirm, Background Apply, Verify.",
+        "Restore preview reports add, skip, overwrite, and invalid counts before any apply step.",
         "aggregate SQL only",
         "provider bodies",
     ):

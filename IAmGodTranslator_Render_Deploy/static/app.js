@@ -468,11 +468,13 @@ async function loadHomeOperations() {
 function renderLibrarySpotlight(novel) {
   if (!novel) return `<section class="panel"><h2>Library Spotlight</h2><p class="empty-state">Add a novel from Admin to begin building the catalog.</p></section>`;
   const pct = progress(novel);
+  const coverageTotal = coverageDenominator(novel);
+  const coverageLabel = coverageBasisLabel(novel);
   return `<section class="panel spotlight-card">
     <h2>Library Spotlight</h2>
     <div class="spotlight-row">
       <a class="mini-cover" href="#/novel/${encodeURIComponent(novel.id)}">${novel.cover_url ? `<img src="${escapeAttr(novel.cover_url)}" alt="">` : `<span>${escapeHtml(initials(novel.title || novel.id))}</span>`}</a>
-      <div><h3>${escapeHtml(novel.title || novel.id)}</h3>${novel.author ? `<p class="muted">${escapeHtml(novel.author)}</p>` : ""}<div class="mini-progress"><span style="width:${pct}%"></span></div><p class="muted">${novel.english_count ?? novel.ai_count ?? 0} English chapters from ${novel.original_count || 0} readable originals.</p><div class="actions"><a class="button primary" href="#/novel/${encodeURIComponent(novel.id)}">Open Novel</a><a class="button" href="#/reader/${encodeURIComponent(novel.id)}/1/${safeReaderSource()}">Start Reading</a></div></div>
+      <div><h3>${escapeHtml(novel.title || novel.id)}</h3>${novel.author ? `<p class="muted">${escapeHtml(novel.author)}</p>` : ""}<div class="mini-progress"><span style="width:${pct}%"></span></div><p class="muted">${novel.english_count ?? novel.ai_count ?? 0}/${coverageTotal} English chapters across ${escapeHtml(coverageLabel)}.</p><div class="actions"><a class="button primary" href="#/novel/${encodeURIComponent(novel.id)}">Open Novel</a><a class="button" href="#/reader/${encodeURIComponent(novel.id)}/1/${safeReaderSource()}">Start Reading</a></div></div>
     </div>
   </section>`;
 }
@@ -961,7 +963,7 @@ async function openNovelDetail(novelId) {
       ${renderNovelDashboardControls(novel)}
       ${renderNovelInventoryNotice(novel)}
       <section class="split-panels">
-        <div class="panel"><h2>Overview</h2><p>Reading coverage is ${novel.reading_coverage ?? pct}% and translation coverage is ${novel.translation_coverage ?? pct}% based on readable Original and English chapter text.</p>${Array.isArray(novel.metadata?.tags) && novel.metadata.tags.length ? `<p class="tag-row">${novel.metadata.tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</p>` : ""}${renderTranslationSummary(novel, translationJobs)}</div>
+        <div class="panel"><h2>Overview</h2><p>Reading coverage is ${novel.reading_coverage ?? pct}% and translation coverage is ${novel.translation_coverage ?? pct}% based on ${escapeHtml(coverageBasisLabel(novel))}.</p>${Array.isArray(novel.metadata?.tags) && novel.metadata.tags.length ? `<p class="tag-row">${novel.metadata.tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</p>` : ""}${renderTranslationSummary(novel, translationJobs)}</div>
         <div class="panel"><h2>Recent Chapters</h2>${(library.chapters || []).map((chapter) => `<a class="chapter-link" href="#/reader/${novel.id}/${chapter.chapter_number}/${safeReaderSource()}"><strong>Chapter ${chapter.chapter_number}</strong><span>${escapeHtml(chapter.title)}</span></a>`).join("") || `<p class="empty-state">No chapters found.</p>`}</div>
       </section>`;
     bindCopyLinks(app);
@@ -1049,9 +1051,11 @@ function renderNovelManagement(novels, mode = "") {
     ${showForm ? renderNovelForm() : ""}
     <section class="management-grid">${novels.map((novel) => {
       const pct = progress(novel);
+      const coverageTotal = coverageDenominator(novel);
+      const coverageLabel = coverageBasisLabel(novel);
       return `<article class="management-card">
         <div class="mini-cover">${novel.cover_url ? `<img src="${escapeAttr(novel.cover_url)}" alt="">` : `<span>${escapeHtml(initials(novel.title || novel.id))}</span>`}</div>
-        <div class="management-card-copy"><div><h3>${escapeHtml(novel.title || novel.id)}</h3>${novel.author ? `<p class="muted">${escapeHtml(novel.author)}</p>` : ""}<p><span class="badge ${novel.is_archived ? "missing" : "ok"}">${novel.is_archived ? "Archived" : "Active"}</span></p></div><div><div class="mini-progress"><span style="width:${pct}%"></span></div><p class="muted">English coverage: ${pct}% · ${novel.english_count ?? novel.ai_count ?? 0}/${novel.original_count || 0} readable chapters available.</p><p class="muted">${novel.chapter_count || 0} chapters · updated ${timeAgo(novel.updated_at)}</p></div><div class="actions management-card-actions"><a class="button primary" href="#/novel/${encodeURIComponent(novel.id)}">Open</a><a class="button" href="#/novels/add">Edit</a><button data-archive="${novel.id}" data-value="${novel.is_archived ? "false" : "true"}">${novel.is_archived ? "Unarchive" : "Archive"}</button><a class="button" href="#/admin/novels">Admin Tools</a></div></div>
+        <div class="management-card-copy"><div><h3>${escapeHtml(novel.title || novel.id)}</h3>${novel.author ? `<p class="muted">${escapeHtml(novel.author)}</p>` : ""}<p><span class="badge ${novel.is_archived ? "missing" : "ok"}">${novel.is_archived ? "Archived" : "Active"}</span></p></div><div><div class="mini-progress"><span style="width:${pct}%"></span></div><p class="muted">English coverage: ${pct}% · ${novel.english_count ?? novel.ai_count ?? 0}/${coverageTotal} ${escapeHtml(coverageLabel)}.</p><p class="muted">${novel.chapter_count || 0} chapters · updated ${timeAgo(novel.updated_at)}</p></div><div class="actions management-card-actions"><a class="button primary" href="#/novel/${encodeURIComponent(novel.id)}">Open</a><a class="button" href="#/novels/add">Edit</a><button data-archive="${novel.id}" data-value="${novel.is_archived ? "false" : "true"}">${novel.is_archived ? "Unarchive" : "Archive"}</button><a class="button" href="#/admin/novels">Admin Tools</a></div></div>
       </article>`;
     }).join("") || `<p class="empty-state">No novels exist yet.</p>`}</section>`;
 }
@@ -1830,18 +1834,8 @@ async function openAdmin(tab = "overview") {
     await loadNovels(true);
     rememberRecent("admin", {label: titleCase(tab), href: `#/admin/${tab}`, at: new Date().toISOString()});
     localStorage.setItem("gt-last-admin-tab", tab);
-    const [overview, dbHealth, missing, imports, jobs, backupManifest, backupJobs, users, performance, audit] = await Promise.all([
-      api("/api/admin/overview"),
-      api("/api/admin/db-health"),
-      api(`/api/admin/missing/${state.currentNovelId}`),
-      api(`/api/import-jobs?novel_id=${state.currentNovelId}`),
-      api(`/api/translation/jobs?novel_id=${state.currentNovelId}`),
-      api("/api/admin/backups/manifest").catch((error) => backupManifestError(error)),
-      api("/api/admin/backups/jobs").catch(() => ({jobs: []})),
-      api("/api/admin/users"),
-      api(`/api/admin/translation/performance?novel_id=${encodeURIComponent(state.currentNovelId)}`),
-      api("/api/admin/audit-events").catch(() => ({events: []})),
-    ]);
+    const adminData = await loadAdminTabData(tab);
+    const {overview, dbHealth, missing, imports, jobs, backupManifest, backupJobs, users, performance, audit} = adminData;
     const tabs = [["overview", "Overview"], ["content", "Content"], ["imports", "Imports"], ["editions", "Editions"], ["novels", "Novels"], ["translation", "Translation"], ["performance", "Performance"], ["jobs", "Jobs"], ["backups", "Backups"], ["recovery", "Recovery"], ["database", "Database"], ["users", "Users"], ["roles", "Roles"], ["diagnostics", "Diagnostics"], ["audit", "Audit Log"], ["system", "System Health"]];
     app.innerHTML = `
       ${pageHeader("Admin", "Operational workspace for content, translation, backups, recovery, users, and diagnostics.", [["Version", APP_VERSION], ["Schema", overview.overview.schema], ["Chapters", overview.overview.chapters], ["Missing English", overview.overview.needs_translation]])}
@@ -1860,6 +1854,56 @@ async function openAdmin(tab = "overview") {
   }
 }
 
+async function loadAdminTabData(tab) {
+  const data = {
+    overview: await api("/api/admin/overview"),
+    dbHealth: {health: {}},
+    missing: {missing: {}},
+    imports: {jobs: []},
+    jobs: {jobs: []},
+    backupManifest: {manifest: null, error: null},
+    backupJobs: {jobs: []},
+    users: {users: []},
+    performance: null,
+    audit: {events: []},
+  };
+  if (tab === "database" || tab === "diagnostics" || tab === "system") {
+    data.dbHealth = await api("/api/admin/db-health");
+  }
+  if (tab === "recovery") {
+    data.missing = await api(`/api/admin/missing/${state.currentNovelId}`);
+  }
+  if (tab === "jobs") {
+    const [jobs, imports] = await Promise.all([
+      api(`/api/translation/jobs?novel_id=${state.currentNovelId}`),
+      api(`/api/import-jobs?novel_id=${state.currentNovelId}`),
+    ]);
+    data.jobs = jobs;
+    data.imports = imports;
+  }
+  if (tab === "translation") {
+    data.jobs = await api(`/api/translation/jobs?novel_id=${state.currentNovelId}`);
+  }
+  if (tab === "performance") {
+    data.performance = await api(`/api/admin/translation/performance?novel_id=${encodeURIComponent(state.currentNovelId)}`);
+  }
+  if (tab === "backups" || tab === "system") {
+    const [manifest, jobs] = await Promise.all([
+      api("/api/admin/backups/manifest").catch((error) => backupManifestError(error)),
+      api("/api/admin/backups/jobs").catch(() => ({jobs: []})),
+    ]);
+    data.backupManifest = manifest;
+    data.backupJobs = jobs;
+  }
+  if (tab === "users" || tab === "roles") {
+    data.users = await api("/api/admin/users");
+  }
+  if (tab === "audit") {
+    data.audit = await api("/api/admin/audit-events").catch(() => ({events: []}));
+  }
+  return data;
+}
+
 function renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupManifest, backupJobs, users, performance, audit) {
   const data = overview.overview || {};
   if (tab === "content") return renderContentAdmin(data);
@@ -1872,14 +1916,14 @@ function renderAdminTab(tab, overview, dbHealth, missing, imports, jobs, backupM
     return `<section class="dashboard-grid"><div class="panel">${metric("Database", dbHealth.health?.reachable ? "Healthy" : "Needs Attention")}${metric("Schema", data.schema)}${metric("Expected Tables", dbHealth.health?.v10_chapters_table_exists ? "Healthy" : "Needs Attention")}${metric("Chapters", data.chapters)}</div><div class="panel"><h2>Technical Details</h2><details><summary>Show details</summary><pre>${escapeHtml(JSON.stringify(dbHealth.health, null, 2))}</pre></details></div></section>`;
   }
   if (tab === "jobs") return `<section class="table-card"><h2>Job Center</h2>${renderJobsTable(jobs.jobs || [])}</section><section class="table-card"><h2>Import Jobs</h2><table><thead><tr><th>Job</th><th>Mode</th><th>Status</th><th>Updated</th></tr></thead><tbody>${(imports.jobs || []).map((job) => `<tr><td>${job.id.slice(0, 8)}</td><td>${escapeHtml(job.target_mode)}</td><td>${escapeHtml(job.status)}</td><td>${escapeHtml(job.updated_at)}</td></tr>`).join("") || `<tr><td colspan="4">No import jobs.</td></tr>`}</tbody></table></section>`;
-  if (tab === "backups") return renderBackupsRecovery(backupManifest.manifest, backupManifest.error, backupJobs.jobs || []);
+  if (tab === "backups") return renderBackupsRecovery(backupManifest?.manifest, backupManifest?.error, backupJobs?.jobs || []);
   if (tab === "recovery") return renderNovelRecoveryAdmin(missing.missing);
   if (tab === "users") return renderUsersTable(users.users || []);
   if (tab === "roles") return renderRolesOverview(users.users || []);
   if (tab === "diagnostics") return `<section class="dashboard-grid"><div class="panel">${metric("Version", APP_VERSION)}${metric("DB", dbHealth.health?.ok === false ? "Unhealthy" : "Healthy")}${metric("Schema", data.schema)}${metric("Auth", state.authConfig?.configured ? "Configured" : "Missing")}${metric("OpenAI", "Configured/Missing hidden")}</div><div class="panel"><h2>Details</h2><details><summary>Show sanitized JSON</summary><pre>${escapeHtml(JSON.stringify({overview: data, db: dbHealth.health}, null, 2))}</pre></details></div></section>`;
-  if (tab === "audit") return renderAuditLog(audit.events || []);
-  if (tab === "system") return renderSystemHealth(data, dbHealth, backupManifest.manifest, backupJobs.jobs || []);
-  return renderAdminOverview(data, dbHealth, jobs, imports, backupManifest.manifest, backupManifest.error);
+  if (tab === "audit") return renderAuditLog(audit?.events || []);
+  if (tab === "system") return renderSystemHealth(data, dbHealth, backupManifest?.manifest, backupJobs?.jobs || []);
+  return renderAdminOverview(data, dbHealth, jobs, imports, backupManifest?.manifest, backupManifest?.error);
 }
 
 function backupManifestError(error) {
@@ -2194,19 +2238,15 @@ function renderTranslationPerformance(performance) {
 }
 
 function renderAdminOverview(data, dbHealth, jobs, imports, manifest, manifestError = null) {
-  const activeJobs = (jobs.jobs || []).filter((job) => ["queued", "running", "paused"].includes(job.status));
-  const failedJobs = (jobs.jobs || []).filter((job) => job.status === "failed" || job.error);
-  const backupStatus = manifestError ? "Needs Attention" : (manifest?.checksum_available ? "Protected" : "Manifest Ready");
-  const lastBackup = manifestError ? "Manifest error" : (manifest?.latest_full_backup?.available ? timeAgo(manifest.latest_full_backup.created_at) : "No full backup recorded");
   return `<section class="overview-panel admin-overview">
     <div class="overview-copy">
       <p class="eyebrow">Admin Overview</p>
       <h2>Production workspace status</h2>
-      <p class="muted">Application ${APP_VERSION} is using schema ${escapeHtml(data.schema || "unknown")}. Database health, job state, and backup protection are summarized here before deeper actions.</p>
+      <p class="muted">Application ${APP_VERSION} is using schema ${escapeHtml(data.schema || "unknown")}. Detailed diagnostics, jobs, recovery, and backup metadata load only when their sections are opened.</p>
       <div class="status-list">
         <span>${statusBadge("healthy")} Application healthy</span>
-        <span>${statusBadge(dbHealth.health?.reachable ? "healthy" : "needs attention")} Database ${dbHealth.health?.reachable ? "reachable" : "needs attention"}</span>
-        <span>${statusBadge(manifestError ? "needs attention" : "healthy")} Backup ${escapeHtml(backupStatus)} · ${escapeHtml(lastBackup)}</span>
+        <span>${statusBadge("healthy")} Database summary loaded</span>
+        <span>${statusBadge("queued")} Backups load on demand</span>
       </div>
     </div>
     <div class="overview-metrics">
@@ -2214,22 +2254,25 @@ function renderAdminOverview(data, dbHealth, jobs, imports, manifest, manifestEr
       ${metric("Chapters", data.chapters)}
       ${metric("English", data.english ?? data.ai)}
       ${metric("Needs Translation", data.needs_translation)}
-      ${metric("Active Jobs", activeJobs.length)}
-      ${metric("Failed Jobs", failedJobs.length)}
-      ${metric("Imports", (imports.jobs || []).length)}
+      ${metric("Original", data.original)}
+      ${metric("Reference", data.reference)}
       ${metric("Version", APP_VERSION)}
     </div>
   </section>
   <section class="quick-actions-panel">
     <div><h2>Quick Actions</h2><p class="muted">Common admin paths without crowding the overview.</p></div>
-    <div class="actions"><button id="createBackupBtn" type="button">Create Backup</button><a class="button" href="#/translate/${state.currentNovelId}">Translate</a><a class="button" href="#/admin/novels">Add Novel</a><a class="button" href="#/admin/recovery">Missing Data</a><a class="button" href="#/admin/backups">Recovery</a><a class="button" href="#/admin/jobs">Failed Jobs</a></div>
-  </section><section id="backupActionResult"></section>`;
+    <div class="actions"><a class="button primary" href="#/admin/backups">Backups & Recovery</a><a class="button" href="#/translate/${state.currentNovelId}">Translate</a><a class="button" href="#/admin/novels">Add Novel</a><a class="button" href="#/admin/recovery">Missing Data</a><a class="button" href="#/admin/jobs">Job Center</a><a class="button" href="#/admin/database">Database</a></div>
+  </section>`;
 }
 
 function renderBackupsRecovery(manifest, manifestError = null, backupJobs = []) {
   const protectedState = manifestError ? "Needs Attention" : (manifest?.checksum_available ? "Protected" : "Manifest Ready");
   const created = manifest?.created_at ? timeAgo(manifest.created_at) : "No manifest loaded";
-  const historyCreated = manifest?.latest_full_backup?.available ? manifest.latest_full_backup.created_at : "Create or download a full backup to calculate actual size and checksum.";
+  const latest = manifest?.latest_full_backup || {};
+  const activeJob = backupJobs.find((job) => ["queued", "running"].includes(job.status)) || manifest?.active_backup_job || null;
+  const historyCreated = latest.available ? latest.completed_at || latest.created_at : "No completed full backup recorded.";
+  const downloadControl = latest.available && latest.download_url ? `<a class="button" href="${escapeAttr(latest.download_url)}">Download Latest Backup</a>` : `<button type="button" disabled>Download available after backup completes</button>`;
+  const activeJobPanel = activeJob ? `<article class="backup-section"><h2>Active Backup Job</h2><div class="metric-grid">${metric("Status", activeJob.status)}${metric("Progress", `${activeJob.progress_percent ?? 0}%`)}${metric("Tables", `${activeJob.completed_tables || 0}/${activeJob.total_tables || 0}`)}${metric("Current Table", activeJob.current_table || "Starting")}${metric("Rows Written", `${activeJob.processed_rows || 0}/${activeJob.total_rows || 0}`)}</div><p class="muted">Full backup generation runs in the background with bounded table batches.</p></article>` : "";
   const manifestErrorPanel = manifestError ? `<section class="state-card error"><h2>Backup manifest could not be loaded.</h2><p>${escapeHtml(manifestError.message || "Manifest request failed.")}</p>${manifestError.status ? `<p class="muted">HTTP ${escapeHtml(manifestError.status)}</p>` : ""}${manifestError.stage ? `<p class="muted">Stage: ${escapeHtml(manifestError.stage)}</p>` : ""}</section>` : "";
   const storage = manifest?.backup_storage || {};
   return `<section class="backup-workspace">
@@ -2240,10 +2283,11 @@ function renderBackupsRecovery(manifest, manifestError = null, backupJobs = []) 
     </section>
     <section class="backup-grid">
       <article class="backup-section"><h2>Manifest</h2><p class="muted">Format ${escapeHtml(manifest?.format_version || "unknown")} · ${manifest?.table_counts?.novels ?? 0} novels · ${manifest?.chapter_source_counts?.chapters ?? 0} chapters.</p><p class="muted">This view uses aggregate SQL only and never creates a full backup on page load.</p>${objectDetails("Unavailable Tables", manifest?.table_errors || {})}</article>
-      <article class="backup-section"><h2>Create Backup</h2><p class="muted">Queue a background full backup. The worker streams rows table by table, tracks checksum after creation, and navigation will not cancel the job.</p><div class="metric-grid">${metric("Storage", storage.configured ? "Configured" : "Not configured")}${metric("Bucket", storage.bucket || "godtranslator-backups")}${metric("Mode", "Safe by default")}</div><div class="actions"><button id="createBackupBtn" class="primary" type="button">Queue Backup Job</button><a class="button" href="/api/admin/backups/download">Legacy Download</a></div></article>
+      <article class="backup-section"><h2>Create Backup</h2><p class="muted">Queue a background full backup. The worker streams bounded row batches, tracks checksum after creation, and navigation will not cancel the job.</p><div class="metric-grid">${metric("Storage", storage.configured ? "Configured" : "Not configured")}${metric("Bucket", storage.bucket || "godtranslator-backups")}${metric("Job Count", manifest?.backup_job_count || backupJobs.length)}</div><div class="actions"><button id="createBackupBtn" class="primary" type="button" ${activeJob ? "disabled" : ""}>${activeJob ? "Backup Running" : "Queue Backup Job"}</button>${downloadControl}</div></article>
+      ${activeJobPanel}
       <article class="backup-section"><h2>Backup Jobs</h2>${renderBackupJobs(backupJobs)}</article>
-      <article class="backup-section"><h2>Backup History</h2><table class="responsive-table"><tbody><tr><td data-label="Created">${escapeHtml(historyCreated)}</td><td data-label="Format">${escapeHtml(manifest?.format_version || "")}</td><td data-label="Contents">${manifest?.table_counts?.novels ?? 0} novels / ${manifest?.chapter_source_counts?.chapters ?? 0} chapters</td><td data-label="Size">Known after full backup</td><td data-label="Storage">${storage.configured ? "Configured" : "Manifest only"}</td></tr></tbody></table></article>
-      <article class="backup-section"><h2>Restore</h2><p class="muted">Default restore mode adds missing data only. Restore stages are Select, Validate, Compatibility, Dry Run, Exact Changes, Confirm, Background Apply, Verify.</p><label>Safe restore mode<select id="restoreMode"><option value="add-missing">Add missing data only</option><option value="skip-existing">Skip existing data</option><option value="overwrite">Overwrite existing data</option></select></label><label>Backup JSON<input id="restoreFile" type="file" accept=".json,application/json"></label><div class="actions"><button id="restorePreviewBtn" type="button" disabled>Restore Preview</button></div></article>
+      <article class="backup-section"><h2>Backup History</h2><table class="responsive-table"><tbody><tr><td data-label="Created">${escapeHtml(historyCreated)}</td><td data-label="Format">${escapeHtml(manifest?.format_version || "")}</td><td data-label="Contents">${manifest?.table_counts?.novels ?? 0} novels / ${manifest?.chapter_source_counts?.chapters ?? 0} chapters</td><td data-label="Size">${latest.size_bytes ? formatBytes(latest.size_bytes) : "Known after full backup"}</td><td data-label="Storage">${escapeHtml(latest.storage?.status || (storage.configured ? "Configured" : "Manifest only"))}</td></tr></tbody></table></article>
+      <article class="backup-section"><h2>Restore</h2><p class="muted">Default restore mode adds missing data only. Restore preview reports add, skip, overwrite, and invalid counts before any apply step.</p><label>Safe restore mode<select id="restoreMode"><option value="add-missing">Add missing data only</option><option value="skip-existing">Skip existing data</option><option value="overwrite">Overwrite existing data</option></select></label><label>Backup JSON<input id="restoreFile" type="file" accept=".json,application/json"></label><div class="actions"><button id="restorePreviewBtn" type="button" disabled>Restore Preview</button></div></article>
       <article class="backup-section"><h2>Novel Recovery</h2><p class="muted">Recover missing Reference chapters for a selected novel without overwriting readable chapter text.</p><div class="actions"><a class="button" href="#/admin/recovery">Open Novel Recovery</a><a class="button" href="/api/novels/${state.currentNovelId}/recovery/request">Download Recovery Request</a></div></article>
     </section>
   </section><section id="backupActionResult"></section><section id="restorePreviewResult"></section>`;
@@ -2292,34 +2336,61 @@ function bindAdminWorkspace() {
 
 async function createBackupFromAdmin() {
   const target = document.querySelector("#backupActionResult");
+  document.querySelectorAll("#createBackupBtn").forEach((button) => {
+    button.disabled = true;
+    button.textContent = "Queueing Backup...";
+  });
   if (target) target.innerHTML = `<section class="state-card"><div class="spinner"></div><p>Queueing background backup job...</p></section>`;
   try {
     const payload = await api("/api/admin/backups/jobs", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({store: true, safe_mode: true})});
-    if (target) target.innerHTML = `<section class="panel"><h2>Backup Job Queued</h2><div class="metric-grid">${metric("Status", payload.job?.status || "queued")}${metric("Progress", `${payload.job?.progress_percent ?? 0}%`)}${metric("Destination", payload.job?.destination || "local")}</div><p class="muted">You can navigate away; the job status is persisted.</p></section>`;
-    pollBackupJob(payload.job.id);
+    if (target) target.innerHTML = renderBackupJobStatus(payload.job, "Backup Job Queued");
+    if (payload.job?.id) pollBackupJob(payload.job.id);
   } catch (error) {
     if (target) target.innerHTML = `<section class="state-card error"><p>${escapeHtml(error.message)}</p></section>`;
+    document.querySelectorAll("#createBackupBtn").forEach((button) => {
+      button.disabled = false;
+      button.textContent = "Queue Backup Job";
+    });
   }
+}
+
+function renderBackupJobStatus(job, title = "Backup Job") {
+  const complete = job?.status === "completed";
+  const failed = job?.status === "failed";
+  const errorMessage = typeof job?.error === "string" ? job.error : job?.error?.message;
+  const download = complete && job?.id ? `<a class="button primary" href="/api/admin/backups/download?job_id=${encodeURIComponent(job.id)}">Download Backup</a>` : "";
+  return `<section class="${failed ? "state-card error" : "panel"}"><h2>${escapeHtml(title)}</h2><div class="metric-grid">${metric("Status", job?.status || "unknown")}${metric("Progress", `${job?.progress_percent ?? 0}%`)}${metric("Current Table", job?.current_table || (complete ? "Complete" : "Queued"))}${metric("Tables", `${job?.completed_tables || 0}/${job?.total_tables || 0}`)}${metric("Rows", `${job?.processed_rows || 0}/${job?.total_rows || 0}`)}${metric("Size", job?.size_bytes ? formatBytes(job.size_bytes) : "Pending")}${metric("Checksum", job?.sha256 ? String(job.sha256).slice(0, 12) : "Pending")}${metric("Destination", job?.destination || "local")}</div>${errorMessage ? `<p class="muted">${escapeHtml(errorMessage)}</p>` : ""}${download}</section>`;
 }
 
 async function pollBackupJob(jobId) {
   const target = document.querySelector("#backupActionResult");
   if (!jobId || !target) return;
-  try {
-    const payload = await api(`/api/admin/backups/jobs/${encodeURIComponent(jobId)}`);
-    const job = payload.job || {};
-    target.innerHTML = `<section class="panel"><h2>Backup Job</h2><div class="metric-grid">${metric("Status", job.status)}${metric("Progress", `${job.progress_percent ?? 0}%`)}${metric("Current Table", job.current_table || "-")}${metric("Rows", `${job.processed_rows || 0}/${job.total_rows || 0}`)}${metric("Size", formatBytes(job.size_bytes || 0))}${metric("Checksum", String(job.sha256 || "").slice(0, 12) || "after completion")}</div></section>`;
-    if (["queued", "running"].includes(job.status)) setTimeout(() => pollBackupJob(jobId), 1500);
-    if (job.status === "completed" && !sessionStorage.getItem(`gt-backup-notified:${jobId}`)) {
-      sessionStorage.setItem(`gt-backup-notified:${jobId}`, "1");
-      pushNotification("backup", "Backup completed", `${formatBytes(job.size_bytes || 0)} written with checksum ${String(job.sha256 || "").slice(0, 12)}.`, "#/admin/backups");
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    await delay(1500);
+    if (!document.querySelector("#backupActionResult")) return;
+    try {
+      const payload = await api(`/api/admin/backups/jobs/${encodeURIComponent(jobId)}`);
+      const job = payload.job || {};
+      target.innerHTML = renderBackupJobStatus(job, job.status === "completed" ? "Backup Completed" : "Backup Job Running");
+      if (["completed", "failed", "cancelled"].includes(job.status)) {
+        document.querySelectorAll("#createBackupBtn").forEach((button) => {
+          button.disabled = false;
+          button.textContent = "Queue Backup Job";
+        });
+        if (job.status === "completed" && !sessionStorage.getItem(`gt-backup-notified:${jobId}`)) {
+          sessionStorage.setItem(`gt-backup-notified:${jobId}`, "1");
+          pushNotification("backup", "Backup completed", `${formatBytes(job.size_bytes || 0)} written with checksum ${String(job.sha256 || "").slice(0, 12)}.`, "#/admin/backups");
+        }
+        if (job.status === "failed" && !sessionStorage.getItem(`gt-backup-notified:${jobId}`)) {
+          sessionStorage.setItem(`gt-backup-notified:${jobId}`, "1");
+          pushNotification("backup", "Backup failed", typeof job.error === "string" ? job.error : "Open Backups for details.", "#/admin/backups");
+        }
+        return;
+      }
+    } catch (error) {
+      target.innerHTML = `<section class="state-card error"><p>${escapeHtml(error.message)}</p></section>`;
+      return;
     }
-    if (job.status === "failed" && !sessionStorage.getItem(`gt-backup-notified:${jobId}`)) {
-      sessionStorage.setItem(`gt-backup-notified:${jobId}`, "1");
-      pushNotification("backup", "Backup failed", job.error || "Open Backups for details.", "#/admin/backups");
-    }
-  } catch (error) {
-    target.innerHTML = `<section class="state-card error"><p>${escapeHtml(error.message)}</p></section>`;
   }
 }
 
@@ -2786,8 +2857,28 @@ function paragraphs(text) {
 }
 
 function progress(novel) {
+  if (novel.translation_coverage !== undefined && novel.translation_coverage !== null) {
+    return Math.max(0, Math.min(100, Math.round(Number(novel.translation_coverage) || 0)));
+  }
+  const denominator = coverageDenominator(novel);
+  const computed = denominator ? Math.round(Number(novel.english_count ?? novel.ai_count ?? 0) / denominator * 100) : 0;
+  return Math.max(0, Math.min(100, computed));
+}
+
+function coverageDenominator(novel) {
+  const english = Number(novel.english_count ?? novel.ai_count ?? 0);
+  const chapterCount = Number(novel.chapter_count || 0);
   const original = Number(novel.original_count || 0);
-  return original ? Math.round(Number(novel.english_count ?? novel.ai_count ?? 0) / original * 100) : 0;
+  const expected = Number(novel.expected_chapter_count || 0);
+  const explicit = Number(novel.coverage_chapter_basis || 0);
+  if (explicit > 0) return explicit;
+  if (expected > 0) return expected;
+  return Math.max(chapterCount, original, english, 0);
+}
+
+function coverageBasisLabel(novel) {
+  if (novel.coverage_basis_label) return novel.coverage_basis_label;
+  return novel.expected_range_configured ? "expected chapters" : "chapter inventory";
 }
 
 function sum(rows, key) {
