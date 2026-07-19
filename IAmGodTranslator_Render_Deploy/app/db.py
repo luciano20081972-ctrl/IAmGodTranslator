@@ -622,11 +622,7 @@ class Database:
                 '{{}}', {created_at_expr}, legacy.updated_at
             FROM {chapters} legacy
             WHERE legacy.ai_text IS NOT NULL AND LENGTH(TRIM(legacy.ai_text)) > 0
-            ON CONFLICT(novel_id, chapter_number, edition_key) DO UPDATE SET
-                text = excluded.text,
-                character_count = excluded.character_count,
-                is_default = excluded.is_default,
-                updated_at = excluded.updated_at
+            ON CONFLICT(novel_id, chapter_number, edition_key) DO NOTHING
             """
         )
 
