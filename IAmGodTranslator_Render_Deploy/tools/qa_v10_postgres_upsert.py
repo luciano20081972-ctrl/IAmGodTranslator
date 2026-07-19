@@ -25,6 +25,12 @@ class CaptureConnection:
         self.params.append(params)
         return self
 
+    def fetchone(self) -> None:
+        return None
+
+    def fetchall(self) -> list[Any]:
+        return []
+
 
 def capture_postgres_upsert_sql() -> dict[str, Any]:
     capture = CaptureConnection()
