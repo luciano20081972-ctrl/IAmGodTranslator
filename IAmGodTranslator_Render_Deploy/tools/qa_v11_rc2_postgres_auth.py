@@ -46,6 +46,24 @@ def require(label: str, condition: bool) -> None:
         raise AssertionError(label)
 
 
+def gha_escape(value: str) -> str:
+    return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def qa_notice(message: str) -> None:
+    if os.getenv("GITHUB_ACTIONS") == "true":
+        print(f"::notice title=RC2 PostgreSQL QA::{gha_escape(message)}")
+    else:
+        print(message)
+
+
+def qa_error(message: str) -> None:
+    if os.getenv("GITHUB_ACTIONS") == "true":
+        print(f"::error title=RC2 PostgreSQL QA::{gha_escape(message)}")
+    else:
+        print(message, file=sys.stderr)
+
+
 def quote_ident(value: str) -> str:
     require("safe identifier", value.replace("_", "").isalnum())
     return '"' + value.replace('"', '""') + '"'
@@ -742,13 +760,26 @@ def main() -> None:
     require("OpenAI key absent", not results["openai_key_present"])
     require("production Supabase config absent", not results["supabase_config_present"])
     try:
+        qa_notice("empty_database start")
         results["empty_database"] = scenario_empty(schemas["empty"])
+        qa_notice("empty_database passed")
+        qa_notice("v10_fixture start")
         results["v10_fixture"] = scenario_v10_fixture(schemas["v10"])
+        qa_notice("v10_fixture passed")
+        qa_notice("edge_state start")
         results["edge_state"] = scenario_edge(schemas["edge"])
+        qa_notice("edge_state passed")
+        qa_notice("postgres_concurrency start")
         results["postgres_concurrency"] = postgres_concurrency(schemas["edge"])
+        qa_notice("postgres_concurrency passed")
+        qa_notice("authorization start")
         results["authorization"] = auth_matrix(schemas["edge"])
+        qa_notice("authorization passed")
         results["ok"] = True
         print(json.dumps(results, indent=2, sort_keys=True, default=str))
+    except Exception as exc:
+        qa_error(f"{exc.__class__.__name__}: {exc}")
+        raise
     finally:
         if os.getenv("GT_RC2_KEEP_SCHEMAS") != "true":
             for schema in schemas.values():
