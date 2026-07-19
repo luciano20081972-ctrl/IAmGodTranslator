@@ -286,13 +286,44 @@ def table_rows(schema: str, table: str) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def normalize_for_checksum(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: normalize_for_checksum(value[key]) for key in sorted(value)}
+    if isinstance(value, list):
+        return [normalize_for_checksum(item) for item in value]
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return str(value)
+
+
+def checksum_rows(rows: list[dict[str, Any]]) -> str:
+    normalized_rows = [normalize_for_checksum(row) for row in rows]
+    normalized_rows.sort(key=lambda row: json.dumps(row, sort_keys=True, ensure_ascii=False, separators=(",", ":")))
+    normalized = json.dumps(normalized_rows, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def counts_and_checksums(schema: str) -> dict[str, dict[str, Any]]:
     payload: dict[str, dict[str, Any]] = {}
     for table in PLATFORM_BACKUP_TABLE_NAMES:
         rows = table_rows(schema, table)
-        normalized = json.dumps(rows, sort_keys=True, default=str, ensure_ascii=False)
-        payload[table] = {"rows": len(rows), "sha256": hashlib.sha256(normalized.encode("utf-8")).hexdigest()}
+        payload[table] = {"rows": len(rows), "sha256": checksum_rows(rows)}
     return payload
+
+
+def count_checksum_diffs(before: dict[str, dict[str, Any]], after: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    tables = sorted(set(before) | set(after))
+    row_count_diffs = {
+        table: {"before": before.get(table, {}).get("rows"), "after": after.get(table, {}).get("rows")}
+        for table in tables
+        if before.get(table, {}).get("rows") != after.get(table, {}).get("rows")
+    }
+    checksum_diffs = [
+        table
+        for table in tables
+        if before.get(table, {}).get("sha256") != after.get(table, {}).get("sha256")
+    ]
+    return {"row_count_diffs": row_count_diffs, "checksum_diffs": checksum_diffs}
 
 
 def seed_users(db: Database) -> None:
@@ -421,12 +452,19 @@ def scenario_v10_fixture(schema: str) -> dict[str, Any]:
         require("existing English accessible", text == seed_values["full_english"])
     after_counts = counts_and_checksums(schema)
     after_signature = schema_signature(schema)
-    require("v10 row counts and checksums preserved", before_counts == after_counts)
+    preservation_diffs = count_checksum_diffs(before_counts, after_counts)
+    require(f"v10 row counts preserved: {preservation_diffs['row_count_diffs']}", not preservation_diffs["row_count_diffs"])
+    require(f"v10 row checksums preserved: {preservation_diffs['checksum_diffs']}", not preservation_diffs["checksum_diffs"])
     require("v10 no duplicate schema objects", before_signature == after_signature)
     require("preferences preserved", db.user_preferences(TEST_USERS["normal"][0]) == seed_values["preferences"])
     require("original text preserved", db.chapter_text("partial-novel", 1, "original")["text"] == seed_values["partial_original"])
     require("reference text preserved", db.chapter_text("partial-novel", 1, "reference")["text"] == seed_values["partial_reference"])
-    return {"preserved": True, "tables": len(before_counts), "row_counts": {name: before_counts[name]["rows"] for name in sorted(before_counts)}}
+    return {
+        "preserved": True,
+        "tables": len(before_counts),
+        "row_counts": {name: before_counts[name]["rows"] for name in sorted(before_counts)},
+        "checksum_diffs": [],
+    }
 
 
 def scenario_edge(schema: str) -> dict[str, Any]:
