@@ -108,7 +108,7 @@ class WebsiteDesktopIntegrationTests(unittest.TestCase):
         cls._temp.cleanup()
 
     def test_v10_6_runtime_labels(self) -> None:
-        self.assertEqual(self.main.VERSION, "10.6.1")
+        self.assertEqual(self.main.VERSION, "11.0.0")
         health = self.main.desktop_health()
         self.assertTrue(health["ok"])
         self.assertEqual(health["desktop_api"], "11.0.0")
@@ -130,7 +130,7 @@ class WebsiteDesktopIntegrationTests(unittest.TestCase):
         self.main.database.upsert_chapter("desktop-fixture", 1, "Chapter 1", "Original", "Reference", "", None)
         payload = self.main.desktop_sync_status("desktop-fixture")
         self.assertTrue(payload["ok"])
-        self.assertEqual(payload["version"], "10.6.1")
+        self.assertEqual(payload["version"], "11.0.0")
         self.assertEqual(payload["desktop_api"], "11.0.0")
         self.assertEqual(payload["novel"]["id"], "desktop-fixture")
         self.assertEqual(payload["missing"]["missing_english"], [1])

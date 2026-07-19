@@ -271,13 +271,13 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
             sync.save_profile("https://example.invalid", "session-token")
             raw = read_json(paths.connection_profiles_file, {})
             self.assertNotIn("session-token", str(raw))
-            with patch.object(WebsiteClient, "desktop_health", return_value={"ok": True, "version": "10.6.1", "desktop_api": "11.0.0"}):
+            with patch.object(WebsiteClient, "desktop_health", return_value={"ok": True, "version": "11.0.0", "desktop_api": "11.0.0"}):
                 payload = sync.test_connection()
             self.assertTrue(payload["ok"])
             profile = sync.profile()
             self.assertEqual(profile.last_health, "Healthy")
             self.assertEqual(profile.desktop_api_version, "11.0.0")
-            self.assertEqual(profile.website_version, "10.6.1")
+            self.assertEqual(profile.website_version, "11.0.0")
             self.assertTrue(sync.center_snapshot()["version_compatible"])
             self.assertEqual(store.connection_profiles()[0].auth_token, "")
             self.assertNotIn("auth_token", profile.safe_dict())

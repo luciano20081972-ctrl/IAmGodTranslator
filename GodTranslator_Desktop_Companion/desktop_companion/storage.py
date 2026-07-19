@@ -1,11 +1,28 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
 from .models import DownloadJob, UploadJob, WebsiteConnectionProfile, utc_now
 from .paths import AppPaths, ensure_app_dirs
+
+
+_WRITE_LOCKS: dict[Path, threading.Lock] = {}
+_WRITE_LOCKS_GUARD = threading.Lock()
+
+
+def write_lock(path: Path) -> threading.Lock:
+    resolved = path.resolve()
+    with _WRITE_LOCKS_GUARD:
+        lock = _WRITE_LOCKS.get(resolved)
+        if lock is None:
+            lock = threading.Lock()
+            _WRITE_LOCKS[resolved] = lock
+        return lock
 
 
 def read_json(path: Path, default: Any) -> Any:
@@ -19,9 +36,22 @@ def read_json(path: Path, default: Any) -> Any:
 
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2)
+    with write_lock(path):
+        tmp.write_text(serialized, encoding="utf-8")
+        last_error: PermissionError | None = None
+        for attempt in range(8):
+            try:
+                tmp.replace(path)
+                return
+            except PermissionError as exc:
+                last_error = exc
+                time.sleep(0.025 * (attempt + 1))
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+        if last_error:
+            raise last_error
 
 
 class CompanionStore:

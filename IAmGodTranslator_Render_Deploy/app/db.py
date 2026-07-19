@@ -43,7 +43,7 @@ ENGLISH_EDITION_PRIORITY = {
     "machine": 5,
     "community": 6,
 }
-PLATFORM_BACKUP_APP_VERSION = "10.6.1"
+PLATFORM_BACKUP_APP_VERSION = "11.0.0"
 PLATFORM_BACKUP_TABLE_NAMES = [
     "novels",
     "chapters",
@@ -2082,8 +2082,9 @@ class Database:
                 finished_at = CASE WHEN ? IN ('completed','failed','cancelled') THEN COALESCE(finished_at, ?) ELSE finished_at END,
                 updated_at = ?
             WHERE id = ?
+                AND NOT (status IN ('completed','failed') AND ? = 'running')
             """,
-            (status, int(counts["completed"] or 0), failed, float(counts["actual"] or 0), status, now, now, job_id),
+            (status, int(counts["completed"] or 0), failed, float(counts["actual"] or 0), status, now, now, job_id, status),
         )
         row = conn.execute(f"SELECT * FROM {self.table('translation_jobs')} WHERE id = ?", (job_id,)).fetchone()
         return public_job_row(row) if row else {}

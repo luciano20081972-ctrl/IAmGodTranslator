@@ -34,7 +34,7 @@ Phase 0 establishes a controlled implementation plan for `v11.0.0-platform-evolu
 
 ### Existing But Incomplete
 
-- Runtime version hygiene: backend and app label are `10.6.1`, but HTML cache query strings and desktop API labels still show `10.6.0`.
+- Runtime version hygiene was completed during RC1 blocker repair: backend, app label, HTML cache query strings, and desktop API labels now report `11.0.0`.
 - Top navigation exists, but it does not match the v11 target. Theme is still top-level, and profile behavior is too limited.
 - Command palette exists, but settings commands are mixed into the normal result list rather than separated as explicit commands.
 - Home already has dashboard sections, but it is not yet the full role-aware reading dashboard.
@@ -77,7 +77,7 @@ Phase 0 establishes a controlled implementation plan for `v11.0.0-platform-evolu
 | --- | --- | --- |
 | Verify branch and main ancestry | Existing and complete | Implementation branch is based on `origin/main`; roadmap foundation cherry-picked. |
 | Inspect architecture | Existing and complete | Inventory above covers website, database, admin, import, recovery, backups, translation, desktop API, and desktop code. |
-| Verify runtime labels | Existing but incomplete | `APP_VERSION` and backend are `10.6.1`; HTML cache strings and desktop API labels remain `10.6.0`. |
+| Verify runtime labels | Existing and complete after RC1 QA | `APP_VERSION`, backend, HTML cache strings, and desktop API labels now report `11.0.0`. |
 | Identify stale TODOs/dead UI/regressions/duplication | Existing but incomplete | Known baseline issues listed below. |
 | Create implementation plan | Existing and complete | This file is the Phase 0 deliverable. |
 | Baseline syntax and smoke checks | Existing and complete after QA | See Phase 0 QA section. |
@@ -192,8 +192,8 @@ Phase 0 establishes a controlled implementation plan for `v11.0.0-platform-evolu
 
 ## Known Baseline Issues
 
-- `templates/index.html` still uses `?v=10.6.0` cache strings for CSS and JS.
-- `/api/desktop/health` still reports `desktop_api: 10.6.0`, which may be intentional API compatibility but should be labelled clearly.
+- `templates/index.html` cache strings were updated to `?v=11.0.0` during RC1 QA.
+- `/api/desktop/health` now reports `desktop_api: 11.0.0`.
 - Header still exposes `Theme` as a top-level action.
 - Header account chip links directly to Admin when admin mode is active instead of a true profile menu.
 - Command palette includes `Open Settings` in the same command list as primary navigation and novel/chapter results.

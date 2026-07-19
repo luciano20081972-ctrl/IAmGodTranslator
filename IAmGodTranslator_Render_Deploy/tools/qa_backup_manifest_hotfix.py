@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import types
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -139,7 +140,10 @@ def use_database(db: Database) -> None:
 
 
 def response_content(response: Any) -> bytes:
-    content = getattr(response, "content", b"")
+    body = getattr(response, "body", None)
+    if isinstance(body, bytes):
+        return body
+    content = getattr(response, "content", None)
     if hasattr(content, "read"):
         position = content.tell()
         content.seek(0)
@@ -148,7 +152,25 @@ def response_content(response: Any) -> bytes:
         return data
     if isinstance(content, str):
         return content.encode("utf-8")
-    return content
+    if isinstance(content, bytes) and content:
+        return content
+    iterator = getattr(response, "body_iterator", None)
+    if iterator is not None:
+        async def collect() -> bytes:
+            chunks: list[bytes] = []
+            async for chunk in iterator:
+                chunks.append(chunk.encode("utf-8") if isinstance(chunk, str) else chunk)
+            return b"".join(chunks)
+
+        return asyncio.run(collect())
+    return b""
+
+
+def response_payload(response: Any) -> dict[str, Any]:
+    content = getattr(response, "content", None)
+    if isinstance(content, dict):
+        return content
+    return json.loads(response_content(response).decode("utf-8"))
 
 
 def manifest_endpoint_fixture() -> dict[str, Any]:
@@ -225,7 +247,7 @@ def json_error_fixture() -> dict[str, Any]:
     manifest = app_main.platform_backup_manifest()
     if manifest.status_code != 500:
         raise AssertionError(f"expected manifest 500, got {manifest.status_code}")
-    manifest_payload = manifest.content
+    manifest_payload = response_payload(manifest)
     if manifest_payload.get("error", {}).get("stage") != "table_counts":
         raise AssertionError("manifest JSON error missing table_counts stage")
     if "hidden details" in json.dumps(manifest_payload):
@@ -237,15 +259,15 @@ def json_error_fixture() -> dict[str, Any]:
     for label, response in {"create": create, "download": download}.items():
         if response.status_code != 500:
             raise AssertionError(f"expected {label} 500, got {response.status_code}")
-        payload = response.content
+        payload = response_payload(response)
         if payload.get("error", {}).get("stage") != "build_full_backup":
             raise AssertionError(f"{label} JSON error missing build_full_backup stage")
         if "hidden details" in json.dumps(payload):
             raise AssertionError(f"{label} JSON error exposed exception details")
     return {
         "manifest_error": manifest_payload["error"],
-        "create_error": create.content["error"],
-        "download_error": download.content["error"],
+        "create_error": response_payload(create)["error"],
+        "download_error": response_payload(download)["error"],
     }
 
 

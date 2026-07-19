@@ -44,7 +44,7 @@ const state = {
 };
 
 const sourceLabels = {english: "English", ai: "English", reference: "Reference", original: "Original"};
-const APP_VERSION = "10.6.1";
+const APP_VERSION = "11.0.0";
 const chapterViews = [
   ["all", "All"],
   ["translated", "Translated"],

@@ -30,7 +30,7 @@ from app.content_import import payload_from_uploads
 from app.recovery import parse_uploads, recovery_request, recovery_diagnostic, reference_diagnostic
 
 
-VERSION = "10.6.1"
+VERSION = "11.0.0"
 DESKTOP_API_VERSION = "11.0.0"
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_COOKIE = "gt_admin_session"
@@ -1100,7 +1100,7 @@ def export_backup(novel_id: str, _: None = Depends(require_admin)) -> StreamingR
     return StreamingResponse(memory, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{novel_id}-v10-backup.zip"'})
 
 
-@app.get("/api/admin/backups/manifest")
+@app.get("/api/admin/backups/manifest", response_model=None)
 def platform_backup_manifest(_: None = Depends(require_admin)) -> dict[str, object] | JSONResponse:
     try:
         return database.platform_backup_manifest_summary()
@@ -1118,7 +1118,7 @@ def list_backup_jobs(limit: int = 20, _: None = Depends(require_admin)) -> dict[
     return {"ok": True, "jobs": database.backup_jobs(limit=limit)}
 
 
-@app.post("/api/admin/backups/jobs")
+@app.post("/api/admin/backups/jobs", response_model=None)
 def create_backup_job(payload: dict[str, Any] = Body(default={}), _: None = Depends(require_admin)) -> dict[str, object] | JSONResponse:
     try:
         destination = str(payload.get("destination") or ("supabase" if bool(payload.get("store", True)) else "local"))
@@ -1151,7 +1151,7 @@ def list_audit_events(limit: int = 50, _: None = Depends(require_admin)) -> dict
     return {"ok": True, "events": database.audit_events(limit=limit)}
 
 
-@app.get("/api/admin/backups/download")
+@app.get("/api/admin/backups/download", response_model=None)
 def download_platform_backup(_: None = Depends(require_admin)) -> StreamingResponse | JSONResponse:
     try:
         payload = complete_platform_backup_payload()
@@ -1168,7 +1168,7 @@ def download_platform_backup(_: None = Depends(require_admin)) -> StreamingRespo
     )
 
 
-@app.post("/api/admin/backups/create")
+@app.post("/api/admin/backups/create", response_model=None)
 def create_platform_backup(payload: dict[str, Any] = Body(default={}), _: None = Depends(require_admin)) -> dict[str, object] | JSONResponse:
     try:
         backup = complete_platform_backup_payload()
