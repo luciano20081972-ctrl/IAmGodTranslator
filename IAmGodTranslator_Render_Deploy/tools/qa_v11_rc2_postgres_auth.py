@@ -258,7 +258,7 @@ def verify_schema(schema: str) -> dict[str, Any]:
         "translation_job_items": {"job_id", "chapter_number", "status", "lease_expires_at"},
         "user_profiles": {"user_id", "email", "role"},
         "bookmarks": {"user_id", "novel_id", "chapter_number"},
-        "backup_jobs": {"id", "status", "progress_percent"},
+        "backup_jobs": {"id", "status", "total_tables", "completed_tables", "processed_rows"},
     }
     for table, names in required_columns.items():
         require(f"{table} required columns", names.issubset(column_map.get(table, set())))
