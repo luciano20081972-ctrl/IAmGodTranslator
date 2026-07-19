@@ -3051,14 +3051,16 @@ class Database:
         existing_text_present = bool(existing and readable(existing[column]))
         if existing_text_present and not options["overwrite_existing"]:
             return {"action": "skipped", "status": "skipped_existing", "reason": "existing_content_preserved"}
+        action = ""
         if existing is None:
-            conn.execute(
+            cursor = conn.execute(
                 f"""
                 INSERT INTO {self.table('chapters')} (
                     novel_id, chapter_number, title, {column}, {count_column},
                     translation_status, created_at, updated_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(novel_id, chapter_number) DO NOTHING
                 """,
                 (
                     novel_id,
@@ -3071,8 +3073,17 @@ class Database:
                     now,
                 ),
             )
-            action = "imported"
-        else:
+            if cursor.rowcount:
+                action = "imported"
+            else:
+                existing = conn.execute(
+                    f"SELECT * FROM {self.table('chapters')} WHERE novel_id = ? AND chapter_number = ?",
+                    (novel_id, chapter_number),
+                ).fetchone()
+                existing_text_present = bool(existing and readable(existing[column]))
+                if existing_text_present and not options["overwrite_existing"]:
+                    return {"action": "skipped", "status": "skipped_existing", "reason": "existing_content_preserved"}
+        if not action:
             assignments: list[str] = []
             params: list[Any] = []
             if title:

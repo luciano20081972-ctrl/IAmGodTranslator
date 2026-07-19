@@ -516,15 +516,21 @@ def postgres_concurrency(schema: str) -> dict[str, Any]:
     require("PostgreSQL worker claims no duplicates", sorted(completed) == [1, 2, 3])
     require("PostgreSQL job completed", (db.translation_job(job_id) or {}).get("status") == "completed")
 
+    import_errors: list[str] = []
+
     def import_worker(text: str) -> None:
-        local_db = db_for(schema)
-        local_db.apply_content_import_payload(
-            {
-                "novel_id": "concurrent-import",
-                "items": [{"chapter_number": 1, "content_type": "original", "text": text}],
-                "options": {"add_missing": True, "skip_existing": True, "overwrite_existing": False},
-            }
-        )
+        try:
+            local_db = db_for(schema)
+            local_db.apply_content_import_payload(
+                {
+                    "novel_id": "concurrent-import",
+                    "items": [{"chapter_number": 1, "content_type": "original", "text": text}],
+                    "options": {"add_missing": True, "skip_existing": True, "overwrite_existing": False},
+                }
+            )
+        except Exception as exc:
+            with lock:
+                import_errors.append(type(exc).__name__)
 
     db.save_novel_metadata("concurrent-import", {"title": "Concurrent Import"})
     imports = [threading.Thread(target=import_worker, args=(f"Concurrent original {index}",)) for index in range(2)]
@@ -532,6 +538,7 @@ def postgres_concurrency(schema: str) -> dict[str, Any]:
         thread.start()
     for thread in imports:
         thread.join()
+    require(f"concurrent imports no thread errors: {import_errors}", not import_errors)
     with db.connect() as conn:
         chapter_count = conn.execute(f"SELECT COUNT(*) AS total FROM {db.table('chapters')} WHERE novel_id = ? AND chapter_number = 1", ("concurrent-import",)).fetchone()["total"]
     require("concurrent imports kept one chapter row", int(chapter_count) == 1)
