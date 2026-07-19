@@ -2303,7 +2303,7 @@ class Database:
         total_rows = sum(int(value or 0) for value in table_counts.values() if value is not None)
         with self.connect() as conn:
             conn.execute(
-                f"""
+                self._convert_sql(f"""
                 INSERT INTO {self.table('backup_jobs')} (
                     id, kind, destination, status, safe_mode, current_table,
                     total_tables, completed_tables, total_rows, processed_rows,
@@ -2311,7 +2311,7 @@ class Database:
                     cancel_requested, created_at, started_at, finished_at, updated_at
                 )
                 VALUES (?, 'full_platform_backup', ?, 'queued', ?, NULL, ?, 0, ?, 0, 0, NULL, NULL, ?, NULL, 0, ?, NULL, NULL, ?)
-                """,
+                """),
                 (
                     job_id,
                     normalize_backup_destination(destination),
@@ -2332,18 +2332,18 @@ class Database:
     def backup_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
-                f"""
+                self._convert_sql(f"""
                 SELECT * FROM {self.table('backup_jobs')}
                 ORDER BY created_at DESC
                 LIMIT ?
-                """,
+                """),
                 (max(1, min(int(limit or 20), 100)),),
             ).fetchall()
         return [normalize_backup_job(dict(row)) for row in rows]
 
     def backup_job(self, job_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
-            row = conn.execute(f"SELECT * FROM {self.table('backup_jobs')} WHERE id = ?", (job_id,)).fetchone()
+            row = conn.execute(self._convert_sql(f"SELECT * FROM {self.table('backup_jobs')} WHERE id = ?"), (job_id,)).fetchone()
         return normalize_backup_job(dict(row)) if row else None
 
     def update_backup_job(self, job_id: str, **updates: Any) -> dict[str, Any]:
@@ -2368,7 +2368,7 @@ class Database:
         params = [json.dumps(value, ensure_ascii=False, default=str) if key == "storage_json" and isinstance(value, (dict, list)) else value for key, value in values.items()]
         params.append(job_id)
         with self.connect() as conn:
-            conn.execute(f"UPDATE {self.table('backup_jobs')} SET {assignments} WHERE id = ?", tuple(params))
+            conn.execute(self._convert_sql(f"UPDATE {self.table('backup_jobs')} SET {assignments} WHERE id = ?"), tuple(params))
         return self.backup_job(job_id) or {"id": job_id, "status": "missing"}
 
     def cancel_backup_job(self, job_id: str) -> dict[str, Any]:
@@ -2389,7 +2389,7 @@ class Database:
             raise ValueError("unsupported_backup_table")
         with self.connect() as conn:
             rows = conn.execute(
-                f"SELECT * FROM {self.table(table_name)} LIMIT ? OFFSET ?",
+                self._convert_sql(f"SELECT * FROM {self.table(table_name)} LIMIT ? OFFSET ?"),
                 (max(1, min(int(limit or 250), 1000)), max(0, int(offset or 0))),
             ).fetchall()
         return [dict(row) for row in rows]
@@ -3238,12 +3238,12 @@ class Database:
         with self.connect() as conn:
             while True:
                 rows = conn.execute(
-                    f"""
+                    self._convert_sql(f"""
                     SELECT *
                     FROM {self.table(table_name)}
                     {order_clause}
                     LIMIT ? OFFSET ?
-                    """,
+                    """),
                     (size, offset),
                 ).fetchall()
                 if not rows:
