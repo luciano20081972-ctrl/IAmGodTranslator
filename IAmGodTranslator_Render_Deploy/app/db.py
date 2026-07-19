@@ -2483,6 +2483,7 @@ class Database:
 
     def save_user_preferences(self, user_id: str, preferences: dict[str, Any]) -> dict[str, Any]:
         now = utc_now()
+        preferences = sanitize_user_preferences(preferences)
         payload = json.dumps(preferences, ensure_ascii=False)
         with self.connect() as conn:
             conn.execute(
@@ -2585,13 +2586,13 @@ class Database:
             if self.config.backend == "postgres":
                 conn.execute(
                     f"""
-                    INSERT INTO {self.table('bookmarks')} (id, user_id, novel_id, chapter_number, note, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO {self.table('bookmarks')} (user_id, novel_id, chapter_number, note, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(user_id, novel_id, chapter_number) DO UPDATE SET
                         note = excluded.note,
                         updated_at = excluded.updated_at
                     """,
-                    (str(uuid.uuid4()), user_id, novel_id, int(chapter_number), note or "", now, now),
+                    (user_id, novel_id, int(chapter_number), note or "", now, now),
                 )
             else:
                 conn.execute(
@@ -3482,6 +3483,35 @@ def sanitize_audit_metadata(value: Any, depth: int = 0) -> Any:
     if isinstance(value, str):
         return value[:300]
     return value
+
+
+def sanitize_user_preferences(preferences: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(preferences, dict):
+        return {}
+    payload = dict(preferences)
+    collections = payload.get("collections")
+    if not isinstance(collections, list):
+        return payload
+    cleaned_collections: list[Any] = []
+    for collection in collections:
+        if not isinstance(collection, dict):
+            cleaned_collections.append(collection)
+            continue
+        cleaned = dict(collection)
+        novel_ids = cleaned.get("novel_ids")
+        if isinstance(novel_ids, list):
+            seen: set[str] = set()
+            deduped: list[str] = []
+            for novel_id in novel_ids:
+                value = str(novel_id or "").strip()
+                if not value or value in seen:
+                    continue
+                seen.add(value)
+                deduped.append(value)
+            cleaned["novel_ids"] = deduped
+        cleaned_collections.append(cleaned)
+    payload["collections"] = cleaned_collections
+    return payload
 
 
 class PostgresConnection:

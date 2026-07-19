@@ -1,0 +1,126 @@
+name: GodTranslator v11 RC2 Release Gate
+
+on:
+  push:
+    branches:
+      - v11.0.0-rc2-postgres-auth-qa
+    paths-ignore:
+      - IAmGodTranslator_Render_Deploy/V11_RC2_QA_REPORT.md
+  pull_request:
+    branches:
+      - main
+      - v11.0.0-rc2-postgres-auth-qa
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rc2-postgres-auth:
+    name: PostgreSQL migration and auth gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: godtranslator_rc2
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d godtranslator_rc2"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      APP_ENV: ci
+      AUTH_ENABLED: "true"
+      OPENAI_API_KEY: ""
+      TRANSLATION_AUTOSTART: "false"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install website dependencies
+        working-directory: IAmGodTranslator_Render_Deploy
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+
+      - name: Install desktop dependencies
+        working-directory: GodTranslator_Desktop_Companion
+        run: python -m pip install -r requirements.txt
+
+      - name: Python compile
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import py_compile
+          for root in (Path("IAmGodTranslator_Render_Deploy"), Path("GodTranslator_Desktop_Companion")):
+              for path in root.rglob("*.py"):
+                  if "__pycache__" not in path.parts:
+                      py_compile.compile(str(path), doraise=True)
+          PY
+
+      - name: JavaScript syntax
+        run: |
+          node --check IAmGodTranslator_Render_Deploy/static/app.js
+          node --check IAmGodTranslator_Render_Deploy/tools/qa_v11_rc1_browser_smoke.js
+
+      - name: Desktop unit tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/GodTranslator_Desktop_Companion
+        run: python -m unittest discover -s GodTranslator_Desktop_Companion/tests -p 'test_*.py'
+
+      - name: Existing scheduler and import fixtures
+        env:
+          DATABASE_URL: ""
+          OPENAI_API_KEY: ""
+        run: |
+          python IAmGodTranslator_Render_Deploy/tools/qa_v10_3_translation_scheduler.py
+          python IAmGodTranslator_Render_Deploy/tools/qa_v10_4_translation_performance.py
+          python IAmGodTranslator_Render_Deploy/tools/qa_v10_5_content_import_editions.py
+          python IAmGodTranslator_Render_Deploy/tools/qa_v10_6_translation_selector.py
+          python IAmGodTranslator_Render_Deploy/tools/qa_backup_manifest_hotfix.py
+
+      - name: v11 static and fixture QA
+        env:
+          DATABASE_URL: ""
+          OPENAI_API_KEY: ""
+        run: |
+          python IAmGodTranslator_Render_Deploy/tools/qa_v11_phase1_navigation_home_settings.py
+          python IAmGodTranslator_Render_Deploy/tools/qa_v11_phase2_reader_experience.py
+          python IAmGodTranslator_Render_Deploy/tools/qa_v11_phase3_library_novel_dashboard.py
+          python IAmGodTranslator_Render_Deploy/tools/qa_v11_phase4_translation_workspace.py
+          python IAmGodTranslator_Render_Deploy/tools/qa_v11_phase5_content_import_editions_recovery.py
+          python IAmGodTranslator_Render_Deploy/tools/qa_v11_phase6_desktop_sync.py
+          python IAmGodTranslator_Render_Deploy/tools/qa_v11_phase7_backups_operations.py
+          python IAmGodTranslator_Render_Deploy/tools/qa_v11_phase8_mobile_accessibility_polish.py
+
+      - name: RC2 PostgreSQL migration and auth matrix
+        env:
+          DATABASE_URL: postgresql://postgres@127.0.0.1:5432/godtranslator_rc2
+        run: python IAmGodTranslator_Render_Deploy/tools/qa_v11_rc2_postgres_auth.py
+
+      - name: Secret scan
+        shell: bash
+        run: |
+          ! grep -RInE 'sk-[A-Za-z0-9_-]{20,}|OPENAI_API_KEY[[:space:]]*=[^[:space:]]+|DATABASE_URL[[:space:]]*=[^[:space:]]+|SUPABASE_SERVICE_ROLE_KEY[[:space:]]*=[^[:space:]]+|Authorization:[[:space:]]*Bearer[[:space:]]+[A-Za-z0-9._-]+|BEGIN (RSA|OPENSSH|PRIVATE) KEY' \
+            --exclude-dir=.git --exclude-dir=__pycache__ --exclude='*.pyc' --exclude='GodTranslator_v*.zip' .
+
+      - name: Artifact scan
+        shell: bash
+        run: |
+          ! git ls-files | grep -E '(^|/)(__pycache__|venv|\.venv|logs|cookies|browser_profiles|qa_screenshots_v10_2)(/|$)|\.pyc$|\.env$|\.sqlite$|\.db$|GodTranslator_v.*\.zip$'

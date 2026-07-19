@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import hashlib
 import hmac
@@ -36,6 +37,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SESSION_COOKIE = "gt_admin_session"
 SESSION_TTL_SECONDS = 60 * 60 * 12
 LOGGER = logging.getLogger(__name__)
+DISABLED_ACCOUNT_ROLES = {"disabled", "expired", "removed", "revoked"}
 
 app = FastAPI(title="GodTranslator", version=VERSION)
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
@@ -477,6 +479,8 @@ def account_user(request: Request) -> RequestUser | None:
                 supabase_user.get("user_metadata", {}).get("name") or supabase_user.get("user_metadata", {}).get("full_name"),
                 supabase_user.get("user_metadata", {}).get("avatar_url"),
             )
+            if profile_role_disabled(profile):
+                return None
             return RequestUser(
                 user_id=str(profile["user_id"]),
                 email=profile.get("email"),
@@ -495,6 +499,9 @@ def bearer_token(request: Request) -> str | None:
 
 
 def validate_supabase_token(token: str) -> dict[str, Any] | None:
+    test_user = validate_test_auth_token(token)
+    if test_user is not None:
+        return test_user
     url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
     key = os.getenv("SUPABASE_PUBLISHABLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or ""
     if not url or not key:
@@ -509,6 +516,59 @@ def validate_supabase_token(token: str) -> dict[str, Any] | None:
             return json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
         return None
+
+
+def validate_test_auth_token(token: str) -> dict[str, Any] | None:
+    if not test_auth_enabled():
+        return None
+    secret = os.getenv("GT_TEST_AUTH_SECRET") or ""
+    if len(secret) < 16:
+        return None
+    parts = token.split(".")
+    if len(parts) != 3 or parts[0] != "gtqa1":
+        return None
+    signed = parts[1].encode("utf-8")
+    expected = hmac.new(secret.encode("utf-8"), signed, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(parts[2], expected):
+        return None
+    try:
+        payload = json.loads(base64_url_decode(parts[1]).decode("utf-8"))
+    except Exception:
+        return None
+    expires_at = int(payload.get("exp") or 0)
+    if not expires_at or expires_at < int(time.time()):
+        return None
+    user_id = str(payload.get("sub") or "")
+    if not user_id:
+        return None
+    allowed = {item.strip() for item in (os.getenv("GT_TEST_AUTH_ALLOWED_USER_IDS") or "").split(",") if item.strip()}
+    if allowed and user_id not in allowed:
+        return None
+    email = str(payload.get("email") or "")
+    return {
+        "id": user_id,
+        "email": email or None,
+        "user_metadata": {
+            "name": payload.get("name") or email,
+            "full_name": payload.get("name") or email,
+            "avatar_url": None,
+        },
+    }
+
+
+def test_auth_enabled() -> bool:
+    enabled = (os.getenv("GT_TEST_AUTH_ENABLED") or "").lower() in {"1", "true", "yes"}
+    if not enabled:
+        return False
+    app_env = (os.getenv("APP_ENV") or os.getenv("ENV") or "").lower()
+    if app_env in {"prod", "production"}:
+        return False
+    return True
+
+
+def base64_url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode((value + padding).encode("utf-8"))
 
 
 def valid_admin_cookie(request: Request) -> bool:
@@ -537,6 +597,10 @@ def role_for_profile(profile: dict[str, Any], email: str | None) -> str:
         return "admin"
     role = str(profile.get("role") or "user").lower()
     return role if role in {"user", "translator", "admin"} else "user"
+
+
+def profile_role_disabled(profile: dict[str, Any]) -> bool:
+    return str(profile.get("role") or "").lower() in DISABLED_ACCOUNT_ROLES
 
 
 def sanitize_profile(profile: dict[str, Any]) -> dict[str, Any]:
