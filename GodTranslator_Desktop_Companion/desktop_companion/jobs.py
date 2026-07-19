@@ -29,6 +29,7 @@ class JobManager:
     def __init__(self, store: CompanionStore, paths: AppPaths) -> None:
         self.store = store
         self.paths = paths
+        self._lock = threading.Lock()
         self._controls: dict[str, JobControl] = {}
         self._threads: dict[str, threading.Thread] = {}
         self._recover_interrupted_jobs()
@@ -195,25 +196,33 @@ class JobManager:
         self.store.delete_job(job_id)
 
     def start(self, job_id: str) -> DownloadJob:
-        job = self.require_job(job_id)
-        if self._thread_alive(job_id):
+        with self._lock:
+            job = self.require_job(job_id)
+            if self._thread_alive(job_id):
+                return job
+            if job.status == "completed":
+                return job
+            if job.browser_mode and self._active_browser_jobs(exclude_job_id=job_id) >= self.max_active_browser_jobs:
+                job.status = "queued"
+                job.worker_state = f"Queued - waiting for browser slot ({self.max_active_browser_jobs} max)"
+                job.browser_state = "Queued"
+                job.last_activity = "Waiting for browser slot"
+                self._append_live_log(job, job.last_activity)
+                return self.store.upsert_job(job)
+            control = JobControl(stop_event=threading.Event())
+            self._controls[job_id] = control
+            thread = threading.Thread(target=self._run_job, args=(job_id, control), name=f"gt-desktop-{job_id}", daemon=True)
+            self._threads[job_id] = thread
+            job.status = "starting"
+            job.started_at = job.started_at or utc_now()
+            job.finished_at = None
+            job.worker_state = "Starting"
+            job.browser_state = "Not launched"
+            job.last_activity = "Starting"
+            self._append_live_log(job, "Starting job")
+            self.store.upsert_job(job)
+            thread.start()
             return job
-        if job.status == "completed":
-            return job
-        control = JobControl(stop_event=threading.Event())
-        self._controls[job_id] = control
-        thread = threading.Thread(target=self._run_job, args=(job_id, control), name=f"gt-desktop-{job_id}", daemon=True)
-        self._threads[job_id] = thread
-        job.status = "starting"
-        job.started_at = job.started_at or utc_now()
-        job.finished_at = None
-        job.worker_state = "Starting"
-        job.browser_state = "Not launched"
-        job.last_activity = "Starting"
-        self._append_live_log(job, "Starting job")
-        self.store.upsert_job(job)
-        thread.start()
-        return job
 
     def _run_job(self, job_id: str, control: JobControl) -> None:
         job = self.require_job(job_id)
@@ -332,12 +341,32 @@ class JobManager:
             self.store.upsert_job(failed)
         finally:
             self._controls.pop(job_id, None)
+            self._start_next_queued_job()
 
     def require_job(self, job_id: str) -> DownloadJob:
         job = self.store.job(job_id)
         if job is None:
             raise ValueError(f"Job not found: {job_id}")
         return job
+
+    def build_pack_for_job(self, job_id: str) -> DownloadJob:
+        job = self.require_job(job_id)
+        output_dir = Path(job.output_dir)
+        pack_dir = Path(job.novel_root_dir or output_dir.parent) / "Packs"
+        pack = build_pack(
+            source_dir=output_dir,
+            output_dir=pack_dir,
+            novel_id=job.novel_id or safe_folder_name(job.novel_title).lower().replace(" ", "-"),
+            novel_title=job.novel_title,
+            target_mode=job.target_mode,
+            source_type=job.source_adapter,
+            source_url=job.source_url,
+        )
+        job.packs_built = sorted(set(job.packs_built + [str(pack.path)]))
+        job.website_import_status = "pack_ready"
+        job.last_activity = f"Built pack {pack.path.name}"
+        self._append_live_log(job, job.last_activity)
+        return self.store.upsert_job(job)
 
     def _job_folders(self, output_dir: Path | None, novel_title: str, target_mode: str) -> tuple[Path, Path]:
         base = output_dir or self.paths.downloads_dir / safe_folder_name(novel_title)
@@ -357,6 +386,36 @@ class JobManager:
     def _thread_alive(self, job_id: str) -> bool:
         thread = self._threads.get(job_id)
         return bool(thread and thread.is_alive())
+
+    @property
+    def max_active_browser_jobs(self) -> int:
+        try:
+            return max(1, min(4, int(self.store.settings().get("max_active_browser_jobs") or 1)))
+        except Exception:
+            return 1
+
+    def _active_browser_jobs(self, exclude_job_id: str = "") -> int:
+        active = 0
+        for job_id, thread in self._threads.items():
+            if job_id == exclude_job_id or not thread.is_alive():
+                continue
+            job = self.store.job(job_id)
+            if job and job.browser_mode and job.status in ACTIVE_STATUSES:
+                active += 1
+        return active
+
+    def _start_next_queued_job(self) -> None:
+        queued = [
+            job
+            for job in sorted(self.store.jobs(), key=lambda item: item.created_at)
+            if job.status == "queued" and not self._thread_alive(job.id)
+        ]
+        if not queued or self._active_browser_jobs() >= self.max_active_browser_jobs:
+            return
+        for job in queued:
+            started = self.start(job.id)
+            if started.status == "starting":
+                break
 
     def _recover_interrupted_jobs(self) -> None:
         recovered = []

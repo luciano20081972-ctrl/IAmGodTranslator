@@ -1,6 +1,8 @@
-# GodTranslator v10.6.0 Desktop Companion Integration
+# GodTranslator v11.0.0 Platform And Desktop Companion
 
-GodTranslator v10.6.0 connects the website with the Desktop Companion so local downloads, pack building, preview, import, and recovery can work as one product flow.
+GodTranslator v11.0.0 connects the website with the Desktop Companion so local downloads, pack building, preview, import, recovery, translation, and backup workflows can work as one product flow.
+
+The long-term v11 platform direction is tracked in `V11_PLATFORM_ROADMAP.md`.
 
 ## v10.6 Highlights
 

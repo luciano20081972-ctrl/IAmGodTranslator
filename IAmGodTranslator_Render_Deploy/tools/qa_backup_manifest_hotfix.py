@@ -7,6 +7,8 @@ import tempfile
 import time
 import tracemalloc
 import types
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +21,7 @@ os.environ.setdefault("TRANSLATION_AUTOSTART", "false")
 os.environ.pop("DATABASE_URL", None)
 os.environ.pop("OPENAI_API_KEY", None)
 
-from app.db import Database
+from app.db import Database, normalize_backup_job
 
 
 def install_fastapi_stubs() -> None:
@@ -137,9 +139,7 @@ def build_db(name: str, chapters: int = 908, large_text: bool = True) -> Databas
 def use_database(db: Database) -> None:
     app_main.database = db
     app_main.translation_runner.store = db
-    with app_main.BACKUP_JOB_LOCK:
-        app_main.BACKUP_JOBS.clear()
-        app_main.BACKUP_THREADS.clear()
+    app_main.BACKUP_WORKERS.clear()
 
 
 def response_json(response: Any) -> dict[str, Any]:
@@ -166,7 +166,7 @@ def wait_for_backup_job(job_id: str, expected: set[str] | None = None, timeout_s
     expected = expected or {"completed"}
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
-        payload = response_json(app_main.get_platform_backup_job(job_id))
+        payload = response_json(app_main.get_backup_job(job_id))
         job = payload["job"]
         if job["status"] in expected:
             return job
@@ -271,18 +271,20 @@ def missing_optional_table_fixture() -> dict[str, Any]:
 def explicit_full_backup_fixture() -> dict[str, Any]:
     db = build_db("full-backup", chapters=12)
     use_database(db)
-    created_response = app_main.create_platform_backup({"store": False})
+    created_response = app_main.create_backup_job({"store": False})
     if response_status(created_response) != 202:
         raise AssertionError(f"expected queued backup job, got {response_status(created_response)}")
     created = response_json(created_response)
     job = wait_for_backup_job(created["job"]["id"])
     if not job.get("sha256") or not job.get("size_bytes"):
         raise AssertionError("background full backup did not calculate checksum and size")
-    path = Path(app_main.BACKUP_JOBS[job["id"]]["path"])
+    path = Path(str(job.get("file_path") or ""))
+    if not path.exists():
+        raise AssertionError("completed backup job did not leave a local backup file")
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not payload.get("tables") or payload.get("manifest", {}).get("kind") != "full_platform_backup":
         raise AssertionError("backup file payload is incomplete")
-    download = app_main.download_platform_backup()
+    download = app_main.download_platform_backup(job_id=job["id"])
     if getattr(download, "status_code", 200) != 200:
         raise AssertionError(f"download backup failed: {getattr(download, 'status_code', 0)}")
     return {
@@ -304,8 +306,8 @@ def duplicate_backup_guard_fixture() -> dict[str, Any]:
 
     db.iter_platform_backup_rows = slow_iter  # type: ignore[method-assign]
     use_database(db)
-    first = app_main.create_platform_backup({"store": False})
-    second = app_main.create_platform_backup({"store": False})
+    first = app_main.create_backup_job({"store": False})
+    second = app_main.create_backup_job({"store": False})
     if response_status(first) != 202:
         raise AssertionError(f"first backup did not queue: {response_status(first)}")
     if response_status(second) != 429:
@@ -319,6 +321,38 @@ def duplicate_backup_guard_fixture() -> dict[str, Any]:
         "second_code": second_payload.get("error", {}).get("code"),
         "completed_job": job["id"],
     }
+
+
+def postgres_backup_job_json_fixture() -> dict[str, Any]:
+    now = datetime.now(UTC)
+    normalized = normalize_backup_job(
+        {
+            "id": uuid.uuid4(),
+            "kind": "full_platform_backup",
+            "destination": "local",
+            "status": "queued",
+            "safe_mode": 1,
+            "current_table": None,
+            "total_tables": 1,
+            "completed_tables": 0,
+            "total_rows": 10,
+            "processed_rows": 0,
+            "size_bytes": 0,
+            "sha256": None,
+            "file_path": None,
+            "storage_json": "{}",
+            "error": None,
+            "cancel_requested": 0,
+            "created_at": now,
+            "started_at": None,
+            "finished_at": None,
+            "updated_at": now,
+        }
+    )
+    json.dumps({"ok": True, "job": normalized})
+    if not isinstance(normalized["id"], str) or not isinstance(normalized["created_at"], str):
+        raise AssertionError("PostgreSQL backup job fields were not converted to JSON-safe strings")
+    return {"id_json_safe": True, "timestamps_json_safe": True}
 
 
 class BrokenManifestDatabase(Database):
@@ -362,7 +396,7 @@ def frontend_error_guards() -> dict[str, Any]:
         "backupManifestError(error)",
         "loadAdminTabData(tab)",
         "renderBackupJobStatus",
-        "Starting background backup...",
+        "Queueing background backup job...",
         "Backup manifest could not be loaded.",
         "Loading backup manifest...",
     ]
@@ -380,6 +414,7 @@ def main() -> None:
         "missing_optional_table": missing_optional_table_fixture(),
         "background_full_backup": explicit_full_backup_fixture(),
         "duplicate_backup_guard": duplicate_backup_guard_fixture(),
+        "postgres_backup_job_json": postgres_backup_job_json_fixture(),
         "json_errors": json_error_fixture(),
         "authorization": authorization_fixture(),
         "frontend_error_guards": frontend_error_guards(),

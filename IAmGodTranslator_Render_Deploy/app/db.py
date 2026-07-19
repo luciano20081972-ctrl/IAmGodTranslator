@@ -43,7 +43,7 @@ ENGLISH_EDITION_PRIORITY = {
     "machine": 5,
     "community": 6,
 }
-PLATFORM_BACKUP_APP_VERSION = "10.6.1"
+PLATFORM_BACKUP_APP_VERSION = "11.0.0"
 PLATFORM_BACKUP_TABLE_NAMES = [
     "novels",
     "chapters",
@@ -61,6 +61,8 @@ PLATFORM_BACKUP_TABLE_NAMES = [
     "bookmarks",
     "favorites",
     "translation_profiles",
+    "backup_jobs",
+    "audit_events",
 ]
 PLATFORM_BACKUP_ORDER_COLUMNS = {
     "novels": ["id"],
@@ -68,7 +70,7 @@ PLATFORM_BACKUP_ORDER_COLUMNS = {
     "chapter_editions": ["novel_id", "chapter_number", "edition_key"],
     "translation_jobs": ["created_at", "id"],
     "translation_job_items": ["job_id", "chapter_number", "id"],
-    "translation_performance": ["created_at", "id"],
+    "translation_performance": ["updated_at", "id"],
     "import_jobs": ["updated_at", "id"],
     "import_job_items": ["job_id", "chapter_number", "id"],
     "content_import_items": ["job_id", "chapter_number", "id"],
@@ -177,6 +179,8 @@ class Database:
         bookmarks = self.table("bookmarks")
         favorites = self.table("favorites")
         translation_profiles = self.table("translation_profiles")
+        backup_jobs = self.table("backup_jobs")
+        audit_events = self.table("audit_events")
         chapters_novel_chapter = self.index("chapters_novel_chapter")
         chapters_missing_ai = self.index("chapters_missing_ai")
         chapter_editions_lookup = self.index("chapter_editions_lookup")
@@ -451,6 +455,41 @@ class Database:
             created_at {ts_type} NOT NULL,
             updated_at {ts_type} NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS {backup_jobs} (
+            id {uuid_type},
+            kind TEXT NOT NULL DEFAULT 'full_platform_backup',
+            destination TEXT NOT NULL DEFAULT 'local',
+            status TEXT NOT NULL DEFAULT 'queued',
+            safe_mode INTEGER NOT NULL DEFAULT 1,
+            current_table TEXT,
+            total_tables INTEGER NOT NULL DEFAULT 0,
+            completed_tables INTEGER NOT NULL DEFAULT 0,
+            total_rows INTEGER NOT NULL DEFAULT 0,
+            processed_rows INTEGER NOT NULL DEFAULT 0,
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            sha256 TEXT,
+            file_path TEXT,
+            storage_json TEXT,
+            error TEXT,
+            cancel_requested INTEGER NOT NULL DEFAULT 0,
+            created_at {ts_type} NOT NULL,
+            started_at {ts_type},
+            finished_at {ts_type},
+            updated_at {ts_type} NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS {audit_events} (
+            id {id_type},
+            event_type TEXT NOT NULL,
+            actor_id TEXT,
+            actor_role TEXT,
+            target_type TEXT,
+            target_id TEXT,
+            summary TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{{}}',
+            created_at {ts_type} NOT NULL
+        );
         """
 
     def _apply_additive_migrations(self, conn: Any) -> None:
@@ -577,10 +616,12 @@ class Database:
         self._ensure_postgres_timestamp_helpers(conn)
         chapters = self.table("chapters")
         editions = self.table("chapter_editions")
+        editions_target = f"{editions} AS target" if self.config.backend == "postgres" else editions
+        existing_prefix = "target." if self.config.backend == "postgres" else ""
         created_at_expr = self._legacy_ai_edition_created_at_sql("legacy")
         conn.execute(
             f"""
-            INSERT INTO {editions} (
+            INSERT INTO {editions_target} (
                 novel_id, chapter_number, edition_key, language, edition_type, source_label,
                 text, character_count, is_default, metadata_json, created_at, updated_at
             )
@@ -607,6 +648,8 @@ class Database:
                 character_count = excluded.character_count,
                 is_default = excluded.is_default,
                 updated_at = excluded.updated_at
+            WHERE {existing_prefix}source_label = 'Legacy AI'
+                AND COALESCE({existing_prefix}metadata_json, '{{}}') IN ('{{}}', '')
             """
         )
 
@@ -1478,7 +1521,13 @@ class Database:
             "model": model,
             "translation_mode": settings["translation_mode"],
             "speed_preset": settings["speed_preset"],
+            "speed_preset_label": settings["speed_preset_label"],
+            "speed_preset_description": settings["speed_preset_description"],
             "auto_optimize_speed": settings["auto_optimize_speed"],
+            "concurrency": settings["concurrency"],
+            "max_workers": settings["max_workers"],
+            "retry_count": settings["retry_count"],
+            "provider_timeout_seconds": settings["provider_timeout_seconds"],
             "expected_workers": speed["expected_workers"],
             "duration_estimate": speed,
             "pricing_note": pricing["note"],
@@ -2056,8 +2105,9 @@ class Database:
                 finished_at = CASE WHEN ? IN ('completed','failed','cancelled') THEN COALESCE(finished_at, ?) ELSE finished_at END,
                 updated_at = ?
             WHERE id = ?
+                AND NOT (status IN ('completed','failed') AND ? = 'running')
             """,
-            (status, int(counts["completed"] or 0), failed, float(counts["actual"] or 0), status, now, now, job_id),
+            (status, int(counts["completed"] or 0), failed, float(counts["actual"] or 0), status, now, now, job_id, status),
         )
         row = conn.execute(f"SELECT * FROM {self.table('translation_jobs')} WHERE id = ?", (job_id,)).fetchone()
         return public_job_row(row) if row else {}
@@ -2245,6 +2295,159 @@ class Database:
             "needs_translation": int(row["needs_translation"] or 0),
         }
 
+    def create_backup_job(self, destination: str = "local", safe_mode: bool = True) -> dict[str, Any]:
+        summary = self.platform_backup_manifest_summary()["manifest"]
+        now = utc_now()
+        job_id = str(uuid.uuid4())
+        table_counts = summary.get("table_counts") or {}
+        total_rows = sum(int(value or 0) for value in table_counts.values() if value is not None)
+        with self.connect() as conn:
+            conn.execute(
+                self._convert_sql(f"""
+                INSERT INTO {self.table('backup_jobs')} (
+                    id, kind, destination, status, safe_mode, current_table,
+                    total_tables, completed_tables, total_rows, processed_rows,
+                    size_bytes, sha256, file_path, storage_json, error,
+                    cancel_requested, created_at, started_at, finished_at, updated_at
+                )
+                VALUES (?, 'full_platform_backup', ?, 'queued', ?, NULL, ?, 0, ?, 0, 0, NULL, NULL, ?, NULL, 0, ?, NULL, NULL, ?)
+                """),
+                (
+                    job_id,
+                    normalize_backup_destination(destination),
+                    1 if safe_mode else 0,
+                    len(PLATFORM_BACKUP_TABLE_NAMES),
+                    total_rows,
+                    json.dumps({"status": "pending"}, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+        try:
+            self.record_audit_event("backup_creation", target_type="backup_job", target_id=job_id, summary="Backup job queued", metadata={"destination": destination})
+        except Exception as exc:
+            LOGGER.warning("backup queue audit skipped error_type=%s", exc.__class__.__name__)
+        return self.backup_job(job_id) or {"id": job_id, "status": "queued"}
+
+    def backup_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                self._convert_sql(f"""
+                SELECT * FROM {self.table('backup_jobs')}
+                ORDER BY created_at DESC
+                LIMIT ?
+                """),
+                (max(1, min(int(limit or 20), 100)),),
+            ).fetchall()
+        return [normalize_backup_job(dict(row)) for row in rows]
+
+    def backup_job(self, job_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(self._convert_sql(f"SELECT * FROM {self.table('backup_jobs')} WHERE id = ?"), (job_id,)).fetchone()
+        return normalize_backup_job(dict(row)) if row else None
+
+    def update_backup_job(self, job_id: str, **updates: Any) -> dict[str, Any]:
+        allowed = {
+            "status",
+            "current_table",
+            "completed_tables",
+            "total_rows",
+            "processed_rows",
+            "size_bytes",
+            "sha256",
+            "file_path",
+            "storage_json",
+            "error",
+            "cancel_requested",
+            "started_at",
+            "finished_at",
+        }
+        values = {key: value for key, value in updates.items() if key in allowed}
+        values["updated_at"] = utc_now()
+        assignments = ", ".join(f"{key} = ?" for key in values)
+        params = [json.dumps(value, ensure_ascii=False, default=str) if key == "storage_json" and isinstance(value, (dict, list)) else value for key, value in values.items()]
+        params.append(job_id)
+        with self.connect() as conn:
+            conn.execute(self._convert_sql(f"UPDATE {self.table('backup_jobs')} SET {assignments} WHERE id = ?"), tuple(params))
+        return self.backup_job(job_id) or {"id": job_id, "status": "missing"}
+
+    def cancel_backup_job(self, job_id: str) -> dict[str, Any]:
+        job = self.backup_job(job_id)
+        if not job:
+            raise ValueError("backup_job_not_found")
+        if job["status"] in {"completed", "failed", "cancelled"}:
+            return job
+        updated = self.update_backup_job(job_id, cancel_requested=1, status="cancelled" if job["status"] == "queued" else job["status"])
+        try:
+            self.record_audit_event("backup_cancel", target_type="backup_job", target_id=job_id, summary="Backup cancellation requested")
+        except Exception as exc:
+            LOGGER.warning("backup cancel audit skipped error_type=%s", exc.__class__.__name__)
+        return updated
+
+    def backup_table_rows(self, table_name: str, limit: int = 250, offset: int = 0) -> list[dict[str, Any]]:
+        if table_name not in PLATFORM_BACKUP_TABLE_NAMES:
+            raise ValueError("unsupported_backup_table")
+        with self.connect() as conn:
+            rows = conn.execute(
+                self._convert_sql(f"SELECT * FROM {self.table(table_name)} LIMIT ? OFFSET ?"),
+                (max(1, min(int(limit or 250), 1000)), max(0, int(offset or 0))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_audit_event(
+        self,
+        event_type: str,
+        actor_id: str | None = None,
+        actor_role: str | None = None,
+        target_type: str = "",
+        target_id: str = "",
+        summary: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO {self.table('audit_events')} (
+                    event_type, actor_id, actor_role, target_type, target_id,
+                    summary, metadata_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_type,
+                    actor_id,
+                    actor_role,
+                    target_type,
+                    target_id,
+                    summary[:500],
+                    json.dumps(sanitize_audit_metadata(metadata or {}), ensure_ascii=False, default=str),
+                    now,
+                ),
+            )
+        return {"ok": True, "event_type": event_type, "created_at": now}
+
+    def audit_events(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, event_type, actor_id, actor_role, target_type, target_id, summary, metadata_json, created_at
+                FROM {self.table('audit_events')}
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (max(1, min(int(limit or 50), 200)),),
+            ).fetchall()
+        events = []
+        for row in rows:
+            event = dict(row)
+            try:
+                event["metadata"] = json.loads(event.pop("metadata_json") or "{}")
+            except Exception:
+                event["metadata"] = {}
+            events.append(event)
+        return events
+
     def mark_interrupted_jobs(self) -> None:
         now = utc_now()
         with self.connect() as conn:
@@ -2272,17 +2475,20 @@ class Database:
         existing = self.user_profile(user_id)
         role_to_save = existing.get("role") if existing else role
         now = utc_now()
+        target_alias = " AS target" if self.config.backend == "postgres" else ""
+        existing_display_name = "target.display_name" if self.config.backend == "postgres" else "display_name"
+        existing_avatar_url = "target.avatar_url" if self.config.backend == "postgres" else "avatar_url"
         with self.connect() as conn:
             conn.execute(
                 f"""
-                INSERT INTO {self.table('user_profiles')} (
+                INSERT INTO {self.table('user_profiles')}{target_alias} (
                     user_id, email, display_name, avatar_url, preferred_language, role, created_at, updated_at
                 )
                 VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     email = excluded.email,
-                    display_name = COALESCE(excluded.display_name, display_name),
-                    avatar_url = COALESCE(excluded.avatar_url, avatar_url),
+                    display_name = COALESCE(excluded.display_name, {existing_display_name}),
+                    avatar_url = COALESCE(excluded.avatar_url, {existing_avatar_url}),
                     role = excluded.role,
                     updated_at = excluded.updated_at
                 """,
@@ -2302,6 +2508,7 @@ class Database:
 
     def save_user_preferences(self, user_id: str, preferences: dict[str, Any]) -> dict[str, Any]:
         now = utc_now()
+        preferences = sanitize_user_preferences(preferences)
         payload = json.dumps(preferences, ensure_ascii=False)
         with self.connect() as conn:
             conn.execute(
@@ -2404,13 +2611,13 @@ class Database:
             if self.config.backend == "postgres":
                 conn.execute(
                     f"""
-                    INSERT INTO {self.table('bookmarks')} (id, user_id, novel_id, chapter_number, note, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO {self.table('bookmarks')} (user_id, novel_id, chapter_number, note, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(user_id, novel_id, chapter_number) DO UPDATE SET
                         note = excluded.note,
                         updated_at = excluded.updated_at
                     """,
-                    (str(uuid.uuid4()), user_id, novel_id, int(chapter_number), note or "", now, now),
+                    (user_id, novel_id, int(chapter_number), note or "", now, now),
                 )
             else:
                 conn.execute(
@@ -2570,6 +2777,7 @@ class Database:
         duplicate_keys: list[dict[str, Any]] = []
         counters = {"would_import": 0, "would_update": 0, "would_skip": 0, "duplicates": 0, "errors": 0}
         by_type: dict[str, int] = {}
+        edition_type_counts: dict[str, int] = {}
         content_to_add = {"original": 0, "english": 0, "reference": 0}
         content_to_update = {"original": 0, "english": 0, "reference": 0}
         missing_by_type = {"original": [], "english": [], "reference": []}
@@ -2579,6 +2787,9 @@ class Database:
         for item in items:
             content_type = item["content_type"]
             by_type[content_type] = by_type.get(content_type, 0) + 1
+            if content_type == "english":
+                edition_type = normalize_edition_type(item.get("edition_type") or "Imported")
+                edition_type_counts[edition_type] = edition_type_counts.get(edition_type, 0) + 1
             key = (
                 content_type,
                 item.get("chapter_number"),
@@ -2651,6 +2862,7 @@ class Database:
             "expected_chapter_range": {"start": expected_start, "end": expected_end} if expected_range_configured else None,
             "expected_chapter_count": expected_chapter_count,
             "content_type_counts": by_type,
+            "edition_type_counts": edition_type_counts,
             "content_to_add": content_to_add,
             "content_to_update": content_to_update,
             "missing_chapters": {key: sorted(set(value)) for key, value in missing_by_type.items()},
@@ -2857,14 +3069,16 @@ class Database:
         existing_text_present = bool(existing and readable(existing[column]))
         if existing_text_present and not options["overwrite_existing"]:
             return {"action": "skipped", "status": "skipped_existing", "reason": "existing_content_preserved"}
+        action = ""
         if existing is None:
-            conn.execute(
+            cursor = conn.execute(
                 f"""
                 INSERT INTO {self.table('chapters')} (
                     novel_id, chapter_number, title, {column}, {count_column},
                     translation_status, created_at, updated_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(novel_id, chapter_number) DO NOTHING
                 """,
                 (
                     novel_id,
@@ -2877,8 +3091,17 @@ class Database:
                     now,
                 ),
             )
-            action = "imported"
-        else:
+            if cursor.rowcount:
+                action = "imported"
+            else:
+                existing = conn.execute(
+                    f"SELECT * FROM {self.table('chapters')} WHERE novel_id = ? AND chapter_number = ?",
+                    (novel_id, chapter_number),
+                ).fetchone()
+                existing_text_present = bool(existing and readable(existing[column]))
+                if existing_text_present and not options["overwrite_existing"]:
+                    return {"action": "skipped", "status": "skipped_existing", "reason": "existing_content_preserved"}
+        if not action:
             assignments: list[str] = []
             params: list[Any] = []
             if title:
@@ -3015,12 +3238,12 @@ class Database:
         with self.connect() as conn:
             while True:
                 rows = conn.execute(
-                    f"""
+                    self._convert_sql(f"""
                     SELECT *
                     FROM {self.table(table_name)}
                     {order_clause}
                     LIMIT ? OFFSET ?
-                    """,
+                    """),
                     (size, offset),
                 ).fetchall()
                 if not rows:
@@ -3125,6 +3348,8 @@ class Database:
             "bookmarks": ["id"],
             "favorites": ["user_id", "novel_id"],
             "translation_profiles": ["id"],
+            "backup_jobs": ["id"],
+            "audit_events": ["id"],
         }
         changes: dict[str, dict[str, Any]] = {}
         valid_tables = 0
@@ -3259,6 +3484,99 @@ class Database:
         }
 
 
+def normalize_backup_destination(value: str) -> str:
+    text = str(value or "local").strip().lower().replace("_", "-")
+    return text if text in {"local", "supabase"} else "local"
+
+
+def normalize_backup_job(row: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(row)
+    for key, value in list(payload.items()):
+        if isinstance(value, uuid.UUID):
+            payload[key] = str(value)
+        elif isinstance(value, datetime):
+            payload[key] = value.isoformat()
+    for key in ("safe_mode", "cancel_requested"):
+        payload[key] = bool(payload.get(key))
+    try:
+        payload["storage"] = json.loads(payload.pop("storage_json") or "{}")
+    except Exception:
+        payload["storage"] = {}
+    total_tables = int(payload.get("total_tables") or 0)
+    completed_tables = int(payload.get("completed_tables") or 0)
+    total_rows = int(payload.get("total_rows") or 0)
+    processed_rows = int(payload.get("processed_rows") or 0)
+    table_fraction = completed_tables / total_tables if total_tables else 0
+    row_fraction = processed_rows / total_rows if total_rows else table_fraction
+    payload["progress_percent"] = round(max(0, min(1, max(table_fraction, row_fraction))) * 100, 1)
+    return payload
+
+
+SENSITIVE_AUDIT_KEYWORDS = {
+    "secret",
+    "password",
+    "token",
+    "cookie",
+    "authorization",
+    "header",
+    "prompt",
+    "body",
+    "text",
+    "content",
+    "chapter_text",
+    "provider_body",
+}
+
+
+def sanitize_audit_metadata(value: Any, depth: int = 0) -> Any:
+    if depth > 4:
+        return "[truncated]"
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in value.items():
+            safe_key = str(key)
+            lowered = safe_key.lower()
+            if any(marker in lowered for marker in SENSITIVE_AUDIT_KEYWORDS):
+                sanitized[safe_key] = "[redacted]"
+            else:
+                sanitized[safe_key] = sanitize_audit_metadata(item, depth + 1)
+        return sanitized
+    if isinstance(value, list):
+        return [sanitize_audit_metadata(item, depth + 1) for item in value[:50]]
+    if isinstance(value, str):
+        return value[:300]
+    return value
+
+
+def sanitize_user_preferences(preferences: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(preferences, dict):
+        return {}
+    payload = dict(preferences)
+    collections = payload.get("collections")
+    if not isinstance(collections, list):
+        return payload
+    cleaned_collections: list[Any] = []
+    for collection in collections:
+        if not isinstance(collection, dict):
+            cleaned_collections.append(collection)
+            continue
+        cleaned = dict(collection)
+        novel_ids = cleaned.get("novel_ids")
+        if isinstance(novel_ids, list):
+            seen: set[str] = set()
+            deduped: list[str] = []
+            for novel_id in novel_ids:
+                value = str(novel_id or "").strip()
+                if not value or value in seen:
+                    continue
+                seen.add(value)
+                deduped.append(value)
+            cleaned["novel_ids"] = deduped
+        cleaned_collections.append(cleaned)
+    payload["collections"] = cleaned_collections
+    return payload
+
+
 class PostgresConnection:
     def __init__(self, conn: Any, converter: Any) -> None:
         self.conn = conn
@@ -3351,8 +3669,11 @@ def public_novel_row(row: Any) -> dict[str, Any]:
     payload["missing_english_count"] = max(0, int(missing_basis or 0) - english_count)
     payload["missing_reference_count"] = max(0, int(missing_basis or 0) - reference_count)
     payload["remaining_count"] = max(0, original_count - english_count)
-    payload["translation_coverage"] = coverage_percent(payload.get("english_count"), payload.get("original_count"))
-    payload["reading_coverage"] = coverage_percent(payload.get("english_count"), payload.get("chapter_count"))
+    coverage_basis = expected_chapter_count if expected_range_configured else max(chapter_count, original_count, english_count)
+    payload["coverage_chapter_basis"] = int(coverage_basis or 0)
+    payload["coverage_basis_label"] = "expected chapters" if expected_range_configured else "chapter inventory"
+    payload["translation_coverage"] = coverage_percent(english_count, coverage_basis)
+    payload["reading_coverage"] = coverage_percent(english_count, coverage_basis)
     return payload
 
 
@@ -3569,7 +3890,7 @@ def coverage_percent(numerator: Any, denominator: Any) -> int:
     denominator = int(denominator or 0)
     if denominator <= 0:
         return 0
-    return round(int(numerator or 0) / denominator * 100)
+    return max(0, min(100, round(int(numerator or 0) / denominator * 100)))
 
 
 def title_case(value: Any) -> str:
@@ -3590,6 +3911,9 @@ SPEED_PRESETS: dict[str, dict[str, Any]] = {
     "balanced": {"label": "Balanced", "concurrency": 3, "max_workers": 4, "retry_count": 2, "timeout_seconds": 180, "description": "Recommended for most translation jobs."},
     "fast": {"label": "Fast", "concurrency": 4, "max_workers": 6, "retry_count": 2, "timeout_seconds": 150, "description": "Higher parallel processing when capacity allows."},
     "maximum-safe": {"label": "Maximum Safe", "concurrency": 6, "max_workers": 8, "retry_count": 1, "timeout_seconds": 120, "description": "Highest safe adaptive throughput currently available."},
+    "economy": {"label": "Economy", "concurrency": 1, "max_workers": 1, "retry_count": 3, "timeout_seconds": 300, "description": "Lowest background pressure for budget-conscious jobs."},
+    "overnight": {"label": "Overnight", "concurrency": 1, "max_workers": 2, "retry_count": 4, "timeout_seconds": 420, "description": "Long-running low-pressure preset intended for unattended queues."},
+    "custom": {"label": "Custom", "concurrency": 3, "max_workers": 4, "retry_count": 2, "timeout_seconds": 180, "description": "Uses the advanced worker, retry, and timeout controls supplied with the job."},
 }
 
 
@@ -3605,7 +3929,13 @@ def normalized_translation_settings(settings: dict[str, Any]) -> dict[str, Any]:
     auto = bool(payload.get("auto_optimize_speed", True))
     max_workers = optional_int(payload.get("max_workers"))
     concurrency = optional_int(payload.get("concurrency"))
-    if mode != "advanced":
+    if preset == "custom":
+        auto = False
+        if concurrency is None:
+            concurrency = preset_config["concurrency"]
+        if max_workers is None:
+            max_workers = concurrency
+    elif mode != "advanced":
         concurrency = preset_config["concurrency"]
         max_workers = preset_config["max_workers"] if auto else preset_config["concurrency"]
     elif concurrency is None:
@@ -3625,7 +3955,7 @@ def normalized_translation_settings(settings: dict[str, Any]) -> dict[str, Any]:
     payload["retry_count"] = max(0, min(5, retry_count))
     payload["provider_timeout_seconds"] = max(30, min(600, optional_int(payload.get("provider_timeout_seconds")) or preset_config["timeout_seconds"]))
     batch_size = optional_int(payload.get("batch_size"))
-    payload["batch_size"] = max(1, min(5000, batch_size)) if mode == "advanced" and batch_size else None
+    payload["batch_size"] = max(1, min(5000, batch_size)) if (mode == "advanced" or preset == "custom") and batch_size else None
     payload["priority"] = "high" if str(payload.get("priority") or "normal").lower() == "high" else "normal"
     payload["use_reference"] = bool(payload.get("use_reference", True))
     payload["only_untranslated"] = bool(payload.get("only_untranslated", True))

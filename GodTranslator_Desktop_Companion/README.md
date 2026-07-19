@@ -1,6 +1,6 @@
-# GodTranslator Desktop Companion v10.6
+# GodTranslator Desktop Companion v11
 
-GodTranslator Desktop Companion is the Windows desktop side of GodTranslator v10.6. It supports local novel acquisition, Playwright/browser downloads, Recovery Requests, automatic pack creation, and one-click website sync.
+GodTranslator Desktop Companion is the Windows desktop side of GodTranslator v11. It supports local novel acquisition, Playwright/browser downloads, Recovery Requests, automatic pack creation, and explicit website sync.
 
 The website remains the live source of truth for PostgreSQL data, Library, Reader, accounts, translation jobs, Admin, backups, restore, and production records. The desktop companion stores only local job state, downloads, pack history, settings, logs, connection profiles, and cached metadata under:
 
@@ -36,19 +36,19 @@ set GT_DESKTOP_TEST_WEBSITE=1
 .venv\Scripts\python.exe -m unittest tests.test_foundation.DesktopCompanionFoundationTests.test_public_website_health_when_enabled
 ```
 
-## v10.6 Included
+## v11 Included
 
 - Modern CustomTkinter shell with navigation:
-  - Home
+  - Dashboard
   - Downloads
+  - Library
   - New Novel
-  - Sync Center
-  - Recovery Requests
-  - Export & Packs
-  - Desktop Library
+  - Recovery
+  - Packs
+  - Sync
   - Activity
   - Settings
-  - Logs
+  - Advanced Logs
 - Existing NovelFire downloader source copied into `desktop_companion/legacy/novelfire_downloader` for reuse.
 - Source-adapter structure with initial `NovelFireAdapter`.
 - Persistent local job state in `%LOCALAPPDATA%\GodTranslatorDesktop\jobs.json`.
@@ -61,6 +61,8 @@ set GT_DESKTOP_TEST_WEBSITE=1
 - Persistent upload queue and Sync Center status.
 - Automatic Original, Reference, English, and Mixed pack build support.
 - Source adapter registry for NovelFire plus future 69Shuba, Qidian, Royal Road, and ScribbleHub adapters.
+- Bounded browser queue. The default is one active Playwright/browser job at a time; additional jobs remain queued and start when a slot is free.
+- Explicit Preview then Execute Import flow. Preview can upload a pack, but the import is not applied until the user chooses Execute Import.
 - Fixture-only tests.
 
 ## Safety Defaults
@@ -71,7 +73,12 @@ set GT_DESKTOP_TEST_WEBSITE=1
 - Add missing data only.
 - Never include passwords, API keys, cookies, browser profiles, access tokens, refresh tokens, logs, or local databases in packs.
 - Never store plaintext website passwords in config files.
+- Manual bearer tokens are kept in memory only for the current desktop session. A production device-authorization token flow is documented before any durable credential storage is added.
 
 ## Current Upload Status
 
-The v10.6 website exposes Desktop Companion endpoints for health, auth check, sync status, import history, pack preview, and pack execution. The companion previews before executing imports and uses add-missing behavior by default.
+The v11 website exposes Desktop Companion endpoints for health, auth check, sync status, import history, pack preview, and pack execution. The companion previews before executing imports and uses add-missing behavior by default.
+
+## Packaging And Updates
+
+The companion should be packaged as a signed Windows app or installer after release QA. Auto-update must not be silent: it should show the version, release notes, checksum/signature status, and rollback instructions before replacing local software. Browser profiles, downloads, local logs, queued jobs, and upload state must remain under `%LOCALAPPDATA%\GodTranslatorDesktop` and must not be bundled into a release package.

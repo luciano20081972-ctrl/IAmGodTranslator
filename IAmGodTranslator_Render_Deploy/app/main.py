@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import hashlib
 import hmac
@@ -30,22 +31,30 @@ from app.content_import import payload_from_uploads
 from app.recovery import parse_uploads, recovery_request, recovery_diagnostic, reference_diagnostic
 
 
-VERSION = "10.6.2"
+VERSION = "11.0.0"
+DESKTOP_API_VERSION = "11.0.0"
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_COOKIE = "gt_admin_session"
 SESSION_TTL_SECONDS = 60 * 60 * 12
 LOGGER = logging.getLogger(__name__)
+DISABLED_ACCOUNT_ROLES = {"disabled", "expired", "removed", "revoked"}
 
 app = FastAPI(title="GodTranslator", version=VERSION)
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 database = Database()
-BACKUP_ACTIVE_STATES = {"queued", "running"}
-BACKUP_COMPLETED_STATES = {"completed", "failed", "cancelled"}
 BACKUP_BATCH_SIZE = max(10, min(1000, int(os.getenv("PLATFORM_BACKUP_BATCH_SIZE") or "100")))
-BACKUP_JOB_RETENTION = max(1, min(10, int(os.getenv("PLATFORM_BACKUP_JOB_RETENTION") or "3")))
-BACKUP_JOB_LOCK = threading.Lock()
-BACKUP_JOBS: dict[str, dict[str, Any]] = {}
-BACKUP_THREADS: dict[str, threading.Thread] = {}
+BACKUP_WORKERS: dict[str, threading.Thread] = {}
+
+
+def utc_now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def audit_event(event_type: str, **kwargs: Any) -> None:
+    try:
+        database.record_audit_event(event_type, **kwargs)
+    except Exception as exc:
+        LOGGER.warning("audit event skipped event_type=%s error_type=%s", event_type, exc.__class__.__name__)
 
 
 class TranslationRunner:
@@ -231,7 +240,22 @@ def desktop_health() -> dict[str, object]:
     base = health()
     return {
         **base,
-        "desktop_api": "10.6.0",
+        "desktop_api": DESKTOP_API_VERSION,
+        "auth": {
+            "mode": "admin_session_or_supabase_bearer",
+            "passwords_accepted_by_desktop_api": False,
+            "recommended_storage": "desktop_device_authorization_token",
+            "current_desktop_client_storage": "memory_only_manual_bearer_token",
+        },
+        "sync_states": [
+            "Connected",
+            "Disconnected",
+            "Uploading",
+            "Downloading",
+            "Pending",
+            "Conflicts",
+            "Queued",
+        ],
         "supports": [
             "connection_test",
             "desktop_auth_check",
@@ -240,6 +264,8 @@ def desktop_health() -> dict[str, object]:
             "sync_status",
             "import_history",
             "recovery_request",
+            "version_compatibility",
+            "desktop_device_auth_design",
         ],
     }
 
@@ -261,6 +287,7 @@ def admin_login(request: Request, response: Response, payload: dict[str, Any] = 
         samesite="lax",
         max_age=SESSION_TTL_SECONDS,
     )
+    audit_event("admin_login", actor_role="admin", target_type="admin_session", summary="Admin session created")
     return {"ok": True, "admin": True}
 
 
@@ -453,6 +480,8 @@ def account_user(request: Request) -> RequestUser | None:
                 supabase_user.get("user_metadata", {}).get("name") or supabase_user.get("user_metadata", {}).get("full_name"),
                 supabase_user.get("user_metadata", {}).get("avatar_url"),
             )
+            if profile_role_disabled(profile):
+                return None
             return RequestUser(
                 user_id=str(profile["user_id"]),
                 email=profile.get("email"),
@@ -471,6 +500,9 @@ def bearer_token(request: Request) -> str | None:
 
 
 def validate_supabase_token(token: str) -> dict[str, Any] | None:
+    test_user = validate_test_auth_token(token)
+    if test_user is not None:
+        return test_user
     url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
     key = os.getenv("SUPABASE_PUBLISHABLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or ""
     if not url or not key:
@@ -485,6 +517,59 @@ def validate_supabase_token(token: str) -> dict[str, Any] | None:
             return json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
         return None
+
+
+def validate_test_auth_token(token: str) -> dict[str, Any] | None:
+    if not test_auth_enabled():
+        return None
+    secret = os.getenv("GT_TEST_AUTH_SECRET") or ""
+    if len(secret) < 16:
+        return None
+    parts = token.split(".")
+    if len(parts) != 3 or parts[0] != "gtqa1":
+        return None
+    signed = parts[1].encode("utf-8")
+    expected = hmac.new(secret.encode("utf-8"), signed, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(parts[2], expected):
+        return None
+    try:
+        payload = json.loads(base64_url_decode(parts[1]).decode("utf-8"))
+    except Exception:
+        return None
+    expires_at = int(payload.get("exp") or 0)
+    if not expires_at or expires_at < int(time.time()):
+        return None
+    user_id = str(payload.get("sub") or "")
+    if not user_id:
+        return None
+    allowed = {item.strip() for item in (os.getenv("GT_TEST_AUTH_ALLOWED_USER_IDS") or "").split(",") if item.strip()}
+    if allowed and user_id not in allowed:
+        return None
+    email = str(payload.get("email") or "")
+    return {
+        "id": user_id,
+        "email": email or None,
+        "user_metadata": {
+            "name": payload.get("name") or email,
+            "full_name": payload.get("name") or email,
+            "avatar_url": None,
+        },
+    }
+
+
+def test_auth_enabled() -> bool:
+    enabled = (os.getenv("GT_TEST_AUTH_ENABLED") or "").lower() in {"1", "true", "yes"}
+    if not enabled:
+        return False
+    app_env = (os.getenv("APP_ENV") or os.getenv("ENV") or "").lower()
+    if app_env in {"prod", "production"}:
+        return False
+    return True
+
+
+def base64_url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode((value + padding).encode("utf-8"))
 
 
 def valid_admin_cookie(request: Request) -> bool:
@@ -513,6 +598,10 @@ def role_for_profile(profile: dict[str, Any], email: str | None) -> str:
         return "admin"
     role = str(profile.get("role") or "user").lower()
     return role if role in {"user", "translator", "admin"} else "user"
+
+
+def profile_role_disabled(profile: dict[str, Any]) -> bool:
+    return str(profile.get("role") or "").lower() in DISABLED_ACCOUNT_ROLES
 
 
 def sanitize_profile(profile: dict[str, Any]) -> dict[str, Any]:
@@ -577,7 +666,16 @@ def preview_content_import(payload: dict[str, Any] = Body(...), _: None = Depend
 
 @app.post("/api/admin/content/import/execute")
 def execute_content_import(payload: dict[str, Any] = Body(...), _: None = Depends(require_admin)) -> dict[str, object]:
-    return database.apply_content_import_payload(payload)
+    result = database.apply_content_import_payload(payload)
+    audit_event(
+        "import_execute",
+        actor_role="admin",
+        target_type="content_import",
+        target_id=str(result.get("job_id") or payload.get("novel_id") or ""),
+        summary="Content import executed",
+        metadata={"result": result.get("summary") or {}, "overwrite": bool((payload.get("options") or {}).get("overwrite_existing"))},
+    )
+    return result
 
 
 @app.post("/api/admin/content/import/preview-pack")
@@ -588,6 +686,7 @@ async def preview_content_pack(
     author: str | None = Query(None),
     source_url: str | None = Query(None),
     content_type: str | None = Query(None),
+    edition_type: str | None = Query(None),
     _: None = Depends(require_admin),
 ) -> dict[str, object]:
     payloads: list[tuple[str, bytes]] = []
@@ -603,6 +702,7 @@ async def preview_content_pack(
                 "source_url": source_url or "",
             },
             "content_type": content_type or "",
+            "edition_type": edition_type or ("AI" if str(content_type or "").lower() == "ai" else "Imported"),
         },
     )
     preview = database.content_import_preview(payload)
@@ -617,6 +717,7 @@ async def execute_content_pack(
     author: str | None = Query(None),
     source_url: str | None = Query(None),
     content_type: str | None = Query(None),
+    edition_type: str | None = Query(None),
     overwrite_existing: bool = Query(False),
     dry_run: bool = Query(False),
     _: None = Depends(require_admin),
@@ -634,6 +735,7 @@ async def execute_content_pack(
                 "source_url": source_url or "",
             },
             "content_type": content_type or "",
+            "edition_type": edition_type or ("AI" if str(content_type or "").lower() == "ai" else "Imported"),
             "options": {
                 "overwrite_existing": overwrite_existing,
                 "skip_existing": not overwrite_existing,
@@ -645,6 +747,14 @@ async def execute_content_pack(
         },
     )
     result = database.apply_content_import_payload(payload)
+    audit_event(
+        "import_execute",
+        actor_role="admin",
+        target_type="desktop_pack" if source_url else "content_pack",
+        target_id=str(result.get("job_id") or novel_id or ""),
+        summary="Content pack import executed",
+        metadata={"result": result.get("summary") or {}, "overwrite": overwrite_existing, "dry_run": dry_run},
+    )
     return {**result, "pack_warnings": payload.get("warnings", [])}
 
 
@@ -655,7 +765,12 @@ def desktop_auth_check(request: Request, _: None = Depends(require_admin)) -> di
         "ok": True,
         "authenticated": True,
         "role": user.role if user else "admin",
-        "desktop_api": "10.6.0",
+        "version": VERSION,
+        "desktop_api": DESKTOP_API_VERSION,
+        "auth": {
+            "method": "admin_session_or_supabase_bearer",
+            "password_received": False,
+        },
     }
 
 
@@ -668,16 +783,21 @@ def desktop_sync_status(novel_id: str | None = None, _: None = Depends(require_a
     return {
         "ok": True,
         "version": VERSION,
+        "desktop_api": DESKTOP_API_VERSION,
         "schema": database.config.schema,
         "overview": overview,
         "novel": novel,
         "missing": missing,
         "recent_imports": imports,
         "sync": {
+            "state": "Connected",
+            "desktop_api": DESKTOP_API_VERSION,
+            "website_version": VERSION,
             "pack_preview": "/api/desktop/import/preview-pack",
             "pack_execute": "/api/desktop/import/execute-pack",
             "import_history": "/api/desktop/import-history",
             "recovery_request": "/api/novels/{novel_id}/recovery/request",
+            "auth": "Use an Admin session cookie or Supabase bearer token. Do not send or store an Admin password in Desktop Companion.",
         },
     }
 
@@ -695,6 +815,7 @@ async def desktop_preview_content_pack(
     author: str | None = Query(None),
     source_url: str | None = Query(None),
     content_type: str | None = Query(None),
+    edition_type: str | None = Query(None),
     _: None = Depends(require_admin),
 ) -> dict[str, object]:
     return await preview_content_pack(
@@ -704,6 +825,7 @@ async def desktop_preview_content_pack(
         author=author,
         source_url=source_url,
         content_type=content_type,
+        edition_type=edition_type,
     )
 
 
@@ -715,6 +837,7 @@ async def desktop_execute_content_pack(
     author: str | None = Query(None),
     source_url: str | None = Query(None),
     content_type: str | None = Query(None),
+    edition_type: str | None = Query(None),
     overwrite_existing: bool = Query(False),
     dry_run: bool = Query(False),
     _: None = Depends(require_admin),
@@ -726,6 +849,7 @@ async def desktop_execute_content_pack(
         author=author,
         source_url=source_url,
         content_type=content_type,
+        edition_type=edition_type,
         overwrite_existing=overwrite_existing,
         dry_run=dry_run,
     )
@@ -836,6 +960,14 @@ def create_translation_job(payload: dict[str, Any] = Body(...), _: None = Depend
     novel_id = payload.get("novel_id") or default_novel_id()
     selection = translation_selection(novel_id, payload)
     job = database.create_translation_job(novel_id, selection["chapters"], {**payload, "_selection_diagnostics": selection["diagnostics"]})
+    audit_event(
+        "translation_job_create",
+        actor_role="translator",
+        target_type="translation_job",
+        target_id=str(job["id"]),
+        summary="Translation job created",
+        metadata={"novel_id": novel_id, "chapter_count": len(selection["chapters"]), "selection": selection["diagnostics"], "model": payload.get("model")},
+    )
     translation_runner.start(str(job["id"]))
     return {"ok": True, "job": job}
 
@@ -949,7 +1081,16 @@ def apply_reference_import(novel_id: str, job_id: str, _: None = Depends(require
         raise HTTPException(status_code=404, detail="import_job_not_found")
     if job["novel_id"] != novel_id:
         raise HTTPException(status_code=400, detail="import_job_novel_mismatch")
-    return database.apply_import_job(job_id)
+    result = database.apply_import_job(job_id)
+    audit_event(
+        "recovery_apply",
+        actor_role="admin",
+        target_type="import_job",
+        target_id=job_id,
+        summary="Recovery import applied",
+        metadata={"novel_id": novel_id, "result": result.get("summary") or {}},
+    )
+    return result
 
 
 @app.get("/api/admin/overview")
@@ -1040,10 +1181,63 @@ def platform_backup_manifest(_: None = Depends(require_admin)) -> dict[str, obje
             exc,
         )
 
+@app.get("/api/admin/backups/jobs")
+def list_backup_jobs(limit: int = 20, _: None = Depends(require_admin)) -> dict[str, object]:
+    return {"ok": True, "jobs": database.backup_jobs(limit=limit)}
+
+
+@app.post("/api/admin/backups/jobs", response_model=None)
+def create_backup_job(payload: dict[str, Any] = Body(default={}), _: None = Depends(require_admin)) -> dict[str, object] | JSONResponse:
+    try:
+        active = active_backup_job()
+        if active:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "ok": False,
+                    "error": {
+                        "code": "backup_already_running",
+                        "message": "A full backup is already queued or running.",
+                        "stage": "backup_job",
+                    },
+                    "message": "A full backup is already queued or running.",
+                    "stage": "backup_job",
+                    "job": active,
+                },
+            )
+        destination = str(payload.get("destination") or ("supabase" if bool(payload.get("store", True)) else "local"))
+        job = database.create_backup_job(destination=destination, safe_mode=bool(payload.get("safe_mode", True)))
+        if bool(payload.get("start", True)):
+            start_backup_worker(str(job["id"]), store=bool(payload.get("store", True)))
+        return JSONResponse(status_code=202, content={"ok": True, "job": database.backup_job(str(job["id"])) or job})
+    except Exception as exc:
+        return backup_error_response("queue_backup_job", "backup_job_queue_failed", "Backup job could not be queued.", exc)
+
+
+@app.get("/api/admin/backups/jobs/{job_id}", response_model=None)
+def get_backup_job(job_id: str, _: None = Depends(require_admin)) -> dict[str, object]:
+    job = database.backup_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="backup_job_not_found")
+    return {"ok": True, "job": job}
+
+
+@app.post("/api/admin/backups/jobs/{job_id}/cancel")
+def cancel_backup_job(job_id: str, _: None = Depends(require_admin)) -> dict[str, object]:
+    try:
+        return {"ok": True, "job": database.cancel_backup_job(job_id)}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/admin/audit-events")
+def list_audit_events(limit: int = 50, _: None = Depends(require_admin)) -> dict[str, object]:
+    return {"ok": True, "events": database.audit_events(limit=limit)}
+
 
 @app.get("/api/admin/backups/download", response_model=None)
-def download_platform_backup(_: None = Depends(require_admin)) -> StreamingResponse | JSONResponse:
-    job = latest_completed_backup_job()
+def download_platform_backup(job_id: str | None = Query(default=None), _: None = Depends(require_admin)) -> StreamingResponse | JSONResponse:
+    job = database.backup_job(job_id) if job_id else latest_completed_backup_job()
     if not job:
         return JSONResponse(
             status_code=409,
@@ -1058,7 +1252,22 @@ def download_platform_backup(_: None = Depends(require_admin)) -> StreamingRespo
                 "stage": "download_ready",
             },
         )
-    file_path = Path(str(job.get("path") or ""))
+    if job.get("status") != "completed":
+        return JSONResponse(
+            status_code=409,
+            content={
+                "ok": False,
+                "error": {
+                    "code": "backup_not_complete",
+                    "message": "Backup download is available only after the job completes.",
+                    "stage": "download_ready",
+                },
+                "message": "Backup download is available only after the job completes.",
+                "stage": "download_ready",
+                "job": job,
+            },
+        )
+    file_path = Path(str(job.get("file_path") or ""))
     if not file_path.exists() or not file_path.is_file():
         return JSONResponse(
             status_code=410,
@@ -1077,7 +1286,7 @@ def download_platform_backup(_: None = Depends(require_admin)) -> StreamingRespo
         iter_backup_file(file_path),
         media_type="application/json",
         headers={
-            "Content-Disposition": f'attachment; filename="{job.get("filename") or file_path.name}"',
+            "Content-Disposition": f'attachment; filename="{file_path.name}"',
             "Content-Length": str(file_path.stat().st_size),
             "X-Backup-Job-Id": str(job.get("id") or ""),
             "X-Backup-Sha256": str(job.get("sha256") or ""),
@@ -1087,48 +1296,7 @@ def download_platform_backup(_: None = Depends(require_admin)) -> StreamingRespo
 
 @app.post("/api/admin/backups/create", response_model=None)
 def create_platform_backup(payload: dict[str, Any] = Body(default={}), _: None = Depends(require_admin)) -> dict[str, object] | JSONResponse:
-    store = bool((payload or {}).get("store", True))
-    job, status_code = start_platform_backup_job(store=store)
-    if status_code == 429:
-        return JSONResponse(
-            status_code=429,
-            content={
-                "ok": False,
-                "error": {
-                    "code": "backup_already_running",
-                    "message": "A full backup is already queued or running.",
-                    "stage": "backup_job",
-                },
-                "message": "A full backup is already queued or running.",
-                "stage": "backup_job",
-                "job": job,
-            },
-        )
-    return JSONResponse(
-        status_code=202,
-        content={
-            "ok": True,
-            "message": "Full backup job queued. The request returned before backup generation began.",
-            "job": job,
-        },
-    )
-
-
-@app.get("/api/admin/backups/jobs")
-def list_platform_backup_jobs(_: None = Depends(require_admin)) -> dict[str, object]:
-    with BACKUP_JOB_LOCK:
-        jobs = [public_backup_job(job) for job in sorted(BACKUP_JOBS.values(), key=lambda item: str(item.get("created_at") or ""), reverse=True)]
-    return {"ok": True, "jobs": jobs}
-
-
-@app.get("/api/admin/backups/jobs/{job_id}", response_model=None)
-def get_platform_backup_job(job_id: str, _: None = Depends(require_admin)) -> dict[str, object] | JSONResponse:
-    with BACKUP_JOB_LOCK:
-        job = BACKUP_JOBS.get(job_id)
-        if not job:
-            return JSONResponse(status_code=404, content={"ok": False, "error": {"code": "backup_job_not_found", "message": "Backup job was not found.", "stage": "backup_job"}})
-        payload = public_backup_job(job)
-    return {"ok": True, "job": payload}
+    return create_backup_job(payload, _)
 
 
 @app.post("/api/admin/backups/restore-preview")
@@ -1136,6 +1304,133 @@ def preview_platform_restore(payload: dict[str, Any] = Body(...), _: None = Depe
     mode = str(payload.get("mode") or "add-missing")
     backup = payload.get("backup") if isinstance(payload.get("backup"), dict) else payload
     return database.restore_preview(backup, mode=mode)
+
+
+def start_backup_worker(job_id: str, store: bool = True) -> None:
+    existing = BACKUP_WORKERS.get(job_id)
+    if existing and existing.is_alive():
+        return
+    thread = threading.Thread(target=run_platform_backup_job, args=(job_id, store), name=f"gt-backup-{job_id[:8]}", daemon=True)
+    BACKUP_WORKERS[job_id] = thread
+    thread.start()
+
+
+def run_platform_backup_job(job_id: str, store: bool = True) -> None:
+    started_at = utc_now()
+    database.update_backup_job(job_id, status="running", started_at=started_at, storage_json={"status": "streaming"})
+    output_path = backup_work_dir() / f"godtranslator-v10-platform-backup-job-{job_id}.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    hasher = hashlib.sha256()
+    size_bytes = 0
+    processed_rows = 0
+    completed_tables = 0
+    try:
+        summary = database.platform_backup_manifest_summary()["manifest"]
+        manifest = {
+            **summary,
+            "format_version": "godtranslator-v10-platform-backup.v1",
+            "kind": "full_platform_backup",
+            "backup_job_id": job_id,
+            "writer": "background_bounded_json_writer",
+            "batch_size": BACKUP_BATCH_SIZE,
+            "counts_snapshot": "pre_stream_aggregate",
+            "counts_consistency": "Manifest counts are captured before bounded row streaming; volatile telemetry tables may change during backup generation.",
+            "sha256": None,
+            "size_bytes": None,
+            "checksum_available": False,
+        }
+
+        def write(handle: Any, text: str) -> None:
+            nonlocal size_bytes
+            data = text.encode("utf-8")
+            handle.write(data)
+            hasher.update(data)
+            size_bytes += len(data)
+
+        with output_path.open("wb") as handle:
+            write(handle, '{"ok":true,"manifest":')
+            write(handle, json.dumps(manifest, ensure_ascii=False, default=str))
+            write(handle, ',"tables":{')
+            for table_index, table_name in enumerate(PLATFORM_BACKUP_TABLE_NAMES):
+                job = database.backup_job(job_id)
+                if job and job.get("cancel_requested"):
+                    database.update_backup_job(
+                        job_id,
+                        status="cancelled",
+                        current_table=table_name,
+                        completed_tables=completed_tables,
+                        processed_rows=processed_rows,
+                        size_bytes=size_bytes,
+                        file_path=str(output_path),
+                        storage_json={"status": "cancelled", "path": str(output_path)},
+                        finished_at=utc_now(),
+                    )
+                    audit_event("backup_cancelled", actor_role="admin", target_type="backup_job", target_id=job_id, summary="Backup job cancelled")
+                    return
+                if table_index:
+                    write(handle, ",")
+                write(handle, json.dumps(table_name))
+                write(handle, ":[")
+                database.update_backup_job(job_id, current_table=table_name, completed_tables=completed_tables, processed_rows=processed_rows, size_bytes=size_bytes)
+                first_row = True
+                try:
+                    for batch in database.iter_platform_backup_rows(table_name, batch_size=BACKUP_BATCH_SIZE):
+                        for row in batch:
+                            if not first_row:
+                                write(handle, ",")
+                            write(handle, json.dumps(row, ensure_ascii=False, default=str))
+                            first_row = False
+                            processed_rows += 1
+                        database.update_backup_job(job_id, processed_rows=processed_rows, size_bytes=size_bytes)
+                except Exception as exc:
+                    LOGGER.warning("backup table skipped table=%s error_type=%s", table_name, exc.__class__.__name__)
+                    if not first_row:
+                        write(handle, ",")
+                    write(handle, json.dumps({"_backup_error": exc.__class__.__name__}, ensure_ascii=False))
+                    first_row = False
+                    processed_rows += 1
+                    database.update_backup_job(job_id, processed_rows=processed_rows, size_bytes=size_bytes)
+                write(handle, "]")
+                completed_tables += 1
+                database.update_backup_job(job_id, current_table=table_name, completed_tables=completed_tables, processed_rows=processed_rows, size_bytes=size_bytes)
+            write(handle, "}}")
+
+        sha256 = hasher.hexdigest()
+        storage = {"status": "local", "path": str(output_path)}
+        job = database.backup_job(job_id)
+        if store and job and job.get("destination") == "supabase":
+            storage = store_platform_backup_file(output_path, output_path.name)
+        database.update_backup_job(
+            job_id,
+            status="completed",
+            completed_tables=completed_tables,
+            processed_rows=processed_rows,
+            size_bytes=size_bytes,
+            sha256=sha256,
+            file_path=str(output_path),
+            storage_json=storage,
+            finished_at=utc_now(),
+        )
+        audit_event(
+            "backup_creation",
+            actor_role="admin",
+            target_type="backup_job",
+            target_id=job_id,
+            summary="Backup job completed",
+            metadata={"size_bytes": size_bytes, "sha256": sha256[:16], "storage": storage.get("status")},
+        )
+    except Exception as exc:
+        LOGGER.warning("backup job failed id=%s error_type=%s", job_id, exc.__class__.__name__)
+        database.update_backup_job(
+            job_id,
+            status="failed",
+            error=exc.__class__.__name__,
+            size_bytes=size_bytes,
+            file_path=str(output_path),
+            storage_json={"status": "failed"},
+            finished_at=utc_now(),
+        )
+        audit_event("backup_failed", actor_role="admin", target_type="backup_job", target_id=job_id, summary="Backup job failed", metadata={"error_type": exc.__class__.__name__})
 
 
 def complete_platform_backup_payload() -> dict[str, Any]:
@@ -1165,26 +1460,52 @@ def utc_filename_time() -> str:
     return time.strftime("%Y-%m-%dT%H-%M-%SZ", time.gmtime())
 
 
+def active_backup_job() -> dict[str, Any] | None:
+    try:
+        for job in database.backup_jobs(limit=25):
+            if job.get("status") in {"queued", "running"}:
+                return job
+    except Exception as exc:
+        LOGGER.warning("active backup lookup failed error_type=%s", exc.__class__.__name__)
+    return None
+
+
+def latest_completed_backup_job() -> dict[str, Any] | None:
+    try:
+        for job in database.backup_jobs(limit=50):
+            file_path = Path(str(job.get("file_path") or ""))
+            if job.get("status") == "completed" and file_path.exists() and file_path.is_file():
+                return {**job, "download_ready": True}
+    except Exception as exc:
+        LOGGER.warning("completed backup lookup failed error_type=%s", exc.__class__.__name__)
+    return None
+
+
 def backup_manifest_with_jobs(manifest: dict[str, Any]) -> dict[str, Any]:
     enriched = dict(manifest)
-    with BACKUP_JOB_LOCK:
-        active = next((public_backup_job(job) for job in BACKUP_JOBS.values() if job.get("status") in BACKUP_ACTIVE_STATES), None)
-        latest = latest_completed_backup_job_locked()
-        job_count = len(BACKUP_JOBS)
+    try:
+        jobs = database.backup_jobs(limit=20)
+    except Exception as exc:
+        LOGGER.warning("backup job metadata unavailable error_type=%s", exc.__class__.__name__)
+        jobs = []
+    active = next((job for job in jobs if job.get("status") in {"queued", "running"}), None)
+    latest = next((job for job in jobs if job.get("status") == "completed"), None)
     enriched["active_backup_job"] = active
-    enriched["backup_job_count"] = job_count
+    enriched["backup_job_count"] = len(jobs)
     if latest:
+        file_path = Path(str(latest.get("file_path") or ""))
+        download_ready = file_path.exists() and file_path.is_file()
         enriched["latest_full_backup"] = {
             "available": True,
-            "job_id": latest["id"],
+            "job_id": latest.get("id"),
             "created_at": latest.get("created_at"),
             "completed_at": latest.get("finished_at"),
-            "filename": latest.get("filename"),
+            "filename": file_path.name if file_path else None,
             "size_bytes": latest.get("size_bytes"),
             "sha256": latest.get("sha256"),
             "checksum_available": bool(latest.get("sha256")),
             "storage": latest.get("storage") or {"status": "unknown"},
-            "download_url": "/api/admin/backups/download" if latest.get("path") and Path(str(latest["path"])).exists() else None,
+            "download_url": f"/api/admin/backups/download?job_id={latest.get('id')}" if download_ready else None,
         }
         enriched["actual_size_bytes"] = latest.get("size_bytes")
         enriched["size_bytes"] = latest.get("size_bytes")
@@ -1193,7 +1514,7 @@ def backup_manifest_with_jobs(manifest: dict[str, Any]) -> dict[str, Any]:
     else:
         enriched["latest_full_backup"] = {
             "available": False,
-            "source": "background_job",
+            "source": "persistent_backup_jobs",
             "message": "Start an explicit background backup to calculate full backup size and checksum.",
         }
         enriched["actual_size_bytes"] = None
@@ -1203,209 +1524,13 @@ def backup_manifest_with_jobs(manifest: dict[str, Any]) -> dict[str, Any]:
     return enriched
 
 
-def start_platform_backup_job(store: bool = True) -> tuple[dict[str, Any], int]:
-    now = datetime.now(UTC).isoformat()
-    with BACKUP_JOB_LOCK:
-        active = next((job for job in BACKUP_JOBS.values() if job.get("status") in BACKUP_ACTIVE_STATES), None)
-        if active:
-            return public_backup_job(active), 429
-        prune_backup_jobs_locked()
-        job_id = uuid.uuid4().hex
-        job = {
-            "id": job_id,
-            "status": "queued",
-            "created_at": now,
-            "updated_at": now,
-            "started_at": None,
-            "finished_at": None,
-            "store_requested": bool(store),
-            "storage": {"status": "pending" if store else "skipped", "location": None},
-            "filename": None,
-            "path": None,
-            "size_bytes": None,
-            "sha256": None,
-            "error": None,
-            "progress": {
-                "tables_total": len(database_platform_backup_table_names()),
-                "tables_completed": 0,
-                "current_table": None,
-                "rows_written": 0,
-            },
-        }
-        BACKUP_JOBS[job_id] = job
-        thread = threading.Thread(target=run_platform_backup_job, args=(job_id,), name=f"gt-backup-{job_id[:8]}", daemon=True)
-        BACKUP_THREADS[job_id] = thread
-        thread.start()
-        return public_backup_job(job), 202
-
-
-def run_platform_backup_job(job_id: str) -> None:
-    update_backup_job(job_id, status="running", started_at=datetime.now(UTC).isoformat())
-    try:
-        result = build_platform_backup_file(job_id)
-        storage = store_platform_backup_file(Path(result["path"]), str(result["filename"])) if result.get("store_requested") else {"status": "skipped", "location": None}
-        update_backup_job(
-            job_id,
-            status="completed",
-            finished_at=datetime.now(UTC).isoformat(),
-            filename=result["filename"],
-            path=result["path"],
-            size_bytes=result["size_bytes"],
-            sha256=result["sha256"],
-            storage=storage,
-            progress={**result["progress"], "current_table": None},
-        )
-    except Exception as exc:
-        LOGGER.warning("backup job failed id=%s error_type=%s", job_id, exc.__class__.__name__)
-        update_backup_job(
-            job_id,
-            status="failed",
-            finished_at=datetime.now(UTC).isoformat(),
-            error={"code": "backup_job_failed", "message": "Backup job failed before completion.", "stage": "background_backup"},
-        )
-    finally:
-        with BACKUP_JOB_LOCK:
-            BACKUP_THREADS.pop(job_id, None)
-
-
-def build_platform_backup_file(job_id: str) -> dict[str, Any]:
-    with BACKUP_JOB_LOCK:
-        job = dict(BACKUP_JOBS.get(job_id) or {})
-    manifest_payload = database.platform_backup_manifest_summary()
-    manifest = dict(manifest_payload.get("manifest") or {})
-    manifest["format_version"] = "godtranslator-v10-platform-backup.v1"
-    manifest["kind"] = "full_platform_backup"
-    manifest["backup_job_id"] = job_id
-    manifest["writer"] = "background_bounded_json_writer"
-    manifest["batch_size"] = BACKUP_BATCH_SIZE
-    manifest["size_bytes"] = None
-    manifest["sha256"] = None
-    filename = platform_backup_filename({"manifest": manifest})
-    path = backup_work_dir() / f"{job_id}-{filename}"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    hasher = hashlib.sha256()
-    bytes_written = 0
-
-    def write(handle: Any, text: str) -> None:
-        nonlocal bytes_written
-        raw = text.encode("utf-8")
-        handle.write(raw)
-        hasher.update(raw)
-        bytes_written += len(raw)
-
-    progress = {
-        "tables_total": len(database_platform_backup_table_names()),
-        "tables_completed": 0,
-        "current_table": None,
-        "rows_written": 0,
-    }
-    with path.open("wb") as handle:
-        write(handle, "{\n  \"ok\": true,\n  \"manifest\": ")
-        write(handle, json.dumps(manifest, ensure_ascii=False, default=str))
-        write(handle, ",\n  \"tables\": {\n")
-        for table_index, table_name in enumerate(database_platform_backup_table_names()):
-            if table_index:
-                write(handle, ",\n")
-            write(handle, f"    {json.dumps(table_name)}: [")
-            rows_written_for_table = 0
-            update_backup_job(job_id, progress={**progress, "current_table": table_name})
-            try:
-                for batch in database.iter_platform_backup_rows(table_name, batch_size=BACKUP_BATCH_SIZE):
-                    for row in batch:
-                        if rows_written_for_table:
-                            write(handle, ",")
-                        write(handle, "\n      ")
-                        write(handle, json.dumps(row, ensure_ascii=False, default=str))
-                        rows_written_for_table += 1
-                        progress["rows_written"] += 1
-                    update_backup_job(job_id, progress={**progress, "current_table": table_name})
-            except Exception as exc:
-                LOGGER.warning("backup table skipped table=%s error_type=%s", table_name, exc.__class__.__name__)
-                write(handle, "\n      ")
-                write(handle, json.dumps({"_backup_error": exc.__class__.__name__}, ensure_ascii=False))
-                rows_written_for_table += 1
-            write(handle, "\n    ]")
-            progress["tables_completed"] += 1
-            update_backup_job(job_id, progress={**progress, "current_table": table_name})
-        write(handle, "\n  }\n}\n")
-    return {
-        "store_requested": bool(job.get("store_requested")),
-        "filename": filename,
-        "path": str(path),
-        "size_bytes": bytes_written,
-        "sha256": hasher.hexdigest(),
-        "progress": progress,
-    }
-
-
-def update_backup_job(job_id: str, **updates: Any) -> None:
-    with BACKUP_JOB_LOCK:
-        job = BACKUP_JOBS.get(job_id)
-        if not job:
-            return
-        if "progress" in updates and isinstance(updates["progress"], dict):
-            job["progress"] = dict(updates.pop("progress"))
-        job.update(updates)
-        job["updated_at"] = datetime.now(UTC).isoformat()
-
-
-def public_backup_job(job: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": job.get("id"),
-        "status": job.get("status"),
-        "created_at": job.get("created_at"),
-        "updated_at": job.get("updated_at"),
-        "started_at": job.get("started_at"),
-        "finished_at": job.get("finished_at"),
-        "store_requested": bool(job.get("store_requested")),
-        "storage": job.get("storage") or {"status": "unknown"},
-        "filename": job.get("filename"),
-        "size_bytes": job.get("size_bytes"),
-        "sha256": job.get("sha256"),
-        "checksum_available": bool(job.get("sha256")),
-        "download_ready": bool(job.get("path") and Path(str(job.get("path"))).exists() and job.get("status") == "completed"),
-        "progress": job.get("progress") or {},
-        "error": job.get("error"),
-    }
-
-
-def latest_completed_backup_job() -> dict[str, Any] | None:
-    with BACKUP_JOB_LOCK:
-        return latest_completed_backup_job_locked()
-
-
-def latest_completed_backup_job_locked() -> dict[str, Any] | None:
-    completed = [
-        job
-        for job in BACKUP_JOBS.values()
-        if job.get("status") == "completed" and job.get("path") and Path(str(job.get("path"))).exists()
-    ]
-    if not completed:
-        return None
-    return max(completed, key=lambda item: str(item.get("finished_at") or item.get("updated_at") or ""))
-
-
-def prune_backup_jobs_locked() -> None:
-    completed = [
-        job
-        for job in BACKUP_JOBS.values()
-        if job.get("status") in BACKUP_COMPLETED_STATES
-    ]
-    stale = sorted(completed, key=lambda item: str(item.get("finished_at") or item.get("updated_at") or ""))[:-BACKUP_JOB_RETENTION]
-    for job in stale:
-        path = Path(str(job.get("path") or ""))
-        if path.exists() and path.is_file():
-            with contextlib.suppress(Exception):
-                path.unlink()
-        BACKUP_JOBS.pop(str(job.get("id")), None)
-
-
 def backup_work_dir() -> Path:
-    return Path(os.getenv("GT_BACKUP_WORK_DIR") or Path(tempfile.gettempdir()) / "godtranslator-backups")
-
-
-def database_platform_backup_table_names() -> list[str]:
-    return list(PLATFORM_BACKUP_TABLE_NAMES)
+    configured = os.getenv("GT_BACKUP_WORK_DIR")
+    if configured:
+        return Path(configured)
+    if database.config.backend == "sqlite" and database.config.url and database.config.url != ":memory:":
+        return Path(database.config.url).parent / "backups"
+    return Path(tempfile.gettempdir()) / "godtranslator-backups"
 
 
 def iter_backup_file(path: Path) -> Any:
@@ -1422,7 +1547,7 @@ def store_platform_backup_file(path: Path, filename: str) -> dict[str, object]:
     service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_BACKUP_SERVICE_KEY") or ""
     bucket = os.getenv("SUPABASE_BACKUP_BUCKET") or "godtranslator-backups"
     if not url or not service_key:
-        return {"status": "not_configured", "location": None}
+        return {"status": "not_configured", "location": None, "path": str(path)}
     object_path = f"platform/{filename}"
     try:
         with path.open("rb") as handle:
@@ -1447,6 +1572,10 @@ def store_platform_backup_file(path: Path, filename: str) -> dict[str, object]:
         return {"status": "failed", "error": "storage_unreachable", "bucket": bucket, "path": object_path}
     except Exception as exc:
         return {"status": "failed", "error": exc.__class__.__name__, "bucket": bucket, "path": object_path}
+
+
+def store_platform_backup(raw: bytes, filename: str) -> dict[str, object]:
+    raise RuntimeError("synchronous_full_platform_backup_storage_disabled")
 
 
 def translation_selection(novel_id: str, payload: dict[str, Any]) -> dict[str, Any]:

@@ -16,6 +16,13 @@ os.environ.setdefault("TRANSLATION_AUTOSTART", "false")
 os.environ.pop("DATABASE_URL", None)
 os.environ.pop("OPENAI_API_KEY", None)
 
+try:
+    import fastapi  # noqa: F401
+except ModuleNotFoundError:
+    from qa_backup_manifest_hotfix import install_fastapi_stubs
+
+    install_fastapi_stubs()
+
 from app.db import Database
 from app import main as app_main
 

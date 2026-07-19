@@ -1,11 +1,28 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
 from .models import DownloadJob, UploadJob, WebsiteConnectionProfile, utc_now
 from .paths import AppPaths, ensure_app_dirs
+
+
+_WRITE_LOCKS: dict[Path, threading.Lock] = {}
+_WRITE_LOCKS_GUARD = threading.Lock()
+
+
+def write_lock(path: Path) -> threading.Lock:
+    resolved = path.resolve()
+    with _WRITE_LOCKS_GUARD:
+        lock = _WRITE_LOCKS.get(resolved)
+        if lock is None:
+            lock = threading.Lock()
+            _WRITE_LOCKS[resolved] = lock
+        return lock
 
 
 def read_json(path: Path, default: Any) -> Any:
@@ -19,9 +36,22 @@ def read_json(path: Path, default: Any) -> Any:
 
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2)
+    with write_lock(path):
+        tmp.write_text(serialized, encoding="utf-8")
+        last_error: PermissionError | None = None
+        for attempt in range(8):
+            try:
+                tmp.replace(path)
+                return
+            except PermissionError as exc:
+                last_error = exc
+                time.sleep(0.025 * (attempt + 1))
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+        if last_error:
+            raise last_error
 
 
 class CompanionStore:
@@ -95,9 +125,13 @@ class CompanionStore:
                     WebsiteConnectionProfile(
                         name=item.get("name") or "Production",
                         base_url=item.get("base_url") or "https://iamgodtranslator.onrender.com",
-                        auth_token=item.get("auth_token") or "",
+                        auth_token="",
                         last_health=item.get("last_health") or "Not tested",
                         last_sync_at=item.get("last_sync_at") or "",
+                        website_version=item.get("website_version") or "",
+                        desktop_api_version=item.get("desktop_api_version") or "",
+                        last_auth=item.get("last_auth") or "Not checked",
+                        token_storage=item.get("token_storage") or "memory_only",
                     )
                 )
         if not profiles:
@@ -106,8 +140,13 @@ class CompanionStore:
         return profiles
 
     def save_connection_profiles(self, profiles: list[WebsiteConnectionProfile]) -> None:
-        # Tokens are session tokens entered by the user, never plaintext passwords.
-        write_json(self.paths.connection_profiles_file, {"updated_at": utc_now(), "profiles": [profile.__dict__ for profile in profiles]})
+        safe_profiles = []
+        for profile in profiles:
+            payload = profile.__dict__.copy()
+            payload["auth_token"] = ""
+            payload["token_storage"] = "memory_only"
+            safe_profiles.append(payload)
+        write_json(self.paths.connection_profiles_file, {"updated_at": utc_now(), "profiles": safe_profiles})
 
     def append_log(self, message: str) -> None:
         self.paths.logs_dir.mkdir(parents=True, exist_ok=True)

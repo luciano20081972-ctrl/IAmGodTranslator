@@ -54,6 +54,29 @@ class FixtureDownloaderAdapter:
         return {"success": success, "failed": failed, "skipped": skipped}
 
 
+class SlowFixtureDownloaderAdapter(FixtureDownloaderAdapter):
+    def download(self, options, stop_event, log, progress):
+        output_dir = Path(options["output_dir"])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        total = len(options["chapters"])
+        success = failed = skipped = 0
+        log("Browser launched")
+        for index, chapter in enumerate(options["chapters"], start=1):
+            if stop_event.is_set():
+                log("Stopped safely by user.")
+                break
+            progress(index - 1, total, success, failed, skipped, f"Chapter {chapter}")
+            log(f"Downloading Chapter {chapter}: https://example.invalid/chapter-{chapter}")
+            time.sleep(0.25)
+            body = f"Chapter {chapter}\n\n" + ("fixture text " * 80)
+            (output_dir / f"{chapter:04d}.txt").write_text(body, encoding="utf-8")
+            log(f"Saved Chapter {chapter}: {chapter:04d}.txt ({len(body)} chars)")
+            success += 1
+            progress(index, total, success, failed, skipped, f"Chapter {chapter}")
+        log("Browser closed")
+        return {"success": success, "failed": failed, "skipped": skipped}
+
+
 def wait_for_job(store: CompanionStore, job_id: str, statuses: set[str]) -> None:
     deadline = time.time() + 5
     while time.time() < deadline:
@@ -130,6 +153,23 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
             manager.delete_job(duplicate.id)
             self.assertIsNone(store.job(duplicate.id))
 
+    def test_browser_jobs_are_bounded_and_queued_jobs_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, patch.dict("desktop_companion.jobs.ADAPTERS", {"fixture": SlowFixtureDownloaderAdapter}):
+            paths = app_paths(Path(temp))
+            store = CompanionStore(paths)
+            store.save_settings({"max_active_browser_jobs": 1})
+            manager = JobManager(store, paths)
+            first = manager.create_job("Fixture One", "https://example.invalid/one", [1], source_adapter="fixture")
+            second = manager.create_job("Fixture Two", "https://example.invalid/two", [1], source_adapter="fixture")
+            manager.start(first.id)
+            time.sleep(0.05)
+            queued = manager.start(second.id)
+            self.assertEqual(queued.status, "queued")
+            self.assertIn("browser slot", queued.worker_state)
+            wait_for_job(store, first.id, {"completed"})
+            wait_for_job(store, second.id, {"completed"})
+            self.assertEqual(store.job(second.id).downloaded_chapters, [1])
+
     def test_pack_creation_checksum_and_secret_exclusion(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             out = Path(temp)
@@ -153,16 +193,16 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
         self.assertEqual(
             NAV_ITEMS,
             [
-                "Home",
+                "Dashboard",
                 "Downloads",
+                "Library",
                 "New Novel",
-                "Sync Center",
-                "Recovery Requests",
-                "Export & Packs",
-                "Desktop Library",
+                "Recovery",
+                "Packs",
+                "Sync",
                 "Activity",
                 "Settings",
-                "Logs",
+                "Advanced Logs",
             ],
         )
 
@@ -225,20 +265,50 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
 
     def test_connection_profile_tracks_sync_health_without_storing_password(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            store = CompanionStore(app_paths(Path(temp)))
+            paths = app_paths(Path(temp))
+            store = CompanionStore(paths)
             sync = SyncManager(store)
             sync.save_profile("https://example.invalid", "session-token")
-            with patch.object(WebsiteClient, "desktop_health", return_value={"ok": True, "desktop_api": "10.6.0"}):
+            raw = read_json(paths.connection_profiles_file, {})
+            self.assertNotIn("session-token", str(raw))
+            with patch.object(WebsiteClient, "desktop_health", return_value={"ok": True, "version": "11.0.0", "desktop_api": "11.0.0"}):
                 payload = sync.test_connection()
             self.assertTrue(payload["ok"])
-            profile = store.connection_profiles()[0]
+            profile = sync.profile()
             self.assertEqual(profile.last_health, "Healthy")
+            self.assertEqual(profile.desktop_api_version, "11.0.0")
+            self.assertEqual(profile.website_version, "11.0.0")
+            self.assertTrue(sync.center_snapshot()["version_compatible"])
+            self.assertEqual(store.connection_profiles()[0].auth_token, "")
             self.assertNotIn("auth_token", profile.safe_dict())
 
     def test_connection_profile_does_not_require_password(self) -> None:
         profile = WebsiteConnectionProfile(auth_token="session-token")
         self.assertTrue(profile.safe_dict()["has_token"])
         self.assertNotIn("auth_token", profile.safe_dict())
+
+    def test_upload_auth_rejection_marks_failed_and_retry_requeues(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            paths = app_paths(Path(temp))
+            store = CompanionStore(paths)
+            sync = SyncManager(store)
+            pack = build_pack(
+                source_dir=FIXTURES / "chapters",
+                output_dir=paths.packs_dir,
+                novel_id="fixture-novel",
+                novel_title="Fixture Novel",
+                target_mode="original",
+            )
+            upload = sync.queue_upload(pack.path, "fixture-novel", "original")
+            with patch.object(WebsiteClient, "preview_content_pack", side_effect=RuntimeError("HTTP 401 admin_required")):
+                with self.assertRaises(RuntimeError):
+                    sync.preview_upload(upload.id)
+            failed = store.upload(upload.id)
+            self.assertEqual(failed.status, "failed")
+            self.assertIn("401", failed.error)
+            retried = sync.retry_upload(upload.id)
+            self.assertEqual(retried.status, "queued")
+            self.assertEqual(retried.error, "")
 
     def test_public_website_health_when_enabled(self) -> None:
         if os.getenv("GT_DESKTOP_TEST_WEBSITE") != "1":
