@@ -1024,7 +1024,7 @@ def export_backup(novel_id: str, _: None = Depends(require_admin)) -> StreamingR
     return StreamingResponse(memory, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{novel_id}-v10-backup.zip"'})
 
 
-@app.get("/api/admin/backups/manifest")
+@app.get("/api/admin/backups/manifest", response_model=None)
 def platform_backup_manifest(_: None = Depends(require_admin)) -> dict[str, object] | JSONResponse:
     try:
         payload = database.platform_backup_manifest_summary()
@@ -1041,7 +1041,7 @@ def platform_backup_manifest(_: None = Depends(require_admin)) -> dict[str, obje
         )
 
 
-@app.get("/api/admin/backups/download")
+@app.get("/api/admin/backups/download", response_model=None)
 def download_platform_backup(_: None = Depends(require_admin)) -> StreamingResponse | JSONResponse:
     job = latest_completed_backup_job()
     if not job:
@@ -1085,7 +1085,7 @@ def download_platform_backup(_: None = Depends(require_admin)) -> StreamingRespo
     )
 
 
-@app.post("/api/admin/backups/create")
+@app.post("/api/admin/backups/create", response_model=None)
 def create_platform_backup(payload: dict[str, Any] = Body(default={}), _: None = Depends(require_admin)) -> dict[str, object] | JSONResponse:
     store = bool((payload or {}).get("store", True))
     job, status_code = start_platform_backup_job(store=store)
@@ -1121,7 +1121,7 @@ def list_platform_backup_jobs(_: None = Depends(require_admin)) -> dict[str, obj
     return {"ok": True, "jobs": jobs}
 
 
-@app.get("/api/admin/backups/jobs/{job_id}")
+@app.get("/api/admin/backups/jobs/{job_id}", response_model=None)
 def get_platform_backup_job(job_id: str, _: None = Depends(require_admin)) -> dict[str, object] | JSONResponse:
     with BACKUP_JOB_LOCK:
         job = BACKUP_JOBS.get(job_id)
