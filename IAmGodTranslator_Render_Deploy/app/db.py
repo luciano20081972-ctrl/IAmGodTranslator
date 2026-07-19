@@ -597,10 +597,12 @@ class Database:
         self._ensure_postgres_timestamp_helpers(conn)
         chapters = self.table("chapters")
         editions = self.table("chapter_editions")
+        editions_target = f"{editions} AS target" if self.config.backend == "postgres" else editions
+        existing_prefix = "target." if self.config.backend == "postgres" else ""
         created_at_expr = self._legacy_ai_edition_created_at_sql("legacy")
         conn.execute(
             f"""
-            INSERT INTO {editions} (
+            INSERT INTO {editions_target} (
                 novel_id, chapter_number, edition_key, language, edition_type, source_label,
                 text, character_count, is_default, metadata_json, created_at, updated_at
             )
@@ -622,7 +624,13 @@ class Database:
                 '{{}}', {created_at_expr}, legacy.updated_at
             FROM {chapters} legacy
             WHERE legacy.ai_text IS NOT NULL AND LENGTH(TRIM(legacy.ai_text)) > 0
-            ON CONFLICT(novel_id, chapter_number, edition_key) DO NOTHING
+            ON CONFLICT(novel_id, chapter_number, edition_key) DO UPDATE SET
+                text = excluded.text,
+                character_count = excluded.character_count,
+                is_default = excluded.is_default,
+                updated_at = excluded.updated_at
+            WHERE {existing_prefix}source_label = 'Legacy AI'
+                AND COALESCE({existing_prefix}metadata_json, '{{}}') IN ('{{}}', '')
             """
         )
 
