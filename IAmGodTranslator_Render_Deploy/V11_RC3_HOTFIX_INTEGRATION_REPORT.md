@@ -39,7 +39,9 @@
 - Local RC3 integration also corrected `translation_performance` backup ordering from `created_at` to `updated_at`, preventing future telemetry table skips in SQLite fixtures.
 
 ## 10. Merge commit
-Pending until the integration merge commit is created. Commit message planned: `Integrate v10.6.2 production reliability fixes into v11 RC3`.
+`c097afa61f9c8f45d73f09380a5179fca2de521a`
+
+Message: `Integrate v10.6.2 production reliability fixes into v11 RC3`.
 
 ## 11. Conflicts encountered
 - `IAmGodTranslator_Render_Deploy/app/main.py`
@@ -81,25 +83,29 @@ Passed. Python `VERSION`, Desktop API version, DB backup app version, `APP_VERSI
 Implemented and tested. Coverage now uses `coverage_chapter_basis`: expected chapter count when configured, otherwise max chapter inventory/original/English count. Percentages clamp to 0-100. UI no longer displays `English / Original` as the coverage denominator.
 
 ## 22. PostgreSQL result
-Pending GitHub Actions run on this RC3 commit.
+Passed in GitHub Actions PostgreSQL 16 service container.
+
+- Successful run ID: `29676757145`
+- Successful job ID: `88165443340`
+- Application-code SHA tested by CI: `3651b9ac02ed3241df65f21a3a45be7f60967c02`
 
 ## 23. Migration result
-Pending GitHub Actions PostgreSQL 16 run. Local additive SQLite initialization and all local migration-facing fixtures passed.
+Passed. GitHub Actions covered empty database initialization, v10-compatible fixture migration, edge-state migration, idempotence, restart, row counts, checksums, legacy English preservation, and additive PostgreSQL schema behavior. Local additive SQLite initialization and all local migration-facing fixtures also passed.
 
 ## 24. Authorization matrix
-Local HTTP and v11 smoke passed guest/Admin checks. Full normal-user, translator, admin, removed-role, expired-token, invalid-signature, desktop authorization matrix pending GitHub Actions PostgreSQL/auth run.
+Passed. GitHub Actions covered guest, normal-user, translator, admin, removed-role, expired-token, invalid-signature, altered-role, malformed desktop token, Reference privacy, desktop endpoint authorization, and production-mode rejection of test authentication.
 
 ## 25. Reference privacy
 Passed local phase2/phase3 static QA and real app smoke guest-reference denial.
 
 ## 26. Manifest size
-Hotfix fixture: 1802 bytes for 908 chapters. Production-scale 1383-chapter fixture: 1811 bytes.
+Hotfix fixture: 1803 bytes for 908 chapters, 1804 bytes max across repeated calls. Production-scale 1383-chapter fixture: 1811 bytes.
 
 ## 27. Manifest response time
-Hotfix fixture: 10.943 ms. Production-scale 1383-chapter fixture: 49.599 ms.
+Hotfix fixture: 8.513 ms. Production-scale 1383-chapter fixture: 49.599 ms.
 
 ## 28. Repeated-call memory result
-Hotfix 50-call peak: 19024 bytes. Production-scale 50-call peak: 17063 bytes. No monotonic growth observed by tracemalloc.
+Hotfix 50-call peak: 16724 bytes. Production-scale 50-call peak: 17063 bytes. No monotonic growth observed by tracemalloc.
 
 ## 29. Background backup memory result
 Production-scale 1383-chapter fixture completed with peak tracemalloc 1740936 bytes, output size 10799478 bytes, checksum prefix `e6487278c030`, and temp file cleanup verified.
@@ -133,7 +139,6 @@ Passed tracked-file artifact scan for pycache, pyc, env files, local DBs, ZIPs, 
 
 ## 39. Known limitations
 - Local Node browser smoke runtime could not execute because the bundled `playwright` package lacked `playwright-core`. Static mobile/accessibility and real HTTP smoke passed. GitHub workflow checks browser smoke syntax, not runtime browser execution.
-- GitHub Actions PostgreSQL/auth CI is pending until this integration commit is pushed.
 
 ## 40. Deferred items
 - No deployment performed.
@@ -160,24 +165,33 @@ Passed tracked-file artifact scan for pycache, pyc, env files, local DBs, ZIPs, 
 - `python IAmGodTranslator_Render_Deploy/tools/qa_v10_6_translation_selector.py`
 - `python IAmGodTranslator_Render_Deploy/tools/qa_v10_6_desktop_integration.py`
 - `python -m unittest discover -s GodTranslator_Desktop_Companion/tests -p 'test_*.py'`
+- GitHub Actions: `python IAmGodTranslator_Render_Deploy/tools/qa_v11_rc2_postgres_auth.py` against PostgreSQL 16.
 - Tracked-file secret scan.
 - Tracked-file artifact scan.
 
 ## 42. CI run ID and job ID
-Pending GitHub Actions run after RC3 branch push.
+- Successful run ID: `29676757145`
+- Successful job ID: `88165443340`
+- Run number: `12`
+- Conclusion: `success`
+- Prior failed diagnostic runs: `29676334093`, `29676418503`, `29676588823`, `29676665769`
 
 ## 43. Commit SHAs
 - Starting main: `1bb4552a3ce1fdc5446b3a9b59c96b7dc238687b`
 - Starting RC2: `e9c984fa8d1c219693c3abfc76170e9b8d15ee19`
 - Validated v11 application-code SHA: `f056a5e32939fe18f4330f4bcc6094bf1c39faae`
-- Integration merge SHA: pending.
-- Final branch SHA: pending.
+- Integration merge SHA: `c097afa61f9c8f45d73f09380a5179fca2de521a`
+- PostgreSQL backup SQL placeholder fix: `54ab4ae6394b9e5ce8261f73c0d9e1a28755bc7a`
+- RC3 PostgreSQL backup auth gate fixture fix: `b76a742322ed920e9b895eeba3bb4cb7108eb640`
+- RC3 PostgreSQL gate diagnostics: `1a45cd8fc86a4ba50eee621d14bdf960137fa87e`
+- PostgreSQL backup job JSON serialization fix: `3651b9ac02ed3241df65f21a3a45be7f60967c02`
+- Final report-only branch SHA: the commit containing this report.
 
 ## 44. Push result
-Pending.
+Pushed RC3 branch through the successful application-code SHA `3651b9ac02ed3241df65f21a3a45be7f60967c02`; this report update is report-only and path-ignored by the RC workflow.
 
 ## 45. Confirmation origin/main unchanged
-Pending final verification. Last verified `origin/main` was `1bb4552a3ce1fdc5446b3a9b59c96b7dc238687b`.
+Verified unchanged at `1bb4552a3ce1fdc5446b3a9b59c96b7dc238687b` during RC3 integration. No push to `main` was performed.
 
 ## 46. Confirmation no deployment
 No Render deployment performed.
@@ -186,10 +200,8 @@ No Render deployment performed.
 No OpenAI calls performed. QA ran with `OPENAI_API_KEY` unset/empty and fake/local providers.
 
 ## 48. Confirmation no production data modified
-No production database writes, translations, imports, recovery, backups, restores, or manual data changes performed. All database QA used isolated local fixtures or pending CI PostgreSQL service containers.
+No production database writes, translations, imports, recovery, backups, restores, or manual data changes performed. All database QA used isolated local fixtures or isolated CI PostgreSQL service containers.
 
 Final verdict:
 
-NOT READY FOR V11 PRODUCTION — BLOCKERS REMAIN
-
-Blocker: GitHub Actions PostgreSQL/auth CI has not run yet for the integrated RC3 commit.
+READY FOR CONTROLLED V11 PRODUCTION RELEASE
