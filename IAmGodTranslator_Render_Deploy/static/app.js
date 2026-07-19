@@ -7,12 +7,15 @@ const accountBtn = document.querySelector("#accountBtn");
 const profileMenu = document.querySelector("#profileMenu");
 const profileMenuItems = document.querySelector("#profileMenuItems");
 const activityBanner = document.querySelector("#activityBanner");
+const notificationCenter = document.querySelector("#notificationCenter");
+const mobileBottomNav = document.querySelector("#mobileBottomNav");
 
 const CACHE_TTL_MS = 45_000;
 let activeRouteKey = window.location.hash || "#/home";
 let connectionInterrupted = false;
 let readerScrollHandler = null;
 let activityIndicatorRequest = 0;
+const notificationSessionStartedAt = Date.now();
 
 const state = {
   novels: [],
@@ -36,6 +39,7 @@ const state = {
   preferences: loadPreferences(),
   libraryView: readStored("gt-library-view", {search: "", filter: "active", sort: "updated", view: "grid", collection: ""}),
   recent: readStored("gt-recent", {novels: [], chapters: [], jobs: [], searches: [], admin: []}),
+  notifications: readStored("gt-notifications", []),
   cache: new Map(),
 };
 
@@ -159,6 +163,7 @@ function route() {
   if (parts[0] === "bookmarks") return openBookmarks();
   if (parts[0] === "settings") return openSettings(parts[1] || "appearance");
   if (["account", "login", "signup", "forgot-password", "reset-password"].includes(parts[0])) return openSettings("account", parts[0]);
+  if (parts[0] === "notifications") return openNotifications();
   if (parts[0] === "admin") return openAdmin(parts[1] || localStorage.getItem("gt-last-admin-tab") || "overview");
   return openHome();
 }
@@ -168,7 +173,10 @@ function updateNav(active) {
   renderNav();
   nav.querySelectorAll("a").forEach((link) => {
     const target = link.getAttribute("href").replace("#/", "").split("/")[0];
-    link.classList.toggle("active", target === active || (active === "reader" && link.dataset.nav === "continue"));
+    const isActive = target === active || (active === "reader" && link.dataset.nav === "continue");
+    link.classList.toggle("active", isActive);
+    if (isActive) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
   });
 }
 
@@ -185,6 +193,7 @@ function renderNav() {
     accountBtn.innerHTML = `<span class="avatar-mini">${escapeHtml(initials(state.account?.display_name || state.account?.email || (state.admin ? "Admin" : "Guest")))}</span><span>${escapeHtml(profileLabel())}</span>`;
   }
   renderProfileMenu();
+  renderMobileBottomNav(activeRouteName());
   const jobButton = document.querySelector("#jobCenterBtn");
   if (jobButton) {
     jobButton.textContent = activityLabel();
@@ -228,6 +237,75 @@ function renderProfileMenu() {
   profileMenuItems.querySelectorAll("a").forEach((link) => link.addEventListener("click", () => { if (profileMenu) profileMenu.open = false; }));
   profileMenuItems.querySelector("#profileSignOut")?.addEventListener("click", () => { if (profileMenu) profileMenu.open = false; signOut(); });
   profileMenuItems.querySelector("#profileExitAdmin")?.addEventListener("click", () => { if (profileMenu) profileMenu.open = false; exitAdminMode(); });
+}
+
+function activeRouteName() {
+  return (window.location.hash || "#/home").replace(/^#\/?/, "").split(/[/?]/)[0] || "home";
+}
+
+function renderMobileBottomNav(active = activeRouteName()) {
+  if (!mobileBottomNav) return;
+  const unread = state.notifications.filter((item) => !item.read).length;
+  const items = [
+    ["home", "Home", "#/home"],
+    ["library", "Library", "#/library"],
+    ["continue", "Read", continueReadingHref()],
+    ["search", "Search", ""],
+    ["notifications", unread ? `Alerts ${unread}` : "Alerts", "#/notifications"],
+  ];
+  mobileBottomNav.innerHTML = items
+    .map(([key, label, href]) => key === "search"
+      ? `<button type="button" data-mobile-search aria-label="Open search and command palette" title="Search" class="${active === "search" ? "active" : ""}">${escapeHtml(label)}</button>`
+      : `<a href="${escapeAttr(href)}" title="${escapeAttr(label.replace(/\s+\d+$/, ""))}" aria-label="${escapeAttr(label)}" ${active === key || (active === "reader" && key === "continue") ? `aria-current="page"` : ""} class="${active === key || (active === "reader" && key === "continue") ? "active" : ""}">${escapeHtml(label)}</a>`)
+    .join("");
+  mobileBottomNav.querySelector("[data-mobile-search]")?.addEventListener("click", openCommandPalette);
+}
+
+function pushNotification(type, title, message, href = "") {
+  if (!notificationsEnabled(type)) return;
+  const item = {id: `note-${Date.now()}-${Math.random().toString(16).slice(2)}`, type, title, message, href, read: false, created_at: new Date().toISOString()};
+  state.notifications = [item, ...state.notifications].slice(0, 60);
+  writeStored("gt-notifications", state.notifications);
+  renderMobileBottomNav();
+  toast(title, href ? "Open" : "", href ? () => { window.location.hash = href; } : null);
+}
+
+function notificationsEnabled(type) {
+  const pref = state.preferences || {};
+  if (pref.quietNotifications && !["backup", "recovery"].includes(type)) return false;
+  if (type === "translation") return pref.notifyJobs !== false && pref.notifyTranslation !== false;
+  if (type === "import") return pref.notifyImports !== false;
+  if (type === "backup") return pref.notifyBackups !== false;
+  if (type === "recovery") return pref.notifyImports !== false && pref.notifyRecovery !== false;
+  if (type === "desktop") return pref.desktopSyncPrompts !== false && pref.notifyDesktop !== false;
+  if (type === "new-chapters") return pref.notifyNewChapters !== false;
+  return true;
+}
+
+function notifyOnce(key, type, title, message, href = "") {
+  const storageKey = `gt-notified:${key}`;
+  if (sessionStorage.getItem(storageKey)) return;
+  if (!notificationsEnabled(type)) return;
+  sessionStorage.setItem(storageKey, "1");
+  pushNotification(type, title, message, href);
+}
+
+function updatedDuringNotificationSession(item) {
+  const timestamp = Date.parse(item?.updated_at || item?.completed_at || item?.created_at || "");
+  return Number.isFinite(timestamp) && timestamp >= notificationSessionStartedAt - 5_000;
+}
+
+function markNotificationsRead() {
+  state.notifications = state.notifications.map((item) => ({...item, read: true}));
+  writeStored("gt-notifications", state.notifications);
+  renderMobileBottomNav();
+}
+
+function clearNotifications() {
+  state.notifications = [];
+  writeStored("gt-notifications", state.notifications);
+  renderMobileBottomNav();
+  openNotifications();
 }
 
 function canTranslate() {
@@ -506,6 +584,12 @@ async function refreshActivityIndicator() {
     const jobs = payload.jobs || [];
     const active = jobs.filter((job) => ["queued", "running", "paused"].includes(job.status));
     const attention = jobs.filter((job) => job.status === "failed" || job.error || Number(job.failed_items || 0) > 0);
+    attention.filter(updatedDuringNotificationSession).slice(0, 3).forEach((job) => {
+      notifyOnce(`translation-attention:${job.id}`, "translation", "Job needs attention", `${jobNovelTitle(job)} has ${Number(job.failed_items || 0)} failed item${Number(job.failed_items || 0) === 1 ? "" : "s"}.`, `#/jobs/${job.id}`);
+    });
+    jobs.filter((job) => job.status === "completed" && updatedDuringNotificationSession(job)).slice(0, 3).forEach((job) => {
+      notifyOnce(`translation-completed:${job.id}`, "translation", "Translation completed", `${jobNovelTitle(job)} finished ${Number(job.completed_items || job.total_items || 0)} chapter item${Number(job.completed_items || job.total_items || 0) === 1 ? "" : "s"}.`, `#/jobs/${job.id}`);
+    });
     if (jobButton) {
       jobButton.hidden = false;
       jobButton.textContent = active.length ? `Activity ${active.length}` : "Activity";
@@ -1003,7 +1087,7 @@ async function saveNovelForm(event) {
     invalidateCache("/api/novels");
     openNovels();
   } catch (error) {
-    alert(error.message);
+    toast(error.message || "Novel could not be saved.");
   }
 }
 
@@ -1259,7 +1343,7 @@ function isDuplicateChapterHeading(line, payload) {
 
 async function saveBookmark(novelId, chapterNumber) {
   if (!state.account) return toast("Sign in to save bookmarks.");
-  const note = prompt("Bookmark note (optional)") || "";
+  const note = "";
   await api("/api/account/bookmarks", {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({novel_id: novelId, chapter_number: chapterNumber, note})});
   await loadPersonalHome(true);
   toast("Bookmark saved.");
@@ -1565,6 +1649,7 @@ async function createTranslationJob(event) {
   localStorage.removeItem(translateDraftKey(created.job.novel_id));
   rememberRecent("jobs", {id: created.job.id, label: `Job ${created.job.id.slice(0, 8)}`, href: "#/jobs", at: new Date().toISOString()});
   toast(`Job ${created.job.id.slice(0, 8)} started.`);
+  pushNotification("translation", "Translation job started", `${created.job.total_items || 0} chapter items queued.`, `#/jobs/${created.job.id}`);
   window.location.hash = "#/jobs";
 }
 
@@ -1668,6 +1753,20 @@ async function openActivityCenter(focusedJobId = "") {
   }
 }
 
+function openNotifications() {
+  updateNav("notifications");
+  const items = state.notifications;
+  const unread = items.filter((item) => !item.read).length;
+  app.innerHTML = `${pageHeader("Notifications", "Recent reading and operations updates stored locally for this browser.", [["Unread", unread], ["Total", items.length]])}
+    <section class="panel">
+      <div class="actions"><button id="clearNotifications" type="button" ${items.length ? "" : "disabled"}>Clear Notifications</button><a class="button" href="#/settings/notifications">Preferences</a></div>
+    </section>
+    <section class="table-card notification-list"><h2>Recent</h2>${items.length ? items.map((item) => `<a class="notification-row ${item.read ? "" : "unread"}" href="${escapeAttr(item.href || "#/notifications")}"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.message || "")}</span><small>${timeAgo(item.created_at)}</small></a>`).join("") : `<p class="empty-state">No notifications yet.</p>`}</section>`;
+  document.querySelector("#clearNotifications")?.addEventListener("click", clearNotifications);
+  requestAnimationFrame(markNotificationsRead);
+  restoreScrollPosition();
+}
+
 async function openCompare(novelId, chapterNumber) {
   if (!canTranslate()) return openSettings("account");
   setLoading("Loading comparison...");
@@ -1708,7 +1807,8 @@ async function openRecovery(novelId) {
       document.querySelector("#recoveryPreview").innerHTML = renderRecoveryPreview(preview, novelId);
       document.querySelector("#applyImport")?.addEventListener("click", async () => {
         const result = await api(`/api/novels/${novelId}/recovery/import/${preview.job_id}`, {method: "POST"});
-        alert(`Imported ${result.imported_count} Reference chapters.`);
+        toast(`Imported ${result.imported_count} Reference chapters.`);
+        pushNotification("recovery", "Recovery import completed", `${result.imported_count || 0} Reference chapters imported.`, "#/admin/recovery");
         openRecovery(novelId);
       });
     });
@@ -1991,6 +2091,7 @@ async function executeContentImport() {
     invalidateCache("/api/novels");
     await loadNovels(true);
     target.innerHTML = `<section class="panel"><h2>Import Summary</h2><div class="metric-grid">${metric("Imported", result.summary?.imported || 0)}${metric("Updated", result.summary?.updated || 0)}${metric("Overwritten", result.summary?.overwritten || 0)}${metric("Skipped", result.summary?.skipped || 0)}${metric("Warnings", result.summary?.warnings || 0)}${metric("Errors", result.summary?.errors || 0)}</div><div class="actions"><a class="button primary" href="#/novel/${encodeURIComponent(result.novel_id)}">Open Novel</a><a class="button" href="#/reader/${encodeURIComponent(result.novel_id)}/1/english">Open Reader</a><a class="button" href="#/translate/${encodeURIComponent(result.novel_id)}">Open Translate</a></div>${objectDetails("Warnings", result.pack_warnings || [])}${objectDetails("Errors", result.errors || [])}</section>`;
+    pushNotification("import", "Import completed", `${result.summary?.imported || 0} imported, ${result.summary?.updated || 0} updated.`, `#/novel/${encodeURIComponent(result.novel_id)}`);
   } catch (error) {
     target.innerHTML = `<section class="state-card error"><p>${escapeHtml(error.message)}</p></section>`;
   }
@@ -2209,6 +2310,14 @@ async function pollBackupJob(jobId) {
     const job = payload.job || {};
     target.innerHTML = `<section class="panel"><h2>Backup Job</h2><div class="metric-grid">${metric("Status", job.status)}${metric("Progress", `${job.progress_percent ?? 0}%`)}${metric("Current Table", job.current_table || "-")}${metric("Rows", `${job.processed_rows || 0}/${job.total_rows || 0}`)}${metric("Size", formatBytes(job.size_bytes || 0))}${metric("Checksum", String(job.sha256 || "").slice(0, 12) || "after completion")}</div></section>`;
     if (["queued", "running"].includes(job.status)) setTimeout(() => pollBackupJob(jobId), 1500);
+    if (job.status === "completed" && !sessionStorage.getItem(`gt-backup-notified:${jobId}`)) {
+      sessionStorage.setItem(`gt-backup-notified:${jobId}`, "1");
+      pushNotification("backup", "Backup completed", `${formatBytes(job.size_bytes || 0)} written with checksum ${String(job.sha256 || "").slice(0, 12)}.`, "#/admin/backups");
+    }
+    if (job.status === "failed" && !sessionStorage.getItem(`gt-backup-notified:${jobId}`)) {
+      sessionStorage.setItem(`gt-backup-notified:${jobId}`, "1");
+      pushNotification("backup", "Backup failed", job.error || "Open Backups for details.", "#/admin/backups");
+    }
   } catch (error) {
     target.innerHTML = `<section class="state-card error"><p>${escapeHtml(error.message)}</p></section>`;
   }
@@ -2306,8 +2415,8 @@ function renderNotificationSettings(pref) {
   return `<section class="studio-panel">
     <div class="studio-heading"><h2>Notifications</h2><span>Saved ${state.account ? "to your account" : "locally"} when possible</span></div>
     <h3>Basic</h3>
-    <div class="preview-grid">${radioToggle("notifyReading", pref.notifyReading, "Reading reminders", "Show resume prompts on Home")}${radioToggle("notifyJobs", pref.notifyJobs, "Translation jobs", "Show completed or attention-needed jobs")}${radioToggle("notifyImports", pref.notifyImports, "Imports and recovery", "Show content workflow summaries")}</div>
-    <details><summary>Advanced</summary><div class="preview-grid">${radioToggle("notifyBackups", pref.notifyBackups, "Backups", "Show backup completion or failure messages")}${radioToggle("quietNotifications", pref.quietNotifications, "Quiet mode", "Reduce non-critical notification noise")}</div></details>
+    <div class="preview-grid">${radioToggle("notifyReading", pref.notifyReading, "Reading reminders", "Show resume prompts on Home")}${radioToggle("notifyTranslation", pref.notifyTranslation, "Translation completed", "Show completed translation jobs and jobs needing attention")}${radioToggle("notifyImports", pref.notifyImports, "Imports completed", "Show content import workflow summaries")}</div>
+    <details><summary>Advanced</summary><div class="preview-grid">${radioToggle("notifyRecovery", pref.notifyRecovery, "Recovery ready", "Show recovery import and request status")}${radioToggle("notifyBackups", pref.notifyBackups, "Backups", "Show backup completion or failure messages")}${radioToggle("notifyDesktop", pref.notifyDesktop, "Desktop sync", "Show Desktop Companion sync results")}${radioToggle("notifyNewChapters", pref.notifyNewChapters, "New chapters", "Show alerts only when a real detector reports updates")}${radioToggle("quietNotifications", pref.quietNotifications, "Quiet mode", "Reduce non-critical notification noise")}</div></details>
   </section>`;
 }
 
@@ -2452,7 +2561,7 @@ function renderAdminGate(title) {
       state.admin = true;
       route();
     } catch (error) {
-      alert(error.message);
+      toast(error.message || "Admin login failed.");
     }
   });
 }
@@ -2511,7 +2620,7 @@ function breadcrumbsForHash(hash) {
 function statusBadge(status) {
   const ok = ["completed", "running", "queued", "healthy", "protected"].includes(String(status || "").toLowerCase());
   const missing = ["failed", "needs attention", "unhealthy"].includes(String(status || "").toLowerCase());
-  return `<span class="badge ${ok ? "ok" : missing ? "missing" : ""}">${escapeHtml(status || "unknown")}</span>`;
+  return `<span class="badge ${ok ? "ok" : missing ? "missing" : ""}" aria-label="Status: ${escapeAttr(status || "unknown")}">${escapeHtml(status || "unknown")}</span>`;
 }
 
 function jobActivityText(job) {
@@ -2785,7 +2894,9 @@ function numberOrNull(selector) {
 
 function readStored(key, fallback) {
   try {
-    return {...fallback, ...JSON.parse(localStorage.getItem(key) || "{}")};
+    const parsed = JSON.parse(localStorage.getItem(key) || (Array.isArray(fallback) ? "[]" : "{}"));
+    if (Array.isArray(fallback)) return Array.isArray(parsed) ? parsed : fallback;
+    return {...fallback, ...(parsed && typeof parsed === "object" ? parsed : {})};
   } catch {
     return fallback;
   }
@@ -2816,7 +2927,24 @@ async function copyLink(hash) {
     await navigator.clipboard.writeText(url);
     toast("Link copied.");
   } catch {
-    window.prompt("Copy link", url);
+    fallbackCopyText(url);
+  }
+}
+
+function fallbackCopyText(value) {
+  const area = document.createElement("textarea");
+  area.value = value;
+  area.setAttribute("readonly", "readonly");
+  area.className = "sr-only";
+  document.body.appendChild(area);
+  area.select();
+  try {
+    document.execCommand("copy");
+    toast("Link copied.");
+  } catch {
+    toast("Clipboard is unavailable.");
+  } finally {
+    area.remove();
   }
 }
 
@@ -2870,8 +2998,12 @@ function defaultPreferences() {
     settingsDepth: "basic",
     notifyReading: true,
     notifyJobs: true,
+    notifyTranslation: true,
     notifyImports: true,
+    notifyRecovery: true,
     notifyBackups: true,
+    notifyDesktop: true,
+    notifyNewChapters: true,
     quietNotifications: false,
     keyboardShortcuts: true,
     readerArrowKeys: true,
@@ -3129,6 +3261,8 @@ function adjustReaderFont(delta) {
 function toast(message, actionLabel = "", action = null) {
   const item = document.createElement("div");
   item.className = "toast";
+  item.setAttribute("role", "status");
+  item.setAttribute("aria-live", "polite");
   item.innerHTML = `<span>${escapeHtml(message)}</span>${actionLabel ? `<button type="button">${escapeHtml(actionLabel)}</button>` : ""}`;
   item.querySelector("button")?.addEventListener("click", async () => {
     item.remove();
