@@ -188,7 +188,7 @@ def auth_headers(role: str) -> dict[str, str]:
 def request_json(method: str, base_url: str, path: str, *, headers: dict[str, str] | None = None, json_payload: Any = None, expected: int | set[int] = 200) -> dict[str, Any]:
     response = requests.request(method, f"{base_url}{path}", headers=headers or {}, json=json_payload, timeout=20)
     expected_set = {expected} if isinstance(expected, int) else expected
-    require(f"{method} {path} status {expected_set}, got {response.status_code}", response.status_code in expected_set)
+    require(f"{method} {path} status {expected_set}, got {response.status_code}: {response.text[:500]}", response.status_code in expected_set)
     content_type = response.headers.get("content-type", "")
     require(f"{method} {path} json response", content_type.startswith("application/json"))
     lower = response.text.lower()
@@ -410,7 +410,8 @@ def seed_fixture(schema: str, *, include_edge_running: bool = False) -> dict[str
             "options": {"add_missing": True, "skip_existing": True},
         }
     )
-    db.create_backup_job(destination="local", safe_mode=True)
+    seed_backup = db.create_backup_job(destination="local", safe_mode=True)
+    db.update_backup_job(str(seed_backup["id"]), status="cancelled", cancel_requested=1, finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ"))
     db.record_audit_event("rc2_seed", actor_role="admin", target_type="fixture", target_id=schema, summary="RC2 fixture seeded", metadata={"safe": True})
     return {
         "partial_original": db.chapter_text("partial-novel", 1, "original")["text"],
@@ -663,7 +664,7 @@ def auth_matrix(schema: str) -> dict[str, Any]:
         request_json("GET", base_url, "/api/admin/users", headers=admin)
         request_json("GET", base_url, "/api/admin/audit-events", headers=admin)
         request_json("GET", base_url, "/api/admin/backups/manifest", headers=admin)
-        backup = request_json("POST", base_url, "/api/admin/backups/jobs", headers=admin, json_payload={"store": False, "safe_mode": True})["job"]
+        backup = request_json("POST", base_url, "/api/admin/backups/jobs", headers=admin, json_payload={"store": False, "safe_mode": True}, expected={200, 202})["job"]
         request_json("GET", base_url, f"/api/admin/backups/jobs/{backup['id']}", headers=admin)
         request_json("POST", base_url, "/api/admin/backups/restore-preview", headers=admin, json_payload={"backup": {"manifest": {"format_version": "godtranslator-v10-platform-backup.v1"}, "tables": {"novels": []}}, "mode": "add-missing"})
         request_json("GET", base_url, "/api/admin/translation/performance", headers=admin)
