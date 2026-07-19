@@ -2453,17 +2453,20 @@ class Database:
         existing = self.user_profile(user_id)
         role_to_save = existing.get("role") if existing else role
         now = utc_now()
+        target_alias = " AS target" if self.config.backend == "postgres" else ""
+        existing_display_name = "target.display_name" if self.config.backend == "postgres" else "display_name"
+        existing_avatar_url = "target.avatar_url" if self.config.backend == "postgres" else "avatar_url"
         with self.connect() as conn:
             conn.execute(
                 f"""
-                INSERT INTO {self.table('user_profiles')} (
+                INSERT INTO {self.table('user_profiles')}{target_alias} (
                     user_id, email, display_name, avatar_url, preferred_language, role, created_at, updated_at
                 )
                 VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     email = excluded.email,
-                    display_name = COALESCE(excluded.display_name, display_name),
-                    avatar_url = COALESCE(excluded.avatar_url, avatar_url),
+                    display_name = COALESCE(excluded.display_name, {existing_display_name}),
+                    avatar_url = COALESCE(excluded.avatar_url, {existing_avatar_url}),
                     role = excluded.role,
                     updated_at = excluded.updated_at
                 """,
