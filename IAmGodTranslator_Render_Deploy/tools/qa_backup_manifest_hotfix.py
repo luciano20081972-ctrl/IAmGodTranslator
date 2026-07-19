@@ -7,6 +7,8 @@ import tempfile
 import time
 import tracemalloc
 import types
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +21,7 @@ os.environ.setdefault("TRANSLATION_AUTOSTART", "false")
 os.environ.pop("DATABASE_URL", None)
 os.environ.pop("OPENAI_API_KEY", None)
 
-from app.db import Database
+from app.db import Database, normalize_backup_job
 
 
 def install_fastapi_stubs() -> None:
@@ -321,6 +323,38 @@ def duplicate_backup_guard_fixture() -> dict[str, Any]:
     }
 
 
+def postgres_backup_job_json_fixture() -> dict[str, Any]:
+    now = datetime.now(UTC)
+    normalized = normalize_backup_job(
+        {
+            "id": uuid.uuid4(),
+            "kind": "full_platform_backup",
+            "destination": "local",
+            "status": "queued",
+            "safe_mode": 1,
+            "current_table": None,
+            "total_tables": 1,
+            "completed_tables": 0,
+            "total_rows": 10,
+            "processed_rows": 0,
+            "size_bytes": 0,
+            "sha256": None,
+            "file_path": None,
+            "storage_json": "{}",
+            "error": None,
+            "cancel_requested": 0,
+            "created_at": now,
+            "started_at": None,
+            "finished_at": None,
+            "updated_at": now,
+        }
+    )
+    json.dumps({"ok": True, "job": normalized})
+    if not isinstance(normalized["id"], str) or not isinstance(normalized["created_at"], str):
+        raise AssertionError("PostgreSQL backup job fields were not converted to JSON-safe strings")
+    return {"id_json_safe": True, "timestamps_json_safe": True}
+
+
 class BrokenManifestDatabase(Database):
     def platform_backup_manifest_summary(self) -> dict[str, Any]:
         raise RuntimeError("simulated manifest failure with hidden details")
@@ -380,6 +414,7 @@ def main() -> None:
         "missing_optional_table": missing_optional_table_fixture(),
         "background_full_backup": explicit_full_backup_fixture(),
         "duplicate_backup_guard": duplicate_backup_guard_fixture(),
+        "postgres_backup_job_json": postgres_backup_job_json_fixture(),
         "json_errors": json_error_fixture(),
         "authorization": authorization_fixture(),
         "frontend_error_guards": frontend_error_guards(),

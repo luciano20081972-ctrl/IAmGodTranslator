@@ -3491,6 +3491,11 @@ def normalize_backup_destination(value: str) -> str:
 
 def normalize_backup_job(row: dict[str, Any]) -> dict[str, Any]:
     payload = dict(row)
+    for key, value in list(payload.items()):
+        if isinstance(value, uuid.UUID):
+            payload[key] = str(value)
+        elif isinstance(value, datetime):
+            payload[key] = value.isoformat()
     for key in ("safe_mode", "cancel_requested"):
         payload[key] = bool(payload.get(key))
     try:
