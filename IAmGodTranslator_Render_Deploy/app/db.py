@@ -62,6 +62,25 @@ PLATFORM_BACKUP_TABLE_NAMES = [
     "favorites",
     "translation_profiles",
 ]
+PLATFORM_BACKUP_ORDER_COLUMNS = {
+    "novels": ["id"],
+    "chapters": ["novel_id", "chapter_number"],
+    "chapter_editions": ["novel_id", "chapter_number", "edition_key"],
+    "translation_jobs": ["created_at", "id"],
+    "translation_job_items": ["job_id", "chapter_number", "id"],
+    "translation_performance": ["created_at", "id"],
+    "import_jobs": ["updated_at", "id"],
+    "import_job_items": ["job_id", "chapter_number", "id"],
+    "content_import_items": ["job_id", "chapter_number", "id"],
+    "user_profiles": ["user_id"],
+    "user_preferences": ["user_id"],
+    "reading_progress": ["user_id", "novel_id"],
+    "reading_history": ["created_at", "id"],
+    "bookmarks": ["created_at", "id"],
+    "favorites": ["user_id", "novel_id"],
+    "translation_profiles": ["id"],
+}
+PLATFORM_BACKUP_DEFAULT_BATCH_SIZE = 100
 
 
 @dataclass(frozen=True)
@@ -2224,7 +2243,6 @@ class Database:
             "ai": int(row["ai"] or 0),
             "english": int(row["english"] or 0),
             "needs_translation": int(row["needs_translation"] or 0),
-            "recent_jobs": self.translation_jobs(limit=5),
         }
 
     def mark_interrupted_jobs(self) -> None:
@@ -2988,6 +3006,28 @@ class Database:
         }
         return {"ok": True, "manifest": manifest, "tables": tables}
 
+    def iter_platform_backup_rows(self, table_name: str, batch_size: int = PLATFORM_BACKUP_DEFAULT_BATCH_SIZE) -> Iterator[list[dict[str, Any]]]:
+        if table_name not in PLATFORM_BACKUP_TABLE_NAMES:
+            raise ValueError("unsupported_backup_table")
+        size = max(1, min(1000, int(batch_size or PLATFORM_BACKUP_DEFAULT_BATCH_SIZE)))
+        offset = 0
+        order_clause = platform_backup_order_clause(table_name)
+        with self.connect() as conn:
+            while True:
+                rows = conn.execute(
+                    f"""
+                    SELECT *
+                    FROM {self.table(table_name)}
+                    {order_clause}
+                    LIMIT ? OFFSET ?
+                    """,
+                    (size, offset),
+                ).fetchall()
+                if not rows:
+                    return
+                yield [dict(row) for row in rows]
+                offset += len(rows)
+
     def platform_backup_manifest_summary(self) -> dict[str, Any]:
         started = time.perf_counter()
         table_counts: dict[str, int | None] = {}
@@ -3337,6 +3377,12 @@ def configured_chapter_range(payload: dict[str, Any]) -> tuple[int | None, int |
     if start is not None and end is not None and start > end:
         start, end = end, start
     return start, end
+
+
+def platform_backup_order_clause(table_name: str) -> str:
+    columns = PLATFORM_BACKUP_ORDER_COLUMNS.get(table_name) or ["id"]
+    safe_columns = [validate_identifier(column) for column in columns]
+    return "ORDER BY " + ", ".join(safe_columns)
 
 
 def personal_progress_row(row: Any) -> dict[str, Any]:

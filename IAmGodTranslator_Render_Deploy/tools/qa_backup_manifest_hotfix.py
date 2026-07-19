@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import time
+import tracemalloc
 import types
 from pathlib import Path
 from typing import Any
@@ -136,19 +137,41 @@ def build_db(name: str, chapters: int = 908, large_text: bool = True) -> Databas
 def use_database(db: Database) -> None:
     app_main.database = db
     app_main.translation_runner.store = db
+    with app_main.BACKUP_JOB_LOCK:
+        app_main.BACKUP_JOBS.clear()
+        app_main.BACKUP_THREADS.clear()
 
 
-def response_content(response: Any) -> bytes:
-    content = getattr(response, "content", b"")
-    if hasattr(content, "read"):
-        position = content.tell()
-        content.seek(0)
-        data = content.read()
-        content.seek(position)
-        return data
+def response_json(response: Any) -> dict[str, Any]:
+    if isinstance(response, dict):
+        return response
+    content = getattr(response, "content", None)
+    if isinstance(content, dict):
+        return content
+    body = getattr(response, "body", b"")
+    if body:
+        return json.loads(body.decode("utf-8"))
     if isinstance(content, str):
-        return content.encode("utf-8")
-    return content
+        return json.loads(content)
+    if isinstance(content, bytes):
+        return json.loads(content.decode("utf-8"))
+    raise AssertionError(f"response did not contain JSON: {type(response).__name__}")
+
+
+def response_status(response: Any) -> int:
+    return int(getattr(response, "status_code", 200))
+
+
+def wait_for_backup_job(job_id: str, expected: set[str] | None = None, timeout_seconds: float = 15.0) -> dict[str, Any]:
+    expected = expected or {"completed"}
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        payload = response_json(app_main.get_platform_backup_job(job_id))
+        job = payload["job"]
+        if job["status"] in expected:
+            return job
+        time.sleep(0.05)
+    raise AssertionError(f"backup job {job_id} did not reach {sorted(expected)}")
 
 
 def manifest_endpoint_fixture() -> dict[str, Any]:
@@ -177,6 +200,62 @@ def manifest_endpoint_fixture() -> dict[str, Any]:
     }
 
 
+def repeated_manifest_memory_fixture() -> dict[str, Any]:
+    db = build_db("908-large-repeat")
+    use_database(db)
+    tracemalloc.start()
+    started = time.perf_counter()
+    max_response_bytes = 0
+    for _ in range(50):
+        payload = app_main.platform_backup_manifest()
+        text = json.dumps(payload, ensure_ascii=False)
+        max_response_bytes = max(max_response_bytes, len(text.encode("utf-8")))
+        if ORIGINAL_SENTINEL in text or EDITION_SENTINEL in text:
+            raise AssertionError("manifest response serialized chapter or edition text during repeat calls")
+    current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
+    if max_response_bytes > 50 * 1024:
+        raise AssertionError(f"manifest response exceeded 50KB: {max_response_bytes}")
+    if peak > 32 * 1024 * 1024:
+        raise AssertionError(f"manifest memory peak exceeded 32MB: {peak}")
+    return {
+        "calls": 50,
+        "elapsed_ms": elapsed_ms,
+        "max_response_bytes": max_response_bytes,
+        "tracemalloc_peak_bytes": peak,
+        "tracemalloc_current_bytes": current,
+    }
+
+
+def http_manifest_fixture() -> dict[str, Any]:
+    try:
+        from fastapi.testclient import TestClient
+    except ModuleNotFoundError:
+        return {"skipped": True, "reason": "fastapi_testclient_unavailable"}
+    db = build_db("http-manifest", chapters=906)
+    use_database(db)
+    with TestClient(app_main.app) as client:
+        login = client.post("/api/admin/login", json={"password": "qa-admin-password"})
+        if login.status_code != 200:
+            raise AssertionError(f"admin login failed over HTTP: {login.status_code}")
+        response = client.get("/api/admin/backups/manifest")
+    if response.status_code != 200:
+        raise AssertionError(f"manifest HTTP status was {response.status_code}")
+    payload = response.json()
+    text = response.text
+    if ORIGINAL_SENTINEL in text or EDITION_SENTINEL in text:
+        raise AssertionError("HTTP manifest response serialized chapter or edition text")
+    if len(response.content) > 50 * 1024:
+        raise AssertionError(f"HTTP manifest response exceeded 50KB: {len(response.content)}")
+    return {
+        "status": response.status_code,
+        "content_type": response.headers.get("content-type", ""),
+        "response_bytes": len(response.content),
+        "chapters": payload["manifest"]["chapter_source_counts"]["chapters"],
+    }
+
+
 def missing_optional_table_fixture() -> dict[str, Any]:
     db = build_db("missing-optional", chapters=3, large_text=False)
     with db.connect() as conn:
@@ -192,21 +271,53 @@ def missing_optional_table_fixture() -> dict[str, Any]:
 def explicit_full_backup_fixture() -> dict[str, Any]:
     db = build_db("full-backup", chapters=12)
     use_database(db)
-    created = app_main.create_platform_backup({"store": False})
-    if not created["manifest"].get("sha256") or not created["manifest"].get("size_bytes"):
-        raise AssertionError("full backup create did not calculate checksum and size")
+    created_response = app_main.create_platform_backup({"store": False})
+    if response_status(created_response) != 202:
+        raise AssertionError(f"expected queued backup job, got {response_status(created_response)}")
+    created = response_json(created_response)
+    job = wait_for_backup_job(created["job"]["id"])
+    if not job.get("sha256") or not job.get("size_bytes"):
+        raise AssertionError("background full backup did not calculate checksum and size")
+    path = Path(app_main.BACKUP_JOBS[job["id"]]["path"])
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not payload.get("tables") or payload.get("manifest", {}).get("kind") != "full_platform_backup":
+        raise AssertionError("backup file payload is incomplete")
     download = app_main.download_platform_backup()
     if getattr(download, "status_code", 200) != 200:
         raise AssertionError(f"download backup failed: {getattr(download, 'status_code', 0)}")
-    download_bytes = response_content(download)
-    payload = json.loads(download_bytes.decode("utf-8"))
-    if not payload.get("tables") or not payload.get("manifest", {}).get("sha256"):
-        raise AssertionError("downloaded backup payload is incomplete")
     return {
-        "create_status": 200,
-        "storage_status": created.get("storage", {}).get("status"),
+        "create_status": response_status(created_response),
+        "job_status": job["status"],
+        "storage_status": job.get("storage", {}).get("status"),
         "download_status": getattr(download, "status_code", 200),
-        "download_bytes": len(download_bytes),
+        "backup_bytes": job["size_bytes"],
+    }
+
+
+def duplicate_backup_guard_fixture() -> dict[str, Any]:
+    db = build_db("duplicate-guard", chapters=36)
+    original_iter = db.iter_platform_backup_rows
+
+    def slow_iter(table_name: str, batch_size: int = 100) -> Any:
+        time.sleep(0.05)
+        yield from original_iter(table_name, batch_size=batch_size)
+
+    db.iter_platform_backup_rows = slow_iter  # type: ignore[method-assign]
+    use_database(db)
+    first = app_main.create_platform_backup({"store": False})
+    second = app_main.create_platform_backup({"store": False})
+    if response_status(first) != 202:
+        raise AssertionError(f"first backup did not queue: {response_status(first)}")
+    if response_status(second) != 429:
+        raise AssertionError(f"second backup did not return conflict: {response_status(second)}")
+    first_payload = response_json(first)
+    second_payload = response_json(second)
+    job = wait_for_backup_job(first_payload["job"]["id"])
+    return {
+        "first_status": response_status(first),
+        "second_status": response_status(second),
+        "second_code": second_payload.get("error", {}).get("code"),
+        "completed_job": job["id"],
     }
 
 
@@ -215,43 +326,24 @@ class BrokenManifestDatabase(Database):
         raise RuntimeError("simulated manifest failure with hidden details")
 
 
-class BrokenBackupDatabase(Database):
-    def platform_backup_payload(self) -> dict[str, Any]:
-        raise RuntimeError("simulated backup failure with hidden details")
-
-
 def json_error_fixture() -> dict[str, Any]:
     use_database(BrokenManifestDatabase("sqlite:///:memory:"))
     manifest = app_main.platform_backup_manifest()
-    if manifest.status_code != 500:
-        raise AssertionError(f"expected manifest 500, got {manifest.status_code}")
-    manifest_payload = manifest.content
+    if response_status(manifest) != 500:
+        raise AssertionError(f"expected manifest 500, got {response_status(manifest)}")
+    manifest_payload = response_json(manifest)
     if manifest_payload.get("error", {}).get("stage") != "table_counts":
         raise AssertionError("manifest JSON error missing table_counts stage")
     if "hidden details" in json.dumps(manifest_payload):
         raise AssertionError("manifest JSON error exposed exception details")
-
-    use_database(BrokenBackupDatabase("sqlite:///:memory:"))
-    create = app_main.create_platform_backup({"store": False})
-    download = app_main.download_platform_backup()
-    for label, response in {"create": create, "download": download}.items():
-        if response.status_code != 500:
-            raise AssertionError(f"expected {label} 500, got {response.status_code}")
-        payload = response.content
-        if payload.get("error", {}).get("stage") != "build_full_backup":
-            raise AssertionError(f"{label} JSON error missing build_full_backup stage")
-        if "hidden details" in json.dumps(payload):
-            raise AssertionError(f"{label} JSON error exposed exception details")
     return {
         "manifest_error": manifest_payload["error"],
-        "create_error": create.content["error"],
-        "download_error": download.content["error"],
     }
 
 
 def authorization_fixture() -> dict[str, Any]:
     source = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text(encoding="utf-8")
-    for route in ("/api/admin/backups/manifest", "/api/admin/backups/create", "/api/admin/backups/download"):
+    for route in ("/api/admin/backups/manifest", "/api/admin/backups/create", "/api/admin/backups/download", "/api/admin/backups/jobs"):
         marker = f'"{route}"'
         route_index = source.find(marker)
         if route_index == -1:
@@ -259,7 +351,7 @@ def authorization_fixture() -> dict[str, Any]:
         function_slice = source[route_index : route_index + 350]
         if "Depends(require_admin)" not in function_slice:
             raise AssertionError(f"route is not admin-protected: {route}")
-    return {"admin_only_routes": 3, "checked": True}
+    return {"admin_only_routes": 4, "checked": True}
 
 
 def frontend_error_guards() -> dict[str, Any]:
@@ -268,6 +360,9 @@ def frontend_error_guards() -> dict[str, Any]:
         "HTTP ${response.status}: The server returned a non-JSON response",
         "serverError.stage",
         "backupManifestError(error)",
+        "loadAdminTabData(tab)",
+        "renderBackupJobStatus",
+        "Starting background backup...",
         "Backup manifest could not be loaded.",
         "Loading backup manifest...",
     ]
@@ -280,8 +375,11 @@ def frontend_error_guards() -> dict[str, Any]:
 def main() -> None:
     results = {
         "manifest_908_large": manifest_endpoint_fixture(),
+        "manifest_50_calls_memory": repeated_manifest_memory_fixture(),
+        "http_manifest": http_manifest_fixture(),
         "missing_optional_table": missing_optional_table_fixture(),
-        "explicit_full_backup": explicit_full_backup_fixture(),
+        "background_full_backup": explicit_full_backup_fixture(),
+        "duplicate_backup_guard": duplicate_backup_guard_fixture(),
         "json_errors": json_error_fixture(),
         "authorization": authorization_fixture(),
         "frontend_error_guards": frontend_error_guards(),
