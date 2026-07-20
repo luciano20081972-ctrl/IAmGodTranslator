@@ -14,8 +14,13 @@ const CACHE_TTL_MS = 45_000;
 let activeRouteKey = window.location.hash || "#/home";
 let connectionInterrupted = false;
 let readerScrollHandler = null;
+let readerChromeHandler = null;
+let readerAbortController = null;
+let lastReaderScrollY = 0;
 let activityIndicatorRequest = 0;
 const notificationSessionStartedAt = Date.now();
+const readerRequestMap = new Map();
+const READER_CACHE_LIMIT = 9;
 
 const state = {
   novels: [],
@@ -44,7 +49,7 @@ const state = {
 };
 
 const sourceLabels = {english: "English", ai: "English", reference: "Reference", original: "Original"};
-const APP_VERSION = "11.0.0";
+const APP_VERSION = "11.1.0";
 const chapterViews = [
   ["all", "All"],
   ["translated", "Translated"],
@@ -60,6 +65,7 @@ async function api(path, options = {}) {
     try {
       return await apiOnce(path, options);
     } catch (error) {
+      if (error.name === "AbortError") throw error;
       const retryable = method === "GET" && (error.network || [502, 503, 504].includes(error.status));
       if (!retryable || attempt === 2) throw error;
       if (!connectionInterrupted) {
@@ -81,6 +87,7 @@ async function apiOnce(path, options = {}) {
       ...options,
     });
   } catch (error) {
+    if (error.name === "AbortError") throw error;
     error.network = true;
     throw error;
   }
@@ -120,8 +127,16 @@ async function cachedApi(path, ttl = CACHE_TTL_MS) {
   const cached = state.cache.get(path);
   if (cached && Date.now() - cached.time < ttl) return cached.payload;
   const payload = await api(path);
-  state.cache.set(path, {time: Date.now(), payload});
+  rememberCachePayload(path, payload);
   return payload;
+}
+
+function rememberCachePayload(path, payload) {
+  state.cache.set(path, {time: Date.now(), payload});
+  const readerKeys = [...state.cache.keys()].filter((key) => key.includes("/chapters/"));
+  while (readerKeys.length > READER_CACHE_LIMIT) {
+    state.cache.delete(readerKeys.shift());
+  }
 }
 
 function invalidateCache(prefix = "") {
@@ -618,11 +633,12 @@ async function refreshActivityIndicator() {
 
 function safeReaderSource(source = state.source) {
   if (source === "reference" && canViewReference()) return "reference";
-  return source === "original" ? "original" : "english";
+  if (source === "original" && canViewReference()) return "original";
+  return "english";
 }
 
 function readerSourceOptions() {
-  return canViewReference() ? ["english", "original", "reference"] : ["english", "original"];
+  return canViewReference() ? ["english", "original", "reference"] : ["english"];
 }
 
 async function openLibrary() {
@@ -1180,10 +1196,11 @@ async function openReader(novelId, chapterNumber, requestedSource) {
     const source = readerSourceOptions().includes(requested) ? requested : safeReaderSource(preferredSource(chapter));
     state.source = source;
     localStorage.setItem("gt-reader-source", source);
-    const payload = await cachedApi(chapterTextPath(novelId, chapterNumber, source), 120_000);
+    const payload = await fetchReaderChapter(novelId, chapterNumber, source);
     renderReader(novelId, chapterNumber, source, payload);
     prefetchNeighborChapters(novelId, chapterNumber, source);
   } catch (error) {
+    if (error.name === "AbortError") return;
     setError(error.message);
   }
 }
@@ -1194,23 +1211,32 @@ function renderReader(novelId, chapterNumber, source, payload) {
   const novel = state.novels.find((item) => item.id === novelId) || {};
   const options = readerSourceOptions();
   const metrics = readerMetrics(payload, chapterNumber);
+  const sourceSwitch = options.length > 1 ? `<div class="segmented reader-source-switch" aria-label="Reader source">${options.map((item) => `<button data-source="${item}" class="${item === source ? "active" : ""}" aria-pressed="${item === source ? "true" : "false"}">${sourceLabels[item]}</button>`).join("")}</div>` : "";
+  const bookmarkLabel = isBookmarkedLocally(novelId, chapterNumber) ? "Bookmarked" : "Bookmark";
   rememberRecent("chapters", {novel_id: novelId, chapter_number: chapterNumber, source, label: `Chapter ${chapterNumber}`, href: `#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}`, at: new Date().toISOString()});
   document.documentElement.style.setProperty("--reader-font", `${state.fontSize}px`);
   document.body.dataset.zen = state.zen ? "on" : "off";
   app.innerHTML = `
-    <section class="reader-panel ${state.zen ? "zen" : ""}">
-      <div class="reader-nav"><a class="button" href="#/novel/${novelId}">Back to Novel</a><button id="openChapterDrawer" type="button">Chapter List</button><div class="spacer"></div><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous</button><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next</button><button id="bookmarkChapter" type="button">Bookmark</button><button id="zenToggle" type="button">${state.zen ? "Exit Focus" : "Focus"}</button></div>
-      <div class="reader-tabs"><div class="segmented reader-source-switch">${options.map((item) => `<button data-source="${item}" class="${item === source ? "active" : ""}">${sourceLabels[item]}</button>`).join("")}</div><label class="font-control">Text size<input id="fontSize" type="range" min="16" max="25" value="${state.fontSize}"></label><button id="readerSettingsToggle" type="button">Reader Settings</button><button type="button" data-copy-link="#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}">Copy Link</button></div>
+    <section class="reader-panel ${state.zen ? "zen" : ""}" aria-labelledby="readerChapterHeading">
+      <div class="reader-nav reader-chrome"><a class="button" href="#/novel/${novelId}">Back to Novel</a><button id="openChapterDrawer" type="button" aria-haspopup="dialog">Table of Contents</button><div class="spacer"></div><button data-go="${previous || ""}" ${previous ? "" : "disabled"} aria-label="Previous chapter">Previous</button><button data-go="${next || ""}" ${next ? "" : "disabled"} aria-label="Next chapter">Next</button><button id="bookmarkChapter" type="button" aria-pressed="${bookmarkLabel === "Bookmarked" ? "true" : "false"}">${bookmarkLabel}</button><button id="zenToggle" type="button">${state.zen ? "Exit Focus" : "Focus"}</button></div>
+      <div class="reader-tabs reader-chrome">${sourceSwitch}<label class="font-control">Text size<input id="fontSize" type="range" min="16" max="25" value="${state.fontSize}" aria-label="Reader text size"></label><button id="readerSettingsToggle" type="button" aria-haspopup="dialog">Settings</button><button type="button" data-copy-link="#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}">Copy Link</button></div>
       ${renderChapterDrawer(novelId, chapterNumber, source)}
       ${renderReaderSettingsSheet()}
-      <header class="reader-heading"><span>${escapeHtml(novel.title || sourceLabels[source])} · ${sourceLabels[source]}</span><h1>Chapter ${chapterNumber}</h1><p>${escapeHtml(payload.title || `Chapter ${chapterNumber}`)}</p><div class="reader-meta">${metric("Read Time", metrics.readTime)}${metric("Novel Progress", metrics.chapterProgress)}<div class="metric"><span>Position</span><strong id="readerProgressText">0%</strong></div></div><div class="reader-progress"><span id="readerScrollProgress" style="width:0%"></span></div></header>
+      <header class="reader-heading"><span>${escapeHtml(novel.title || sourceLabels[source])}${canViewReference() ? ` · ${sourceLabels[source]}` : ""}</span><h1 id="readerChapterHeading">Chapter ${chapterNumber}</h1><p>${escapeHtml(payload.title || `Chapter ${chapterNumber}`)}</p><div class="reader-meta">${metric("Read Time", metrics.readTime)}${metric("Novel Progress", metrics.chapterProgress)}<div class="metric"><span>Position</span><strong id="readerProgressText">0%</strong></div></div><div class="reader-progress" aria-hidden="true"><span id="readerScrollProgress" style="width:0%"></span></div>${renderReaderEditionNotice(payload, source)}</header>
       <section class="reader-tools"><label>Search chapter<input id="readerTextSearch" type="search" placeholder="Find text in this chapter"></label><span id="readerSearchCount" class="muted">No search active</span></section>
-      <article class="reader-text">${renderReaderText(payload, source)}</article>
-      <div class="reader-bottom"><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous</button><button id="bottomChapterDrawer" type="button">Chapter List</button><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next</button><button id="backToTop" type="button" hidden>Back to Top</button></div>
+      <article class="reader-text" tabindex="-1" aria-live="polite">${renderReaderText(payload, source)}</article>
+      <div class="reader-bottom reader-chrome"><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous Chapter</button><span>${metrics.chapterProgress}</span><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next Chapter</button><button id="backToTop" type="button" hidden>Back to Top</button></div>
     </section>`;
   document.querySelectorAll("[data-go]").forEach((button) => button.addEventListener("click", () => { if (button.dataset.go) window.location.hash = `#/reader/${novelId}/${button.dataset.go}/${state.source}`; }));
   document.querySelectorAll("[data-source]").forEach((button) => button.addEventListener("click", () => { window.location.hash = `#/reader/${novelId}/${chapterNumber}/${button.dataset.source}`; }));
-  document.querySelector("#fontSize").addEventListener("input", (event) => { state.fontSize = Number(event.target.value); localStorage.setItem("gt-reader-font", String(state.fontSize)); document.documentElement.style.setProperty("--reader-font", `${state.fontSize}px`); });
+  document.querySelector("#fontSize").addEventListener("input", (event) => {
+    state.fontSize = Number(event.target.value);
+    state.preferences.readerFontSize = state.fontSize;
+    localStorage.setItem("gt-reader-font", String(state.fontSize));
+    localStorage.setItem("gt-preferences", JSON.stringify(state.preferences));
+    document.documentElement.style.setProperty("--reader-font", `${state.fontSize}px`);
+    saveRemotePreferencesQuiet();
+  });
   document.querySelector("#bookmarkChapter").addEventListener("click", () => saveBookmark(novelId, chapterNumber));
   document.querySelector("#zenToggle").addEventListener("click", () => { state.zen = !state.zen; renderReader(novelId, chapterNumber, source, payload); });
   document.querySelector("#chapterSearch")?.addEventListener("input", filterChapterDrawer);
@@ -1220,24 +1246,44 @@ function renderReader(novelId, chapterNumber, source, payload) {
   document.querySelector("#readerSettingsToggle")?.addEventListener("click", toggleReaderSettingsSheet);
   document.querySelector("#closeReaderSettings")?.addEventListener("click", toggleReaderSettingsSheet);
   document.querySelector("#zenToggleSheet")?.addEventListener("click", () => document.querySelector("#zenToggle")?.click());
+  document.querySelectorAll("#readerSettingsSheet [data-pref]").forEach((field) => field.addEventListener("input", saveReaderPreferenceFromField));
   document.querySelector("#readerTextSearch")?.addEventListener("input", searchReaderText);
+  document.querySelector("#readerRetry")?.addEventListener("click", route);
   document.querySelectorAll("[data-copy-paragraph]").forEach((button) => button.addEventListener("click", copyParagraphText));
   document.querySelector("#backToTop")?.addEventListener("click", () => window.scrollTo({top: 0, behavior: state.preferences.reduceMotion ? "auto" : "smooth"}));
   bindCopyLinks(app);
   bindReaderProgress(novelId, chapterNumber, source);
+  bindReaderChrome();
   restoreReaderScroll(novelId, chapterNumber, source);
   updateBackToTop();
   updateReaderProgressUi();
 }
 
 function renderReaderText(payload, source) {
-  if (!payload.ok) return `<div class="empty-state">${escapeHtml(sourceLabels[source])} is not available for this chapter.</div>`;
+  if (!payload.ok) return `<div class="empty-state"><h2>Chapter unavailable</h2><p>${escapeHtml(readerMissingMessage(payload, source))}</p><button id="readerRetry" type="button">Retry</button></div>`;
   const lines = paragraphs(payload.text);
   if (lines.length && isDuplicateChapterHeading(lines[0], payload)) lines.shift();
   return lines.map((line, index) => {
     const clean = line.replace(/^#{1,6}\s*/, "");
     return `<p data-reader-paragraph="${escapeAttr(clean)}"><button class="copy-paragraph" type="button" data-copy-paragraph="${index}" title="Copy paragraph">Copy</button><span>${escapeHtml(clean)}</span></p>`;
   }).join("");
+}
+
+function readerMissingMessage(payload, source) {
+  if (payload?.status === "english_missing" && canViewReference()) return "English can be filled from Reference in the Admin Build English Coverage workflow when Reference is available.";
+  if (payload?.status === "english_missing") return "This chapter is not available in English yet.";
+  if (payload?.status === "reference_missing") return "Reference is not available for this chapter.";
+  if (payload?.status === "original_missing") return "Original text is not available for this chapter.";
+  return `${sourceLabels[source] || "Chapter"} is not available right now.`;
+}
+
+function renderReaderEditionNotice(payload, source) {
+  if (!canViewReference() || !payload?.ok || !payload.edition || source !== "english") return "";
+  const edition = payload.edition || {};
+  return `<aside class="reader-edition-note" aria-label="English edition details">
+    <strong>${escapeHtml(edition.edition_type || "English")}</strong>
+    <span>${escapeHtml(edition.source_label || "Active English edition")}</span>
+  </aside>`;
 }
 
 function readerMetrics(payload, chapterNumber) {
@@ -1301,10 +1347,20 @@ function renderChapterDrawer(novelId, chapterNumber, source) {
 }
 
 function renderReaderSettingsSheet() {
+  const pref = state.preferences;
   return `<section class="reader-settings-sheet" id="readerSettingsSheet" hidden>
     <div class="sheet-header"><div><p class="eyebrow">Reader Settings</p><h2>Reading surface</h2></div><button id="closeReaderSettings" type="button">Close</button></div>
-    <div class="reader-settings-preview"><p>Preview your reading tone, width, and text scale without leaving the chapter.</p><p class="muted">Deeper theme controls remain in the Personalization Studio.</p></div>
-    <div class="actions"><a class="button primary" href="#/settings/reader">Open Studio</a><button id="zenToggleSheet" type="button">Toggle Focus</button></div>
+    <div class="reader-settings-preview"><p>Preview text scale, rhythm, width, and tone without leaving the chapter.</p></div>
+    <div class="reader-settings-grid">
+      <label>Theme<select data-pref="readerTone"><option value="dark" ${pref.readerTone === "dark" ? "selected" : ""}>Dark</option><option value="paper" ${pref.readerTone === "paper" ? "selected" : ""}>Light</option><option value="sepia" ${pref.readerTone === "sepia" ? "selected" : ""}>Sepia</option><option value="oled" ${pref.readerTone === "oled" ? "selected" : ""}>AMOLED</option></select></label>
+      <label>Font<select data-pref="readerFont"><option value="serif" ${pref.readerFont === "serif" ? "selected" : ""}>Serif</option><option value="sans" ${pref.readerFont === "sans" ? "selected" : ""}>Sans</option><option value="system" ${pref.readerFont === "system" ? "selected" : ""}>System</option></select></label>
+      <label>Size<input data-pref="readerFontSize" type="range" min="16" max="26" value="${escapeAttr(pref.readerFontSize || state.fontSize)}"></label>
+      <label>Line height<input data-pref="readerLineHeight" type="range" min="1.45" max="2.1" step="0.05" value="${escapeAttr(pref.readerLineHeight || 1.8)}"></label>
+      <label>Column width<input data-pref="readingWidth" type="range" min="620" max="1040" step="20" value="${escapeAttr(pref.readingWidth || 900)}"></label>
+      <label>Paragraph spacing<input data-pref="paragraphSpacing" type="range" min="0.8" max="1.8" step="0.05" value="${escapeAttr(pref.paragraphSpacing || 1.2)}"></label>
+      <label>Alignment<select data-pref="textAlign"><option value="left" ${pref.textAlign === "left" ? "selected" : ""}>Left</option><option value="justify" ${pref.textAlign === "justify" ? "selected" : ""}>Justified</option></select></label>
+    </div>
+    <div class="actions"><a class="button" href="#/settings/reader">Open Studio</a><button id="zenToggleSheet" class="primary" type="button">Toggle Focus</button></div>
   </section>`;
 }
 
@@ -1320,6 +1376,7 @@ function openChapterDrawer() {
   if (!drawer) return;
   drawer.hidden = false;
   drawer.classList.add("open");
+  drawer.dataset.restoreFocus = "openChapterDrawer";
   document.querySelector("#chapterSearch")?.focus();
   document.querySelector(".chapter-drawer .current")?.scrollIntoView({block: "center"});
 }
@@ -1329,12 +1386,31 @@ function closeChapterDrawer() {
   if (!drawer) return;
   drawer.classList.remove("open");
   drawer.hidden = true;
+  document.querySelector(`#${drawer.dataset.restoreFocus || "openChapterDrawer"}`)?.focus();
 }
 
 function toggleReaderSettingsSheet() {
   const sheet = document.querySelector("#readerSettingsSheet");
   if (!sheet) return;
-  sheet.hidden = !sheet.hidden;
+  if (sheet.hidden) openReaderSettingsSheet();
+  else closeReaderSettingsSheet();
+}
+
+function openReaderSettingsSheet() {
+  const sheet = document.querySelector("#readerSettingsSheet");
+  if (!sheet) return;
+  sheet.hidden = false;
+  sheet.classList.add("open");
+  sheet.dataset.restoreFocus = "readerSettingsToggle";
+  sheet.querySelector("button, a, input, select")?.focus();
+}
+
+function closeReaderSettingsSheet() {
+  const sheet = document.querySelector("#readerSettingsSheet");
+  if (!sheet) return;
+  sheet.classList.remove("open");
+  sheet.hidden = true;
+  document.querySelector(`#${sheet.dataset.restoreFocus || "readerSettingsToggle"}`)?.focus();
 }
 
 function isDuplicateChapterHeading(line, payload) {
@@ -1346,11 +1422,44 @@ function isDuplicateChapterHeading(line, payload) {
 }
 
 async function saveBookmark(novelId, chapterNumber) {
-  if (!state.account) return toast("Sign in to save bookmarks.");
+  if (!state.account) {
+    toggleLocalBookmark(novelId, chapterNumber);
+    const button = document.querySelector("#bookmarkChapter");
+    const active = isBookmarkedLocally(novelId, chapterNumber);
+    if (button) {
+      button.textContent = active ? "Bookmarked" : "Bookmark";
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    }
+    return toast(active ? "Bookmark saved on this device." : "Bookmark removed from this device.");
+  }
   const note = "";
   await api("/api/account/bookmarks", {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({novel_id: novelId, chapter_number: chapterNumber, note})});
   await loadPersonalHome(true);
   toast("Bookmark saved.");
+}
+
+function localBookmarkKey(novelId, chapterNumber) {
+  return `${novelId}:${Number(chapterNumber)}`;
+}
+
+function localBookmarks() {
+  return readStored("gt-local-bookmarks", []);
+}
+
+function isBookmarkedLocally(novelId, chapterNumber) {
+  const key = localBookmarkKey(novelId, chapterNumber);
+  return localBookmarks().some((item) => item.key === key);
+}
+
+function toggleLocalBookmark(novelId, chapterNumber) {
+  const key = localBookmarkKey(novelId, chapterNumber);
+  const existing = localBookmarks();
+  const novel = state.novels.find((item) => item.id === novelId) || {};
+  const chapter = state.chapters.find((item) => item.chapter_number === Number(chapterNumber)) || {};
+  const next = existing.some((item) => item.key === key)
+    ? existing.filter((item) => item.key !== key)
+    : [{key, novel_id: novelId, novel_title: novel.title || novelId, chapter_number: Number(chapterNumber), chapter_title: chapter.title || `Chapter ${chapterNumber}`, created_at: new Date().toISOString()}, ...existing];
+  writeStored("gt-local-bookmarks", next.slice(0, 200));
 }
 
 const saveProgressDebounced = debounce(async (novelId, chapterNumber, source, scrollPercent) => {
@@ -1415,9 +1524,10 @@ async function openTranslate(novelId, params = new URLSearchParams()) {
     await refreshSession();
     await loadNovels();
     if (!canTranslate()) return renderAdminGate("Translate");
-    const [jobs, modelRegistry] = await Promise.all([
+    const [jobs, modelRegistry, coveragePreview] = await Promise.all([
       api(`/api/translation/jobs?novel_id=${encodeURIComponent(novelId)}`),
       api("/api/models"),
+      state.admin ? api(`/api/admin/novels/${encodeURIComponent(novelId)}/english-coverage/preview`).catch(() => null) : Promise.resolve(null),
     ]);
     const novel = state.novels.find((item) => item.id === novelId) || {};
     const models = modelRegistry.models || [];
@@ -1451,6 +1561,7 @@ async function openTranslate(novelId, params = new URLSearchParams()) {
         </div>
       </section>
       ${translationOptional ? `<section class="panel"><h2>Translation Not Required</h2><p class="muted">English edition already exists for this novel. Use this workspace only when you want to retranslate selected chapters, create an alternative edition, or replace the active edition.</p></section>` : ""}
+      ${renderEnglishCoveragePanel(coveragePreview)}
       <section class="draft-bar"><span id="draftStatus">${draft.saved_at ? `Draft saved ${timeAgo(draft.saved_at)}` : "No saved draft"}</span><div class="actions"><button id="restoreTranslateDraft" type="button" ${draft.saved_at ? "" : "disabled"}>Restore Draft</button><button id="discardTranslateDraft" type="button" ${draft.saved_at ? "" : "disabled"}>Discard Draft</button></div></section>
       <section class="translate-workspace">
         <div class="translate-steps" id="translateForm">
@@ -1472,6 +1583,8 @@ async function openTranslate(novelId, params = new URLSearchParams()) {
     document.querySelector("#autoOptimizeSpeed").addEventListener("change", updateSpeedDescription);
     document.querySelector("#estimateBtn").addEventListener("click", estimateTranslation);
     document.querySelector("#createJobBtn").addEventListener("click", createTranslationJob);
+    document.querySelector("#applyReferenceCoverage")?.addEventListener("click", () => applyReferenceCoverage(novelId));
+    document.querySelector("#createCoverageTranslationJob")?.addEventListener("click", () => createCoverageTranslationJob(novelId));
     document.querySelector("#restoreTranslateDraft").addEventListener("click", () => openTranslate(novelId));
     document.querySelector("#discardTranslateDraft").addEventListener("click", () => { localStorage.removeItem(translateDraftKey(novelId)); openTranslate(novelId); });
     document.querySelectorAll("#translateForm input, #translateForm textarea, #translateForm select").forEach((field) => field.addEventListener("input", () => {
@@ -1488,6 +1601,73 @@ async function openTranslate(novelId, params = new URLSearchParams()) {
     bindCopyLinks(app);
   } catch (error) {
     setError(error.message);
+  }
+}
+
+function renderEnglishCoveragePanel(preview) {
+  if (!preview || !state.admin) return "";
+  const samples = preview.samples || {};
+  const referenceSamples = (samples.reference_fill || []).map((item) => `Chapter ${item.chapter_number}`).slice(0, 8).join(", ");
+  const aiSamples = (samples.translation_from_original || []).map((item) => `Chapter ${item.chapter_number}`).slice(0, 8).join(", ");
+  const blockedSamples = (samples.blocked_missing_source || []).map((item) => `Chapter ${item.chapter_number}`).slice(0, 8).join(", ");
+  const referenceCount = Number(preview.reference_fill || preview.reference_promotions || 0);
+  const aiCount = Number(preview.translation_from_original || preview.estimated_openai_chapters || 0);
+  const disabledReference = referenceCount ? "" : "disabled";
+  const disabledAi = aiCount ? "" : "disabled";
+  return `<section class="coverage-panel" aria-labelledby="coverageTitle">
+    <div class="coverage-heading">
+      <div>
+        <p class="eyebrow">Build English Coverage</p>
+        <h2 id="coverageTitle">Reference-first coverage plan</h2>
+        <p class="muted">Reference text is already English. Use the no-cost Reference action before creating any paid Original-based translation job.</p>
+      </div>
+      <span class="badge ${preview.policy === "reference_first" ? "ok" : ""}">${escapeHtml(titleCase(String(preview.policy || "").replaceAll("_", " ")))}</span>
+    </div>
+    <div class="metric-grid coverage-metrics">
+      ${metric("Total chapters", preview.total_chapters || 0)}
+      ${metric("Existing English", preview.existing_english || 0)}
+      ${metric("Can fill from Reference", referenceCount)}
+      ${metric("Needs AI translation", aiCount)}
+      ${metric("Blocked", preview.blocked || preview.blocked_missing_source || 0)}
+      ${metric("Reference cost", "$0.00")}
+    </div>
+    <div class="coverage-breakdown">
+      <p><strong>Reference promotions</strong><span>${referenceSamples || "None"}</span></p>
+      <p><strong>AI translation candidates</strong><span>${aiSamples || "None"}</span></p>
+      <p><strong>Blocked</strong><span>${blockedSamples || "None"}</span></p>
+    </div>
+    <div class="actions">
+      <button id="applyReferenceCoverage" class="primary" type="button" ${disabledReference}>Use Reference for ${referenceCount} chapter${referenceCount === 1 ? "" : "s"}</button>
+      <button id="createCoverageTranslationJob" type="button" ${disabledAi}>Create AI job for ${aiCount} chapter${aiCount === 1 ? "" : "s"}</button>
+    </div>
+  </section>`;
+}
+
+async function applyReferenceCoverage(novelId) {
+  const button = document.querySelector("#applyReferenceCoverage");
+  if (button) button.disabled = true;
+  try {
+    const result = await api(`/api/admin/novels/${encodeURIComponent(novelId)}/english-coverage/apply-reference`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({})});
+    invalidateCache("/api/novels");
+    invalidateCache(`/api/novels/${encodeURIComponent(novelId)}`);
+    toast(`Reference applied for ${result.promoted_count || 0} chapter${Number(result.promoted_count || 0) === 1 ? "" : "s"}.`);
+    openTranslate(novelId);
+  } catch (error) {
+    if (button) button.disabled = false;
+    toast(error.message || "Reference coverage failed.");
+  }
+}
+
+async function createCoverageTranslationJob(novelId) {
+  const button = document.querySelector("#createCoverageTranslationJob");
+  if (button) button.disabled = true;
+  try {
+    const result = await api(`/api/admin/novels/${encodeURIComponent(novelId)}/english-coverage/create-translation-job`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(translatePayload())});
+    toast(`Coverage job ${String(result.job.id || "").slice(0, 8)} queued.`);
+    window.location.hash = "#/jobs";
+  } catch (error) {
+    if (button) button.disabled = false;
+    toast(error.message || "Coverage job was not created.");
   }
 }
 
@@ -1640,7 +1820,10 @@ async function estimateTranslation(event) {
   const allConfirmation = isAllTranslationSelection()
     ? `<label class="inline-check confirmation-check"><input id="confirmAllUntranslated" type="checkbox"> Translate all eligible chapters?</label><p class="muted">Total chapters: ${selection.total_chapters ?? estimate.selected_count}. Eligible: ${estimate.eligible_count}. Estimated cost: $${Number(estimate.estimated_cost || 0).toFixed(4)}. Estimated duration: ${durationEstimateText(estimate.duration_estimate)}. Budget limit: ${numberOrNull("#maxTotalBudget") === null ? "No cap" : `$${Number(numberOrNull("#maxTotalBudget")).toFixed(2)}`}. Speed preset: ${titleCase(estimate.speed_preset || "balanced")}.</p>`
     : "";
-  document.querySelector("#estimateResult").innerHTML = `<div class="metric-grid">${metric("Selected", estimate.selected_count)}${metric("Eligible", estimate.eligible_count)}${metric("Already translated", estimate.already_translated_count ?? estimate.ai_existing ?? 0)}${metric("Missing Original", missingOriginal)}${metric("Invalid chapters", estimate.invalid_chapter_count || 0)}${metric("Duplicates removed", estimate.duplicates_removed || 0)}${metric("Reference available", estimate.reference_available || 0)}${metric("Reference missing", referenceMissing)}${metric("Speed mode", titleCase(estimate.speed_preset || "balanced"))}${metric("Expected workers", estimate.expected_workers || 1)}${metric("Approx time", durationEstimateText(estimate.duration_estimate))}${metric("Approx cost", `$${Number(estimate.estimated_cost || 0).toFixed(4)}`)}${metric("Budget margin", budgetMarginText(estimate))}${metric("Original tokens", tokens.original_tokens ?? estimate.approx_input_tokens ?? 0)}${metric("Reference tokens", tokens.reference_tokens ?? 0)}${metric("Rules/glossary", tokens.instruction_glossary_tokens ?? 0)}${metric("Output tokens", tokens.estimated_output_tokens ?? estimate.approx_output_tokens ?? 0)}</div>${invalidSummary.length ? `<p class="field-error">Invalid selection entries: ${escapeHtml(invalidSummary.join(", "))}</p>` : ""}${largeWarning}${allConfirmation}<p class="muted">${escapeHtml(estimate.pricing_note)} ${estimate.auto_optimize_speed ? "Speed is being optimized automatically within the configured worker bounds." : ""}</p>`;
+  const coverageNote = estimate.reference_fill_count && Number(estimate.eligible_count || 0) <= 0
+    ? `<p class="muted">Translation is not required for the selected Reference-fill chapters. Use the Build English Coverage action above.</p>`
+    : "";
+  document.querySelector("#estimateResult").innerHTML = `<div class="metric-grid">${metric("Selected", estimate.selected_count)}${metric("Existing English", estimate.existing_english_count ?? estimate.already_translated_count ?? 0)}${metric("Can fill from Reference", estimate.reference_fill_count || 0)}${metric("Needs AI translation", estimate.needs_ai_translation_count ?? estimate.eligible_count)}${metric("Blocked", estimate.blocked_missing_source_count || 0)}${metric("Eligible", estimate.eligible_count)}${metric("Missing Original", missingOriginal)}${metric("Invalid chapters", estimate.invalid_chapter_count || 0)}${metric("Duplicates removed", estimate.duplicates_removed || 0)}${metric("Reference available", estimate.reference_available || 0)}${metric("Reference missing", referenceMissing)}${metric("Speed mode", titleCase(estimate.speed_preset || "balanced"))}${metric("Expected workers", estimate.expected_workers || 1)}${metric("Approx time", durationEstimateText(estimate.duration_estimate))}${metric("Approx cost", `$${Number(estimate.estimated_cost || 0).toFixed(4)}`)}${metric("Budget margin", budgetMarginText(estimate))}${metric("Original tokens", tokens.original_tokens ?? estimate.approx_input_tokens ?? 0)}${metric("Reference tokens", tokens.reference_tokens ?? 0)}${metric("Rules/glossary", tokens.instruction_glossary_tokens ?? 0)}${metric("Output tokens", tokens.estimated_output_tokens ?? estimate.approx_output_tokens ?? 0)}</div>${coverageNote}${invalidSummary.length ? `<p class="field-error">Invalid selection entries: ${escapeHtml(invalidSummary.join(", "))}</p>` : ""}${largeWarning}${allConfirmation}<p class="muted">${escapeHtml(estimate.pricing_note)} ${estimate.auto_optimize_speed ? "Speed is being optimized automatically within the configured worker bounds." : ""}</p>`;
   document.querySelector("#confirmAllUntranslated")?.addEventListener("change", validateTranslateForm);
   validateTranslateForm();
 }
@@ -2710,11 +2893,30 @@ function renderJobDetail(job) {
   return `<section class="panel job-detail"><div class="actions"><h2>Job ${job.id.slice(0, 8)}</h2><button type="button" data-copy-link="#/jobs/${job.id}">Copy Link</button></div><div class="metric-grid">${metric("Status", job.status)}${metric("Completed", `${job.completed_items || 0}/${job.total_items || 0}`)}${metric("Active workers", job.activity?.active_workers || 0)}${metric("Speed", throughput.summary)}${metric("Remaining", throughput.remaining)}${metric("Updated", timeAgo(job.updated_at))}</div><details open><summary>Advanced worker details</summary><div class="job-items">${visible.map((item) => `<span class="job-item">${item.chapter_number} ${escapeHtml(item.status || "")}${item.worker_id ? ` - ${escapeHtml(item.worker_id.slice(0, 8))}` : ""}${item.failure_category ? ` - ${escapeHtml(item.failure_category)}` : ""}</span>`).join("") || `<p class="muted">No items.</p>`}</div></details></section>`;
 }
 
+async function fetchReaderChapter(novelId, chapterNumber, source) {
+  const path = chapterTextPath(novelId, chapterNumber, source);
+  const cached = state.cache.get(path);
+  if (cached && Date.now() - cached.time < 120_000) return cached.payload;
+  const key = `${novelId}:${chapterNumber}:${source}`;
+  if (readerRequestMap.has(key)) return readerRequestMap.get(key);
+  if (readerAbortController) readerAbortController.abort();
+  readerAbortController = new AbortController();
+  const request = api(path, {signal: readerAbortController.signal})
+    .then((payload) => {
+      rememberCachePayload(path, payload);
+      return payload;
+    })
+    .finally(() => readerRequestMap.delete(key));
+  readerRequestMap.set(key, request);
+  return request;
+}
+
 function chapterTextPath(novelId, chapterNumber, source) {
   return `/api/novels/${encodeURIComponent(novelId)}/chapters/${chapterNumber}/${source}`;
 }
 
 function prefetchNeighborChapters(novelId, chapterNumber, source) {
+  if (source === "reference" && !canViewReference()) return;
   [neighborChapter(chapterNumber, -1), neighborChapter(chapterNumber, 1)]
     .filter(Boolean)
     .forEach((chapter) => cachedApi(chapterTextPath(novelId, chapter, source), 120_000).catch(() => {}));
@@ -2725,11 +2927,32 @@ function bindReaderProgress(novelId, chapterNumber, source) {
   readerScrollHandler = debounce(() => {
     const percent = readerScrollPercent();
     localStorage.setItem(readerScrollKey(novelId, chapterNumber, source), String(percent));
+    rememberRecent("chapters", {novel_id: novelId, chapter_number: chapterNumber, source, label: `Chapter ${chapterNumber}`, href: `#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}`, scroll_percent: percent, at: new Date().toISOString()});
     saveProgressDebounced(novelId, chapterNumber, source, percent);
     updateBackToTop();
     updateReaderProgressUi(percent);
   }, 700);
   window.addEventListener("scroll", readerScrollHandler, {passive: true});
+}
+
+function bindReaderChrome() {
+  if (readerChromeHandler) window.removeEventListener("scroll", readerChromeHandler);
+  lastReaderScrollY = window.scrollY;
+  document.body.dataset.readerChrome = "visible";
+  readerChromeHandler = () => {
+    if (state.preferences.reduceMotion || !window.location.hash.startsWith("#/reader/")) return;
+    const current = window.scrollY;
+    const movingDown = current > lastReaderScrollY + 18;
+    const movingUp = current < lastReaderScrollY - 8;
+    if (movingDown && current > 180) document.body.dataset.readerChrome = "quiet";
+    if (movingUp || current < 120) document.body.dataset.readerChrome = "visible";
+    lastReaderScrollY = current;
+  };
+  window.addEventListener("scroll", readerChromeHandler, {passive: true});
+  document.querySelector(".reader-panel")?.addEventListener("pointerdown", (event) => {
+    if (event.target.closest("button, a, input, textarea, select")) return;
+    document.body.dataset.readerChrome = "visible";
+  });
 }
 
 function updateReaderProgressUi(percent = readerScrollPercent()) {
@@ -3142,6 +3365,24 @@ async function saveRemotePreferences() {
   }
 }
 
+const saveRemotePreferencesQuiet = debounce(() => saveRemotePreferences(), 1200);
+
+function saveReaderPreferenceFromField(event) {
+  const key = event.currentTarget.dataset.pref;
+  let value = event.currentTarget.type === "checkbox" ? event.currentTarget.checked : event.currentTarget.value;
+  if (["readerLineHeight", "paragraphSpacing", "readingWidth", "readerFontSize"].includes(key)) value = Number(value);
+  state.preferences[key] = value;
+  if (key === "readerFontSize") {
+    state.fontSize = value;
+    localStorage.setItem("gt-reader-font", String(value));
+    const slider = document.querySelector("#fontSize");
+    if (slider) slider.value = String(value);
+  }
+  localStorage.setItem("gt-preferences", JSON.stringify(state.preferences));
+  applyPreferences();
+  saveRemotePreferencesQuiet();
+}
+
 function bindAccountControls() {
   document.querySelector("#signInBtn")?.addEventListener("click", () => authEmailPassword("signIn"));
   document.querySelector("#signUpBtn")?.addEventListener("click", () => authEmailPassword("signUp"));
@@ -3247,18 +3488,48 @@ function bindShellControls() {
       if (event.key === "-") adjustReaderFont(-1);
       if (state.preferences.readerArrowKeys && event.key === "ArrowLeft") {
         const previous = neighborChapter(chapter, -1);
-        if (previous) window.location.hash = `#/reader/${novelId}/${previous}/${state.source}`;
+        if (previous) {
+          event.preventDefault();
+          window.location.hash = `#/reader/${novelId}/${previous}/${state.source}`;
+        }
       }
       if (state.preferences.readerArrowKeys && event.key === "ArrowRight") {
         const next = neighborChapter(chapter, 1);
-        if (next) window.location.hash = `#/reader/${novelId}/${next}/${state.source}`;
+        if (next) {
+          event.preventDefault();
+          window.location.hash = `#/reader/${novelId}/${next}/${state.source}`;
+        }
       }
       if (event.key.toLowerCase() === "f") {
         state.zen = !state.zen;
         document.body.dataset.zen = state.zen ? "on" : "off";
         document.querySelector(".reader-panel")?.classList.toggle("zen", state.zen);
       }
+      if (event.key.toLowerCase() === "t") {
+        event.preventDefault();
+        openChapterDrawer();
+      }
+      if (event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        openReaderSettingsSheet();
+      }
       if (event.key.toLowerCase() === "b") saveBookmark(novelId, chapter);
+    }
+    if (state.preferences.keyboardShortcuts && window.location.hash.startsWith("#/reader/") && event.key === "Escape") {
+      const drawer = document.querySelector("#chapterDrawer");
+      const settings = document.querySelector("#readerSettingsSheet");
+      if (drawer && !drawer.hidden) {
+        event.preventDefault();
+        closeChapterDrawer();
+      } else if (settings && !settings.hidden) {
+        event.preventDefault();
+        closeReaderSettingsSheet();
+      } else if (state.zen) {
+        event.preventDefault();
+        state.zen = false;
+        document.body.dataset.zen = "off";
+        document.querySelector(".reader-panel")?.classList.remove("zen");
+      }
     }
   });
 }
@@ -3276,7 +3547,7 @@ function showShortcutHelp() {
   const dialog = document.createElement("dialog");
   dialog.id = "shortcutDialog";
   dialog.className = "command-dialog shortcut-dialog";
-  dialog.innerHTML = `<form method="dialog"><section class="panel"><h2>Keyboard Shortcuts</h2><div class="shortcut-grid"><span>Ctrl/Cmd + K</span><strong>Search and commands</strong><span>?</span><strong>Shortcut help</strong><span>Left / Right</span><strong>Previous / next chapter</strong><span>B</span><strong>Bookmark chapter</strong><span>F</span><strong>Reader focus mode</strong><span>Esc</span><strong>Close dialogs</strong></div><div class="actions"><button class="primary">Close</button></div></section></form>`;
+  dialog.innerHTML = `<form method="dialog"><section class="panel"><h2>Keyboard Shortcuts</h2><div class="shortcut-grid"><span>Ctrl/Cmd + K</span><strong>Search and commands</strong><span>?</span><strong>Shortcut help</strong><span>Left / Right</span><strong>Previous / next chapter</strong><span>T</span><strong>Table of contents</strong><span>S</span><strong>Reader settings</strong><span>B</span><strong>Bookmark chapter</strong><span>F</span><strong>Reader focus mode</strong><span>Esc</span><strong>Close reader panels</strong></div><div class="actions"><button class="primary">Close</button></div></section></form>`;
   document.body.appendChild(dialog);
   dialog.addEventListener("close", () => dialog.remove());
   dialog.showModal();
@@ -3377,6 +3648,16 @@ window.addEventListener("hashchange", () => {
   if (!activeRouteKey.startsWith("#/reader/") && readerScrollHandler) {
     window.removeEventListener("scroll", readerScrollHandler);
     readerScrollHandler = null;
+  }
+  if (!activeRouteKey.startsWith("#/reader/") && readerChromeHandler) {
+    window.removeEventListener("scroll", readerChromeHandler);
+    readerChromeHandler = null;
+    document.body.dataset.readerChrome = "visible";
+  }
+  if (!activeRouteKey.startsWith("#/reader/") && readerAbortController) {
+    readerAbortController.abort();
+    readerAbortController = null;
+    readerRequestMap.clear();
   }
   route();
 });

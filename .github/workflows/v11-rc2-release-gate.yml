@@ -5,14 +5,17 @@ on:
     branches:
       - v11.0.0-rc2-postgres-auth-qa
       - v11.0.0-rc3-production-hotfix-integration
+      - v11.1.0-reference-first-reader-polish
     paths-ignore:
       - IAmGodTranslator_Render_Deploy/V11_RC2_QA_REPORT.md
       - IAmGodTranslator_Render_Deploy/V11_RC3_HOTFIX_INTEGRATION_REPORT.md
+      - IAmGodTranslator_Render_Deploy/V11_1_REFERENCE_FIRST_READER_POLISH_REPORT.md
   pull_request:
     branches:
       - main
       - v11.0.0-rc2-postgres-auth-qa
       - v11.0.0-rc3-production-hotfix-integration
+      - v11.1.0-reference-first-reader-polish
   workflow_dispatch:
 
 permissions:
@@ -111,6 +114,7 @@ jobs:
           python IAmGodTranslator_Render_Deploy/tools/qa_v11_phase6_desktop_sync.py
           python IAmGodTranslator_Render_Deploy/tools/qa_v11_phase7_backups_operations.py
           python IAmGodTranslator_Render_Deploy/tools/qa_v11_phase8_mobile_accessibility_polish.py
+          python IAmGodTranslator_Render_Deploy/tools/qa_v11_1_reference_first_reader_polish.py
 
       - name: RC2 PostgreSQL migration and auth matrix
         env:

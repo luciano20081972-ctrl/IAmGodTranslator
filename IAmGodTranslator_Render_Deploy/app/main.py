@@ -31,8 +31,8 @@ from app.content_import import payload_from_uploads
 from app.recovery import parse_uploads, recovery_request, recovery_diagnostic, reference_diagnostic
 
 
-VERSION = "11.0.0"
-DESKTOP_API_VERSION = "11.0.0"
+VERSION = "11.1.0"
+DESKTOP_API_VERSION = "11.1.0"
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_COOKIE = "gt_admin_session"
 SESSION_TTL_SECONDS = 60 * 60 * 12
@@ -855,6 +855,27 @@ async def desktop_execute_content_pack(
     )
 
 
+def coverage_chapters_from_payload(payload: dict[str, Any] | None) -> list[int] | None:
+    if not payload:
+        return None
+    chapters = payload.get("chapter_numbers")
+    if chapters is None:
+        chapters = payload.get("chapters")
+    if isinstance(chapters, list):
+        values: list[int] = []
+        for value in chapters:
+            try:
+                chapter = int(value)
+            except (TypeError, ValueError):
+                continue
+            if chapter > 0 and chapter not in values:
+                values.append(chapter)
+        return values
+    if isinstance(chapters, str) and chapters.strip():
+        return parse_specific_chapters(chapters)["chapters"]
+    return None
+
+
 @app.get("/api/admin/content/editions/{novel_id}")
 def list_english_editions(novel_id: str, chapter_number: int | None = None, _: None = Depends(require_admin)) -> dict[str, object]:
     if database.novel(novel_id) is None:
@@ -868,7 +889,155 @@ def set_default_english_edition(novel_id: str, chapter_number: int, payload: dic
         result = database.set_default_english_edition(novel_id, chapter_number, str(payload.get("edition_key") or ""))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    audit_event(
+        "english_active_edition_selected",
+        actor_role="admin",
+        target_type="chapter_edition",
+        target_id=f"{novel_id}:{chapter_number}:{result['edition_key']}",
+        summary="Active English edition selected",
+        metadata={"novel_id": novel_id, "chapter_number": chapter_number, "edition_key": result["edition_key"]},
+    )
     return {"ok": True, **result}
+
+
+@app.get("/api/admin/novels/{novel_id}/english-coverage/preview")
+def english_coverage_preview_get(novel_id: str, _: None = Depends(require_admin)) -> dict[str, object]:
+    try:
+        preview = database.english_coverage_preview(novel_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    audit_event(
+        "english_coverage_preview_generated",
+        actor_role="admin",
+        target_type="novel",
+        target_id=novel_id,
+        summary="English coverage preview generated",
+        metadata={
+            "novel_id": novel_id,
+            "policy": preview["policy"],
+            "existing_english": preview["existing_english"],
+            "reference_fill": preview["reference_fill"],
+            "translation_from_original": preview["translation_from_original"],
+            "blocked": preview["blocked"],
+        },
+    )
+    return preview
+
+
+@app.post("/api/admin/novels/{novel_id}/english-coverage/preview")
+def english_coverage_preview_post(novel_id: str, payload: dict[str, Any] = Body(default={}), _: None = Depends(require_admin)) -> dict[str, object]:
+    try:
+        preview = database.english_coverage_preview(
+            novel_id,
+            chapters=coverage_chapters_from_payload(payload),
+            policy=payload.get("policy"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    audit_event(
+        "english_coverage_preview_generated",
+        actor_role="admin",
+        target_type="novel",
+        target_id=novel_id,
+        summary="English coverage preview generated",
+        metadata={
+            "novel_id": novel_id,
+            "policy": preview["policy"],
+            "existing_english": preview["existing_english"],
+            "reference_fill": preview["reference_fill"],
+            "translation_from_original": preview["translation_from_original"],
+            "blocked": preview["blocked"],
+        },
+    )
+    return preview
+
+
+@app.post("/api/admin/novels/{novel_id}/english-coverage/policy")
+def update_english_coverage_policy(novel_id: str, payload: dict[str, Any] = Body(...), _: None = Depends(require_admin)) -> dict[str, object]:
+    previous = database.novel(novel_id)
+    try:
+        result = database.set_english_coverage_policy(novel_id, str(payload.get("policy") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit_event(
+        "english_coverage_policy_changed",
+        actor_role="admin",
+        target_type="novel",
+        target_id=novel_id,
+        summary="English coverage policy changed",
+        metadata={
+            "novel_id": novel_id,
+            "previous_policy": (previous or {}).get("english_coverage_policy"),
+            "new_policy": result["english_coverage_policy"],
+        },
+    )
+    return {"ok": True, **result}
+
+
+@app.post("/api/admin/novels/{novel_id}/english-coverage/apply-reference")
+def apply_reference_coverage(novel_id: str, payload: dict[str, Any] = Body(default={}), _: None = Depends(require_admin)) -> dict[str, object]:
+    audit_event(
+        "english_reference_promotion_started",
+        actor_role="admin",
+        target_type="novel",
+        target_id=novel_id,
+        summary="Reference promotion started",
+        metadata={"novel_id": novel_id, "chapters": coverage_chapters_from_payload(payload) or "all"},
+    )
+    try:
+        result = database.apply_reference_coverage(novel_id, chapters=coverage_chapters_from_payload(payload), actor="admin")
+    except Exception as exc:
+        audit_event(
+            "english_reference_promotion_failed",
+            actor_role="admin",
+            target_type="novel",
+            target_id=novel_id,
+            summary="Reference promotion failed",
+            metadata={"novel_id": novel_id, "error_type": exc.__class__.__name__},
+        )
+        raise
+    audit_event(
+        "english_reference_promotion_completed",
+        actor_role="admin",
+        target_type="novel",
+        target_id=novel_id,
+        summary="Reference promotion completed",
+        metadata={
+            "novel_id": novel_id,
+            "promoted_count": result["promoted_count"],
+            "promoted_chapters": result["promoted_chapters"],
+            "duplicate_editions_avoided": result["duplicate_editions_avoided"],
+            "openai_call_count": 0,
+        },
+    )
+    return result
+
+
+@app.post("/api/admin/novels/{novel_id}/english-coverage/create-translation-job")
+def create_coverage_translation_job(novel_id: str, payload: dict[str, Any] = Body(default={}), _: None = Depends(require_admin)) -> dict[str, object]:
+    try:
+        preview = database.english_coverage_preview(novel_id, chapters=coverage_chapters_from_payload(payload))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    chapters = preview["chapters"]["translation_from_original"]
+    if not chapters:
+        raise HTTPException(status_code=400, detail="no_ai_translation_required")
+    settings = {**payload, "selection_mode": "specific", "chapters": ",".join(str(chapter) for chapter in chapters)}
+    job = database.create_translation_job(
+        novel_id,
+        chapters,
+        {**settings, "_selection_diagnostics": {"mode": "coverage-plan", "selected_count": len(chapters), "server_side_selection": True}},
+    )
+    audit_event(
+        "english_coverage_translation_job_created",
+        actor_role="admin",
+        target_type="translation_job",
+        target_id=str(job["id"]),
+        summary="Translation job created from English coverage plan",
+        metadata={"novel_id": novel_id, "chapter_count": len(chapters), "coverage_policy": preview["policy"], "job_id": str(job["id"])},
+    )
+    translation_runner.start(str(job["id"]))
+    return {"ok": True, "job": job, "coverage_plan": preview}
 
 
 @app.post("/api/novels/{novel_id}/archive")
@@ -932,7 +1101,10 @@ def chapter_text(request: Request, novel_id: str, chapter_number: int, mode: str
         raise HTTPException(status_code=404, detail="chapter_mode_not_found")
     if mode == "reference":
         require_translator(request)
-    return database.chapter_text(novel_id, chapter_number, mode)
+    payload = database.chapter_text(novel_id, chapter_number, mode)
+    if mode in {"english", "ai"} and not can_view_reference(request):
+        payload.pop("edition", None)
+    return payload
 
 
 @app.get("/api/novels/{novel_id}/compare/{chapter_number}")

@@ -94,7 +94,7 @@ def main() -> None:
     require("execute import remains explicit", "Execute Import" in ui)
     require("upload retry supported", "def retry_upload" in sync)
 
-    require("website desktop API version is v11", 'DESKTOP_API_VERSION = "11.0.0"' in main_py)
+    require("website desktop API version is v11.1", 'DESKTOP_API_VERSION = "11.1.0"' in main_py)
     require("desktop API does not accept passwords", '"passwords_accepted_by_desktop_api": False' in main_py)
     require("sync status includes desktop_api", '"desktop_api": DESKTOP_API_VERSION' in main_py)
     require("version compatibility helper works", version_compatible("11.0.0", "11.0.0"))

@@ -16,11 +16,12 @@ def require(label: str, condition: bool) -> None:
 def main() -> None:
     for label in (
         "Back to Novel",
-        "Chapter List",
-        "Previous",
-        "Next",
+        "Table of Contents",
+        "Previous Chapter",
+        "Next Chapter",
         "Bookmark",
         "Reader Settings",
+        "Settings",
         "Focus",
         "Back to Top",
     ):
@@ -35,7 +36,11 @@ def main() -> None:
     require("paragraph copy", "data-copy-paragraph" in APP_JS and "copyParagraphText" in APP_JS)
     require("duplicate heading suppression", "isDuplicateChapterHeading" in APP_JS and "lines.shift()" in APP_JS)
     require("bounded prefetch neighbors only", "prefetchNeighborChapters" in APP_JS and "[neighborChapter(chapterNumber, -1), neighborChapter(chapterNumber, 1)]" in APP_JS)
-    require("reference remains role gated", 'return canViewReference() ? ["english", "original", "reference"] : ["english", "original"]' in APP_JS)
+    require("reference remains role gated", 'return canViewReference() ? ["english", "original", "reference"] : ["english"]' in APP_JS)
+    require("stale reader request abort", "readerAbortController.abort()" in APP_JS and "AbortError" in APP_JS)
+    require("reader cache bounded", "READER_CACHE_LIMIT" in APP_JS and "rememberCachePayload" in APP_JS)
+    require("guest local bookmarks", "gt-local-bookmarks" in APP_JS and "toggleLocalBookmark" in APP_JS)
+    require("reader keyboard T/S/Escape", 'event.key.toLowerCase() === "t"' in APP_JS and 'event.key.toLowerCase() === "s"' in APP_JS and 'event.key === "Escape"' in APP_JS)
     require("single chapter body endpoint", "chapterTextPath(novelId, chapterNumber, source)" in APP_JS)
 
     for css in (

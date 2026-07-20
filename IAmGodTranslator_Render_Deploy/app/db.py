@@ -42,8 +42,12 @@ ENGLISH_EDITION_PRIORITY = {
     "ai": 4,
     "machine": 5,
     "community": 6,
+    "reference derived": 7,
+    "reference": 7,
 }
-PLATFORM_BACKUP_APP_VERSION = "11.0.0"
+ENGLISH_COVERAGE_POLICIES = {"original_translation_only", "reference_first", "manual"}
+REFERENCE_FIRST_NOVEL_IDS = {"i-am-god"}
+PLATFORM_BACKUP_APP_VERSION = "11.1.0"
 PLATFORM_BACKUP_TABLE_NAMES = [
     "novels",
     "chapters",
@@ -899,6 +903,288 @@ class Database:
             ),
         )
 
+    def _english_exists_sql(self, chapter_alias: str = "c") -> str:
+        prefix = f"{chapter_alias}." if chapter_alias else ""
+        return f"""
+        (
+            ({prefix}ai_text IS NOT NULL AND LENGTH(TRIM({prefix}ai_text)) > 0)
+            OR EXISTS (
+                SELECT 1
+                FROM {self.table('chapter_editions')} english_lookup
+                WHERE english_lookup.novel_id = {prefix}novel_id
+                    AND english_lookup.chapter_number = {prefix}chapter_number
+                    AND english_lookup.language = 'en'
+                    AND english_lookup.text IS NOT NULL
+                    AND LENGTH(TRIM(english_lookup.text)) > 0
+            )
+        )
+        """
+
+    def _default_english_edition_sql(self, chapter_alias: str = "c") -> str:
+        prefix = f"{chapter_alias}." if chapter_alias else ""
+        return f"""
+        (
+            SELECT edition_type
+            FROM {self.table('chapter_editions')} default_english
+            WHERE default_english.novel_id = {prefix}novel_id
+                AND default_english.chapter_number = {prefix}chapter_number
+                AND default_english.language = 'en'
+                AND default_english.text IS NOT NULL
+                AND LENGTH(TRIM(default_english.text)) > 0
+            ORDER BY default_english.is_default DESC,
+                CASE LOWER(default_english.edition_type)
+                    WHEN 'official' THEN 0
+                    WHEN 'edited' THEN 1
+                    WHEN 'imported' THEN 2
+                    WHEN 'human' THEN 3
+                    WHEN 'ai' THEN 4
+                    WHEN 'machine' THEN 5
+                    WHEN 'community' THEN 6
+                    WHEN 'reference derived' THEN 7
+                    WHEN 'reference' THEN 7
+                    ELSE 9
+                END,
+                default_english.updated_at DESC
+            LIMIT 1
+        )
+        """
+
+    def english_coverage_policy(self, novel_id: str, novel: dict[str, Any] | None = None) -> str:
+        payload = novel if novel is not None else self.novel(novel_id)
+        metadata = payload.get("metadata") if isinstance(payload, dict) and isinstance(payload.get("metadata"), dict) else {}
+        policy = str(metadata.get("english_coverage_policy") or metadata.get("coverage_policy") or "").strip().lower()
+        if policy in ENGLISH_COVERAGE_POLICIES:
+            return policy
+        return "reference_first" if novel_id in REFERENCE_FIRST_NOVEL_IDS else "original_translation_only"
+
+    def set_english_coverage_policy(self, novel_id: str, policy: str) -> dict[str, Any]:
+        normalized = str(policy or "").strip().lower()
+        if normalized not in ENGLISH_COVERAGE_POLICIES:
+            raise ValueError("Unsupported English coverage policy.")
+        now = utc_now()
+        with self.connect() as conn:
+            row = conn.execute(f"SELECT metadata_json FROM {self.table('novels')} WHERE id = ?", (novel_id,)).fetchone()
+            if row is None:
+                raise ValueError("Novel not found.")
+            metadata = parse_json_object(row["metadata_json"])
+            metadata["english_coverage_policy"] = normalized
+            conn.execute(
+                f"UPDATE {self.table('novels')} SET metadata_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(metadata, ensure_ascii=False), now, novel_id),
+            )
+        return {"novel_id": novel_id, "english_coverage_policy": normalized}
+
+    def _coverage_rows(self, novel_id: str, chapters: list[int] | None = None) -> list[dict[str, Any]]:
+        where = ["c.novel_id = ?"]
+        params: list[Any] = [novel_id]
+        if chapters is not None:
+            if not chapters:
+                return []
+            placeholders = ",".join("?" for _ in chapters)
+            where.append(f"c.chapter_number IN ({placeholders})")
+            params.extend(int(chapter) for chapter in chapters)
+        english_exists = self._english_exists_sql("c")
+        default_edition = self._default_english_edition_sql("c")
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT c.id, c.novel_id, c.chapter_number, c.title,
+                    c.original_text, c.reference_text, c.ai_text,
+                    c.original_char_count, c.reference_char_count, c.ai_char_count,
+                    CASE WHEN {english_exists} THEN 1 ELSE 0 END AS has_english,
+                    {default_edition} AS default_english_edition
+                FROM {self.table('chapters')} c
+                WHERE {" AND ".join(where)}
+                ORDER BY c.chapter_number
+                """,
+                tuple(params),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def english_coverage_preview(self, novel_id: str, chapters: list[int] | None = None, policy: str | None = None, sample_limit: int = 12) -> dict[str, Any]:
+        novel = self.novel(novel_id)
+        if novel is None:
+            raise ValueError("Novel not found.")
+        effective_policy = str(policy or self.english_coverage_policy(novel_id, novel)).strip().lower()
+        if effective_policy not in ENGLISH_COVERAGE_POLICIES:
+            effective_policy = self.english_coverage_policy(novel_id, novel)
+        rows = self._coverage_rows(novel_id, chapters)
+        categories: dict[str, list[dict[str, Any]]] = {
+            "existing_english": [],
+            "reference_fill": [],
+            "translation_from_original": [],
+            "blocked_missing_source": [],
+        }
+        for row in rows:
+            chapter_number = int(row["chapter_number"])
+            item = {
+                "chapter_number": chapter_number,
+                "title": display_chapter_title(chapter_number, row.get("title")),
+                "has_original": readable(row.get("original_text")),
+                "has_reference": readable(row.get("reference_text")),
+                "has_english": bool(row.get("has_english")),
+                "default_english_edition": row.get("default_english_edition") or ("AI" if readable(row.get("ai_text")) else None),
+                "original_chars": len(row.get("original_text") or ""),
+                "reference_chars": len(row.get("reference_text") or ""),
+            }
+            if item["has_english"]:
+                categories["existing_english"].append(item)
+            elif effective_policy == "reference_first" and item["has_reference"]:
+                categories["reference_fill"].append(item)
+            elif item["has_original"]:
+                categories["translation_from_original"].append(item)
+            else:
+                categories["blocked_missing_source"].append(item)
+        model = (novel or {}).get("model") or "gpt-4o-mini"
+        pricing = model_pricing(model)
+        original_chars = sum(int(item["original_chars"] or 0) for item in categories["translation_from_original"])
+        input_tokens = max(1, original_chars // 4) if categories["translation_from_original"] else 0
+        output_tokens = max(1, original_chars // 5) if categories["translation_from_original"] else 0
+        estimated_cost = (input_tokens / 1_000_000 * pricing["input"]) + (output_tokens / 1_000_000 * pricing["output"])
+        samples = {key: value[:sample_limit] for key, value in categories.items()}
+        chapter_numbers = {key: [item["chapter_number"] for item in value] for key, value in categories.items()}
+        return {
+            "ok": True,
+            "novel_id": novel_id,
+            "policy": effective_policy,
+            "total_chapters": len(rows),
+            "existing_english": len(categories["existing_english"]),
+            "skipped_existing_english": len(categories["existing_english"]),
+            "reference_fill": len(categories["reference_fill"]),
+            "reference_promotions": len(categories["reference_fill"]),
+            "translation_from_original": len(categories["translation_from_original"]),
+            "blocked": len(categories["blocked_missing_source"]),
+            "blocked_missing_source": len(categories["blocked_missing_source"]),
+            "duplicate_editions_avoided": 0,
+            "estimated_openai_chapters": len(categories["translation_from_original"]),
+            "estimated_openai_cost": round(estimated_cost, 6),
+            "reference_promotion_cost": 0,
+            "pricing_note": pricing["note"],
+            "chapters": chapter_numbers,
+            "samples": samples,
+        }
+
+    def apply_reference_coverage(self, novel_id: str, chapters: list[int] | None = None, actor: str = "admin") -> dict[str, Any]:
+        novel = self.novel(novel_id)
+        if novel is None:
+            raise ValueError("Novel not found.")
+        policy = self.english_coverage_policy(novel_id, novel)
+        if policy != "reference_first":
+            return {
+                "ok": True,
+                "novel_id": novel_id,
+                "policy": policy,
+                "promoted_count": 0,
+                "promoted_chapters": [],
+                "duplicate_editions_avoided": 0,
+                "openai_call_count": 0,
+                "message": "Reference coverage is not enabled for this novel.",
+            }
+        rows = [row for row in self._coverage_rows(novel_id, chapters) if not bool(row.get("has_english")) and readable(row.get("reference_text"))]
+        now = utc_now()
+        promoted: list[int] = []
+        duplicate_avoided = 0
+        with self.connect() as conn:
+            for row in rows:
+                chapter_number = int(row["chapter_number"])
+                existing = conn.execute(
+                    f"""
+                    SELECT id
+                    FROM {self.table('chapter_editions')}
+                    WHERE novel_id = ? AND chapter_number = ? AND language = 'en'
+                        AND text IS NOT NULL AND LENGTH(TRIM(text)) > 0
+                    LIMIT 1
+                    """,
+                    (novel_id, chapter_number),
+                ).fetchone()
+                if existing:
+                    duplicate_avoided += 1
+                    continue
+                text = row["reference_text"] or ""
+                checksum = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                metadata = {
+                    "novel_id": novel_id,
+                    "chapter_id": int(row["id"]),
+                    "chapter_number": chapter_number,
+                    "language": "en",
+                    "edition_role": "English",
+                    "edition_type": "Reference Derived",
+                    "source_kind": "reference",
+                    "provenance": "reference_promoted",
+                    "source_reference_edition_id": f"chapters.reference_text:{int(row['id'])}",
+                    "source_identifier": novel.get("reference_source_url") or novel.get("source_url") or novel_id,
+                    "source_url": novel.get("reference_source_url") or novel.get("source_url"),
+                    "content_sha256": checksum,
+                    "created_at": now,
+                    "created_by_workflow": "english_coverage.reference_first",
+                    "created_by_actor": actor,
+                    "active": True,
+                    "readable": True,
+                    "modified": False,
+                    "model": None,
+                    "openai_cost": None,
+                    "input_tokens": None,
+                    "output_tokens": None,
+                }
+                conn.execute(
+                    f"""
+                    UPDATE {self.table('chapter_editions')}
+                    SET is_default = 0, updated_at = ?
+                    WHERE novel_id = ? AND chapter_number = ? AND language = 'en'
+                    """,
+                    (now, novel_id, chapter_number),
+                )
+                conn.execute(
+                    f"""
+                    INSERT INTO {self.table('chapter_editions')} (
+                        novel_id, chapter_number, edition_key, language, edition_type, source_label,
+                        text, character_count, is_default, metadata_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, 'en', ?, ?, ?, ?, 1, ?, ?, ?)
+                    ON CONFLICT(novel_id, chapter_number, edition_key) DO UPDATE SET
+                        language = excluded.language,
+                        edition_type = excluded.edition_type,
+                        source_label = excluded.source_label,
+                        text = excluded.text,
+                        character_count = excluded.character_count,
+                        is_default = excluded.is_default,
+                        metadata_json = excluded.metadata_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        novel_id,
+                        chapter_number,
+                        "reference-derived",
+                        "Reference Derived",
+                        "Reference",
+                        text,
+                        len(text),
+                        json.dumps(metadata, ensure_ascii=False),
+                        now,
+                        now,
+                    ),
+                )
+                conn.execute(
+                    f"""
+                    UPDATE {self.table('chapters')}
+                    SET translation_status = 'translated', updated_at = ?
+                    WHERE novel_id = ? AND chapter_number = ?
+                    """,
+                    (now, novel_id, chapter_number),
+                )
+                promoted.append(chapter_number)
+        return {
+            "ok": True,
+            "novel_id": novel_id,
+            "policy": policy,
+            "promoted_count": len(promoted),
+            "promoted_chapters": promoted,
+            "new_reference_derived_editions": len(promoted),
+            "duplicate_editions_avoided": duplicate_avoided,
+            "openai_call_count": 0,
+            "translation_job_created": False,
+        }
+
     def english_editions(self, novel_id: str, chapter_number: int | None = None) -> list[dict[str, Any]]:
         where = "novel_id = ?"
         params: list[Any] = [novel_id]
@@ -930,7 +1216,7 @@ class Database:
         with self.connect() as conn:
             row = conn.execute(
                 f"""
-                SELECT text, edition_type, source_label
+                SELECT edition_type, source_label
                 FROM {self.table('chapter_editions')}
                 WHERE novel_id = ? AND chapter_number = ? AND edition_key = ?
                 """,
@@ -949,17 +1235,17 @@ class Database:
             conn.execute(
                 f"""
                 UPDATE {self.table('chapters')}
-                SET ai_text = ?, ai_char_count = ?, translation_status = 'translated',
-                    updated_at = ?
+                SET translation_status = 'translated', updated_at = ?
                 WHERE novel_id = ? AND chapter_number = ?
                 """,
-                (row["text"], len(row["text"] or ""), now, novel_id, int(chapter_number)),
+                (now, novel_id, int(chapter_number)),
             )
         return {"novel_id": novel_id, "chapter_number": int(chapter_number), "edition_key": edition_key}
 
     def novels(self) -> list[dict[str, Any]]:
         novels = self.table("novels")
         chapters = self.table("chapters")
+        english_exists = self._english_exists_sql("c")
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -971,7 +1257,7 @@ class Database:
                     SUM(CASE WHEN c.original_text IS NOT NULL AND LENGTH(TRIM(c.original_text)) > 0 THEN 1 ELSE 0 END) AS original_count,
                     SUM(CASE WHEN c.reference_text IS NOT NULL AND LENGTH(TRIM(c.reference_text)) > 0 THEN 1 ELSE 0 END) AS reference_count,
                     SUM(CASE WHEN c.ai_text IS NOT NULL AND LENGTH(TRIM(c.ai_text)) > 0 THEN 1 ELSE 0 END) AS ai_count,
-                    SUM(CASE WHEN c.ai_text IS NOT NULL AND LENGTH(TRIM(c.ai_text)) > 0 THEN 1 ELSE 0 END) AS english_count
+                    SUM(CASE WHEN {english_exists} THEN 1 ELSE 0 END) AS english_count
                 FROM {novels} n
                 LEFT JOIN {chapters} c ON c.novel_id = n.id
                 GROUP BY n.id
@@ -983,6 +1269,7 @@ class Database:
     def novel(self, novel_id: str) -> dict[str, Any] | None:
         novels = self.table("novels")
         chapters = self.table("chapters")
+        english_exists = self._english_exists_sql("c")
         with self.connect() as conn:
             row = conn.execute(
                 f"""
@@ -994,7 +1281,7 @@ class Database:
                     SUM(CASE WHEN c.original_text IS NOT NULL AND LENGTH(TRIM(c.original_text)) > 0 THEN 1 ELSE 0 END) AS original_count,
                     SUM(CASE WHEN c.reference_text IS NOT NULL AND LENGTH(TRIM(c.reference_text)) > 0 THEN 1 ELSE 0 END) AS reference_count,
                     SUM(CASE WHEN c.ai_text IS NOT NULL AND LENGTH(TRIM(c.ai_text)) > 0 THEN 1 ELSE 0 END) AS ai_count,
-                    SUM(CASE WHEN c.ai_text IS NOT NULL AND LENGTH(TRIM(c.ai_text)) > 0 THEN 1 ELSE 0 END) AS english_count
+                    SUM(CASE WHEN {english_exists} THEN 1 ELSE 0 END) AS english_count
                 FROM {novels} n
                 LEFT JOIN {chapters} c ON c.novel_id = n.id
                 WHERE n.id = ?
@@ -1037,35 +1324,37 @@ class Database:
         if novel is None:
             return {"novel": None, "total": 0, "chapters": []}
         chapters = self.table("chapters")
-        where = ["novel_id = ?"]
+        english_exists = self._english_exists_sql("c")
+        default_edition = self._default_english_edition_sql("c")
+        where = ["c.novel_id = ?"]
         params: list[Any] = [novel_id]
         if search:
-            where.append("(CAST(chapter_number AS TEXT) LIKE ? OR LOWER(COALESCE(title, '')) LIKE ?)")
+            where.append("(CAST(c.chapter_number AS TEXT) LIKE ? OR LOWER(COALESCE(c.title, '')) LIKE ?)")
             term = f"%{search.lower()}%"
             params.extend([term, term])
         filters = {
-            "translated": "ai_text IS NOT NULL AND LENGTH(TRIM(ai_text)) > 0",
-            "needs": "original_text IS NOT NULL AND LENGTH(TRIM(original_text)) > 0 AND (ai_text IS NULL OR LENGTH(TRIM(ai_text)) = 0)",
-            "missing-original": "(original_text IS NULL OR LENGTH(TRIM(original_text)) = 0)",
-            "missing-reference": "(reference_text IS NULL OR LENGTH(TRIM(reference_text)) = 0)",
-            "errors": "translation_status = 'failed' OR (translation_error IS NOT NULL AND LENGTH(TRIM(translation_error)) > 0)",
+            "translated": english_exists,
+            "needs": f"c.original_text IS NOT NULL AND LENGTH(TRIM(c.original_text)) > 0 AND NOT {english_exists}",
+            "missing-original": "(c.original_text IS NULL OR LENGTH(TRIM(c.original_text)) = 0)",
+            "missing-reference": "(c.reference_text IS NULL OR LENGTH(TRIM(c.reference_text)) = 0)",
+            "errors": "c.translation_status = 'failed' OR (c.translation_error IS NOT NULL AND LENGTH(TRIM(c.translation_error)) > 0)",
         }
         if view in filters:
             where.append(filters[view])
         where_sql = " AND ".join(where)
         with self.connect() as conn:
-            total_row = conn.execute(f"SELECT COUNT(*) AS total FROM {chapters} WHERE {where_sql}", tuple(params)).fetchone()
+            total_row = conn.execute(f"SELECT COUNT(*) AS total FROM {chapters} c WHERE {where_sql}", tuple(params)).fetchone()
             rows = conn.execute(
                 f"""
-                SELECT chapter_number, title, translation_status, translation_error,
-                    CASE WHEN original_text IS NOT NULL AND LENGTH(TRIM(original_text)) > 0 THEN 1 ELSE 0 END AS has_original,
-                    CASE WHEN reference_text IS NOT NULL AND LENGTH(TRIM(reference_text)) > 0 THEN 1 ELSE 0 END AS has_reference,
-                    CASE WHEN ai_text IS NOT NULL AND LENGTH(TRIM(ai_text)) > 0 THEN 1 ELSE 0 END AS has_ai,
-                    CASE WHEN ai_text IS NOT NULL AND LENGTH(TRIM(ai_text)) > 0 THEN 1 ELSE 0 END AS has_english,
-                    CASE WHEN ai_text IS NOT NULL AND LENGTH(TRIM(ai_text)) > 0 THEN 'AI' ELSE NULL END AS default_english_edition
-                FROM {chapters}
+                SELECT c.chapter_number, c.title, c.translation_status, c.translation_error,
+                    CASE WHEN c.original_text IS NOT NULL AND LENGTH(TRIM(c.original_text)) > 0 THEN 1 ELSE 0 END AS has_original,
+                    CASE WHEN c.reference_text IS NOT NULL AND LENGTH(TRIM(c.reference_text)) > 0 THEN 1 ELSE 0 END AS has_reference,
+                    CASE WHEN c.ai_text IS NOT NULL AND LENGTH(TRIM(c.ai_text)) > 0 THEN 1 ELSE 0 END AS has_ai,
+                    CASE WHEN {english_exists} THEN 1 ELSE 0 END AS has_english,
+                    COALESCE({default_edition}, CASE WHEN c.ai_text IS NOT NULL AND LENGTH(TRIM(c.ai_text)) > 0 THEN 'AI' ELSE NULL END) AS default_english_edition
+                FROM {chapters} c
                 WHERE {where_sql}
-                ORDER BY chapter_number ASC
+                ORDER BY c.chapter_number ASC
                 LIMIT ? OFFSET ?
                 """,
                 tuple(params + [limit, offset]),
@@ -1132,18 +1421,19 @@ class Database:
 
     def verification_counts(self, novel_id: str) -> dict[str, int]:
         chapters = self.table("chapters")
+        english_exists = self._english_exists_sql("c")
         with self.connect() as conn:
             row = conn.execute(
                 f"""
                 SELECT
                     COUNT(*) AS total,
-                    SUM(CASE WHEN original_text IS NOT NULL AND LENGTH(TRIM(original_text)) > 0 THEN 1 ELSE 0 END) AS original,
-                    SUM(CASE WHEN reference_text IS NOT NULL AND LENGTH(TRIM(reference_text)) > 0 THEN 1 ELSE 0 END) AS reference,
-                    SUM(CASE WHEN ai_text IS NOT NULL AND LENGTH(TRIM(ai_text)) > 0 THEN 1 ELSE 0 END) AS ai,
-                    SUM(CASE WHEN ai_text IS NOT NULL AND LENGTH(TRIM(ai_text)) > 0 THEN 1 ELSE 0 END) AS english,
-                    SUM(CASE WHEN original_text IS NOT NULL AND LENGTH(TRIM(original_text)) > 0 AND (ai_text IS NULL OR LENGTH(TRIM(ai_text)) = 0) THEN 1 ELSE 0 END) AS needs_translation
-                FROM {chapters}
-                WHERE novel_id = ?
+                    SUM(CASE WHEN c.original_text IS NOT NULL AND LENGTH(TRIM(c.original_text)) > 0 THEN 1 ELSE 0 END) AS original,
+                    SUM(CASE WHEN c.reference_text IS NOT NULL AND LENGTH(TRIM(c.reference_text)) > 0 THEN 1 ELSE 0 END) AS reference,
+                    SUM(CASE WHEN c.ai_text IS NOT NULL AND LENGTH(TRIM(c.ai_text)) > 0 THEN 1 ELSE 0 END) AS ai,
+                    SUM(CASE WHEN {english_exists} THEN 1 ELSE 0 END) AS english,
+                    SUM(CASE WHEN c.original_text IS NOT NULL AND LENGTH(TRIM(c.original_text)) > 0 AND NOT {english_exists} THEN 1 ELSE 0 END) AS needs_translation
+                FROM {chapters} c
+                WHERE c.novel_id = ?
                 """,
                 (novel_id,),
             ).fetchone()
@@ -1339,27 +1629,30 @@ class Database:
         if not chapters:
             return []
         placeholders = ",".join("?" for _ in chapters)
+        english_exists = self._english_exists_sql("c")
         rows_out: list[dict[str, Any]] = []
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT chapter_number, title,
-                    original_text, reference_text, ai_text,
-                    original_char_count, reference_char_count, ai_char_count
-                FROM {self.table('chapters')}
-                WHERE novel_id = ? AND chapter_number IN ({placeholders})
-                ORDER BY chapter_number
+                SELECT c.chapter_number, c.title,
+                    c.original_text, c.reference_text, c.ai_text,
+                    c.original_char_count, c.reference_char_count, c.ai_char_count,
+                    CASE WHEN {english_exists} THEN 1 ELSE 0 END AS has_english
+                FROM {self.table('chapters')} c
+                WHERE c.novel_id = ? AND c.chapter_number IN ({placeholders})
+                ORDER BY c.chapter_number
                 """,
                 tuple([novel_id] + chapters),
             ).fetchall()
         for row in rows:
             has_original = readable(row["original_text"])
             has_ai = readable(row["ai_text"])
-            eligible = (has_original or not require_original) and (not has_ai or not only_untranslated)
+            has_english = bool(row["has_english"])
+            eligible = (has_original or not require_original) and (not has_english or not only_untranslated)
             reason = ""
             if require_original and not has_original:
                 reason = "missing_original"
-            elif only_untranslated and has_ai:
+            elif only_untranslated and has_english:
                 reason = "already_translated"
             rows_out.append({
                 "chapter_number": int(row["chapter_number"]),
@@ -1367,6 +1660,7 @@ class Database:
                 "has_original": has_original,
                 "has_reference": readable(row["reference_text"]),
                 "has_ai": has_ai,
+                "has_english": has_english,
                 "original_chars": len(row["original_text"] or ""),
                 "reference_chars": len(row["reference_text"] or ""),
                 "ai_chars": len(row["ai_text"] or ""),
@@ -1378,16 +1672,17 @@ class Database:
     def all_untranslated_chapters(self, novel_id: str, limit: int | None = 5000, only_untranslated: bool = True) -> list[int]:
         limit_clause = "LIMIT ?" if limit else ""
         params: tuple[Any, ...] = (novel_id, limit) if limit else (novel_id,)
-        untranslated_clause = "AND (ai_text IS NULL OR LENGTH(TRIM(ai_text)) = 0)" if only_untranslated else ""
+        english_exists = self._english_exists_sql("c")
+        untranslated_clause = f"AND NOT {english_exists}" if only_untranslated else ""
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT chapter_number
-                FROM {self.table('chapters')}
-                WHERE novel_id = ?
-                    AND original_text IS NOT NULL AND LENGTH(TRIM(original_text)) > 0
+                SELECT c.chapter_number
+                FROM {self.table('chapters')} c
+                WHERE c.novel_id = ?
+                    AND c.original_text IS NOT NULL AND LENGTH(TRIM(c.original_text)) > 0
                     {untranslated_clause}
-                ORDER BY chapter_number
+                ORDER BY c.chapter_number
                 {limit_clause}
                 """,
                 params,
@@ -1395,7 +1690,7 @@ class Database:
         return [int(row["chapter_number"]) for row in rows]
 
     def translation_inventory_summary(self, novel_id: str, chapters: list[int] | None = None) -> dict[str, Any]:
-        where = "WHERE novel_id = ?"
+        where = "WHERE c.novel_id = ?"
         params: list[Any] = [novel_id]
         if chapters is not None:
             if not chapters:
@@ -1409,33 +1704,35 @@ class Database:
                     "total_chapters": 0,
                 }
             placeholders = ",".join("?" for _ in chapters)
-            where += f" AND chapter_number IN ({placeholders})"
+            where += f" AND c.chapter_number IN ({placeholders})"
             params.extend(chapters)
+        english_exists = self._english_exists_sql("c")
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT chapter_number, original_text, ai_text
-                FROM {self.table('chapters')}
+                SELECT c.chapter_number, c.original_text, c.ai_text,
+                    CASE WHEN {english_exists} THEN 1 ELSE 0 END AS has_english
+                FROM {self.table('chapters')} c
                 {where}
-                ORDER BY chapter_number
+                ORDER BY c.chapter_number
                 """,
                 tuple(params),
             ).fetchall()
             available = conn.execute(
                 f"""
                 SELECT COUNT(*) AS total
-                FROM {self.table('chapters')}
-                WHERE novel_id = ?
-                    AND original_text IS NOT NULL AND LENGTH(TRIM(original_text)) > 0
-                    AND (ai_text IS NULL OR LENGTH(TRIM(ai_text)) = 0)
+                FROM {self.table('chapters')} c
+                WHERE c.novel_id = ?
+                    AND c.original_text IS NOT NULL AND LENGTH(TRIM(c.original_text)) > 0
+                    AND NOT {english_exists}
                 """,
                 (novel_id,),
             ).fetchone()
         existing = {int(row["chapter_number"]) for row in rows}
         invalid = sorted(set(chapters or []) - existing)
         missing_original = sum(1 for row in rows if not readable(row["original_text"]))
-        already = sum(1 for row in rows if readable(row["ai_text"]))
-        eligible = sum(1 for row in rows if readable(row["original_text"]) and not readable(row["ai_text"]))
+        already = sum(1 for row in rows if bool(row["has_english"]))
+        eligible = sum(1 for row in rows if readable(row["original_text"]) and not bool(row["has_english"]))
         return {
             "selected_count": len(chapters) if chapters is not None else len(rows),
             "eligible_count": eligible,
@@ -1494,6 +1791,7 @@ class Database:
         pricing = model_pricing(model)
         eligible = [row for row in rows if row["eligible"]]
         inventory = self.translation_inventory_summary(novel_id, chapters)
+        coverage = self.english_coverage_preview(novel_id, chapters)
         selection_diagnostics = dict(settings.get("_selection_diagnostics") or {})
         invalid_chapter_numbers = sorted(set(inventory["invalid_chapter_numbers"]) | set(selection_diagnostics.get("invalid_chapter_numbers") or []))
         missing_original_count = int(selection_diagnostics.get("missing_original_count", inventory["missing_original_count"]) or 0)
@@ -1537,6 +1835,7 @@ class Database:
             "original_readable": sum(1 for row in rows if row["has_original"]),
             "reference_available": sum(1 for row in rows if row["has_reference"]),
             "ai_existing": sum(1 for row in rows if row["has_ai"]),
+            "english_existing": coverage["existing_english"],
             "missing_original_count": missing_original_count,
             "already_translated_count": already_translated_count,
             "invalid_chapter_numbers": invalid_chapter_numbers,
@@ -1563,6 +1862,14 @@ class Database:
                 "instruction_glossary_tokens": instruction_tokens,
                 "estimated_output_tokens": output_tokens,
             },
+            "english_coverage_policy": coverage["policy"],
+            "coverage_plan": coverage,
+            "existing_english_count": coverage["existing_english"],
+            "reference_fill_count": coverage["reference_fill"],
+            "reference_promotion_count": coverage["reference_promotions"],
+            "needs_ai_translation_count": coverage["translation_from_original"],
+            "blocked_missing_source_count": coverage["blocked_missing_source"],
+            "reference_promotion_cost": coverage["reference_promotion_cost"],
             "estimated_cost": round(estimated_cost, 6),
             "items": rows,
         }
@@ -2524,7 +2831,8 @@ class Database:
         return self.user_preferences(user_id)
 
     def save_reading_progress(self, user_id: str, novel_id: str, chapter_number: int, source: str, scroll_percent: float = 0) -> dict[str, Any]:
-        source = source if source in {"ai", "reference", "original"} else "ai"
+        source = "english" if source == "ai" else source
+        source = source if source in {"english", "reference", "original"} else "english"
         scroll = max(0.0, min(100.0, float(scroll_percent or 0)))
         now = utc_now()
         with self.connect() as conn:
@@ -3631,6 +3939,10 @@ def public_novel_row(row: Any) -> dict[str, Any]:
     except Exception:
         payload["metadata"] = {}
     payload.pop("metadata_json", None)
+    policy = str(payload["metadata"].get("english_coverage_policy") or payload["metadata"].get("coverage_policy") or "").strip().lower()
+    if policy not in ENGLISH_COVERAGE_POLICIES:
+        policy = "reference_first" if payload.get("id") in REFERENCE_FIRST_NOVEL_IDS else "original_translation_only"
+    payload["english_coverage_policy"] = policy
     chapter_count = int(payload.get("chapter_count") or 0)
     original_count = int(payload.get("original_count") or 0)
     reference_count = int(payload.get("reference_count") or 0)
@@ -3862,6 +4174,9 @@ def normalize_edition_type(value: Any) -> str:
         "imported": "Imported",
         "machine": "Machine",
         "community": "Community",
+        "reference": "Reference Derived",
+        "reference derived": "Reference Derived",
+        "reference-derived": "Reference Derived",
     }
     return canonical.get(normalized, title_case(normalized or "Imported"))
 

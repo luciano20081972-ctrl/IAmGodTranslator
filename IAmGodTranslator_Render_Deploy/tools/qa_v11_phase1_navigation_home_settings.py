@@ -15,7 +15,7 @@ def require(label: str, condition: bool) -> None:
 
 
 def main() -> None:
-    require("cache strings updated", "app.js?v=11.0.0" in INDEX and "styles.css?v=11.0.0" in INDEX)
+    require("cache strings updated", "app.js?v=11.1.0" in INDEX and "styles.css?v=11.1.0" in INDEX)
     require("theme removed from top-level shell", "personalizeBtn" not in INDEX and ">Theme<" not in INDEX)
     require("profile menu shell exists", 'id="profileMenu"' in INDEX and 'id="profileMenuItems"' in INDEX)
 
