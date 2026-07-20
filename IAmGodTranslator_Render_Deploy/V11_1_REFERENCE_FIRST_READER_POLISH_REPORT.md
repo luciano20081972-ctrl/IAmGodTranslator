@@ -103,16 +103,24 @@ The Reader table of contents opens without fetching every chapter body, highligh
 
 ## 25. PostgreSQL result
 
-Local SQLite migration and fixture coverage passed. GitHub Actions PostgreSQL 16 gate was created but remained queued during validation:
+Local SQLite migration and fixture coverage passed. GitHub Actions PostgreSQL 16 gate completed successfully:
 
 - Run ID: `29714612231`
 - Job ID: `88265210277`
 - Workflow: `GodTranslator v11 RC Release Gate`
 - Job: `PostgreSQL migration and auth gate`
-- Status captured: `queued`
-- Conclusion captured: none
+- Attempt: `1`
+- Validated application-code SHA: `a19c893793b62112eeec7037a4b72e076a00643b`
+- Head branch: `v11.1.0-reference-first-reader-polish`
+- Run status: `completed`
+- Run conclusion: `success`
+- Job status: `completed`
+- Job conclusion: `success`
+- Run created: `2026-07-20T03:25:03Z`
+- Job started: `2026-07-20T03:55:13Z`
+- Job completed: `2026-07-20T03:56:41Z`
 
-Because the PostgreSQL GitHub Actions gate has not completed successfully yet, this remains the release blocker.
+Successful steps included PostgreSQL service startup, empty database initialization, migrations, migration idempotence, v11 static and fixture QA, Reference-first coverage fixtures, authorization matrix, Reference privacy, secret scan, and artifact scan. Warnings were limited to GitHub runner/action deprecation notices and the expected ephemeral PostgreSQL `trust` authentication warning for the isolated CI service. A PostgreSQL foreign-key error appeared in service logs during the rollback/concurrency negative path, while the job result reported rollback and concurrency checks as passed.
 
 ## 26. Authorization result
 
@@ -132,7 +140,9 @@ Tracked artifact scan passed locally for pycache, pyc, env files, venvs, logs, c
 
 ## 30. Known limitations
 
-The v11.0.0 manual authenticated Admin verification remains pending and is not claimed here. The GitHub Actions PostgreSQL 16 migration/auth gate is queued, so v11.1 is not ready for controlled release until that job completes successfully.
+The v11.0.0 manual authenticated Admin verification remains pending and is not claimed here. The v11.1 PostgreSQL 16 migration/auth gate has completed successfully, and no v11.1 blocker remains.
+
+Final verdict: `READY FOR V11.1 CONTROLLED RELEASE`.
 
 ## 31. Exact commands
 
@@ -159,13 +169,27 @@ python IAmGodTranslator_Render_Deploy\tools\qa_v11_1_reference_first_reader_poli
 
 FastAPI import and Uvicorn startup were verified with a temporary dependency target and temporary SQLite database, with `/api/health` returning version `11.1.0` and reachable database status.
 
+Final lightweight release-gate checks run after CI success:
+
+```powershell
+git status --short
+git diff --check
+python -m py_compile <27 app/tools Python files>
+C:\Users\lucia\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe --check IAmGodTranslator_Render_Deploy\static\app.js
+git grep tracked secret scan
+git ls-files artifact scan
+```
+
+Results: `git diff --check`, Python compile, JavaScript syntax, refined tracked secret scan, and tracked artifact scan passed. `git status --short` showed only the pre-existing untracked `IAmGodTranslator_Render_Deploy/V11_PRODUCTION_RELEASE_REPORT.md`, which was not staged or committed.
+
 ## 32. Commit SHAs
 
 - `7f90519`: Add Reference-first English coverage model
 - `a7ddb9a`: Redesign and polish Reader experience
 - `a19c893`: Add Reader accessibility and Reference coverage QA
+- `f9de957`: Finalize GodTranslator v11.1.0 QA report
 
-The final report commit SHA is recorded in the final task response after commit creation.
+The release-gate status update commit SHA is recorded in the final task response after commit creation.
 
 ## 33. CI run and job IDs
 
@@ -173,7 +197,10 @@ The final report commit SHA is recorded in the final task response after commit 
 - Job ID: `88265210277`
 - Run URL: `https://github.com/luciano20081972-ctrl/IAmGodTranslator/actions/runs/29714612231`
 - Job URL: `https://github.com/luciano20081972-ctrl/IAmGodTranslator/actions/runs/29714612231/job/88265210277`
-- Captured state: queued, no conclusion yet
+- Attempt: `1`
+- Validated application-code SHA: `a19c893793b62112eeec7037a4b72e076a00643b`
+- Queue reason: waited for a GitHub-hosted `ubuntu-latest` runner; no environment approval, billing, permissions, Actions-disabled, self-hosted runner, or policy blocker was reported.
+- Captured state: completed, conclusion success
 
 ## 34. Confirmation main unchanged
 
