@@ -11,6 +11,8 @@ const notificationCenter = document.querySelector("#notificationCenter");
 const mobileBottomNav = document.querySelector("#mobileBottomNav");
 
 const CACHE_TTL_MS = 45_000;
+const APP_BRAND = loadBrandConfig();
+const APP_VERSION = "11.1.0";
 let activeRouteKey = window.location.hash || "#/home";
 let connectionInterrupted = false;
 let readerScrollHandler = null;
@@ -18,6 +20,10 @@ let readerChromeHandler = null;
 let readerAbortController = null;
 let lastReaderScrollY = 0;
 let activityIndicatorRequest = 0;
+let commandPaletteOpenFromHistory = false;
+let commandPaletteClosingFromPop = false;
+let commandTouchStartY = 0;
+let paragraphTouchTimer = null;
 const notificationSessionStartedAt = Date.now();
 const readerRequestMap = new Map();
 const READER_CACHE_LIMIT = 9;
@@ -32,7 +38,7 @@ const state = {
   chapterOffset: 0,
   pageSize: 50,
   source: ["english", "ai", "original"].includes(localStorage.getItem("gt-reader-source")) ? (localStorage.getItem("gt-reader-source") === "ai" ? "english" : localStorage.getItem("gt-reader-source")) : "english",
-  fontSize: Number(localStorage.getItem("gt-reader-font") || 19),
+  fontSize: Number(localStorage.getItem("gt-reader-font") || 20),
   zen: false,
   admin: false,
   role: "guest",
@@ -49,7 +55,6 @@ const state = {
 };
 
 const sourceLabels = {english: "English", ai: "English", reference: "Reference", original: "Original"};
-const APP_VERSION = "11.1.0";
 const chapterViews = [
   ["all", "All"],
   ["translated", "Translated"],
@@ -58,6 +63,18 @@ const chapterViews = [
   ["missing-reference", "Missing Reference"],
   ["errors", "Has Errors"],
 ];
+
+function loadBrandConfig() {
+  const defaults = {name: "Reader", shortName: "Reader", tagline: "Reading Workspace", mark: "R"};
+  const configNode = document.querySelector("#appBrandConfig");
+  if (!configNode) return defaults;
+  try {
+    const parsed = JSON.parse(configNode.textContent || "{}");
+    return {...defaults, ...parsed};
+  } catch {
+    return defaults;
+  }
+}
 
 async function api(path, options = {}) {
   const method = (options.method || "GET").toUpperCase();
@@ -184,6 +201,7 @@ function route() {
 }
 
 function updateNav(active) {
+  document.body.dataset.route = active || "home";
   if (!nav) return;
   renderNav();
   nav.querySelectorAll("a").forEach((link) => {
@@ -227,22 +245,26 @@ function profileLabel() {
 
 function renderProfileMenu() {
   if (!profileMenuItems) return;
+  const signedIn = Boolean(state.account);
+  const privileged = canTranslate() || state.admin;
+  const continueHref = continueReadingHref();
   const items = [
-    ["My Account", "#/account", true],
-    ["Continue Reading", continueReadingHref(), true],
-    ["Reading History", "#/history", true],
-    ["Bookmarks", "#/bookmarks", true],
-    ["Favorites", "#/library?filter=favorites", true],
-    ["Collections", "#/settings/library", true],
-    ["Desktop Sync", "#/settings/desktop", true],
-    ["Notifications", "#/settings/notifications", true],
-    ["Settings", "#/settings/appearance", true],
-    ["Accessibility", "#/settings/accessibility", true],
+    ["Continue Reading", continueHref, continueHref !== "#/library"],
+    ["Library", "#/library", true],
+    ["Reader Settings", "#/settings/reader", true],
+    ["My Account", "#/account", signedIn],
+    ["Reading History", "#/history", signedIn],
+    ["Bookmarks", "#/bookmarks", signedIn || localBookmarks().length > 0],
+    ["Favorites", "#/library?filter=favorites", signedIn],
+    ["Collections", "#/settings/library", signedIn],
+    ["Notifications", "#/settings/notifications", signedIn || state.admin],
+    ["Desktop Sync", "#/settings/desktop", privileged],
+    ["Appearance", "#/settings/appearance", true],
     ["Translator Workspace", `#/translate/${state.currentNovelId}`, canTranslate()],
     ["Admin", "#/admin", state.admin],
   ].filter(([, , visible]) => visible);
   const adminExit = state.admin ? `<button type="button" id="profileExitAdmin">Exit Admin Mode</button>` : "";
-  const accountExit = state.account ? `<button type="button" id="profileSignOut">Sign Out</button>` : `<a href="#/account">Sign In</a>`;
+  const accountExit = signedIn ? `<button type="button" id="profileSignOut">Sign Out</button>` : `<a class="profile-sign-in" href="#/account">Sign In</a>`;
   profileMenuItems.innerHTML = `
     <div class="profile-menu-header"><strong>${escapeHtml(profileLabel())}</strong><span>${escapeHtml(state.role || "guest")}</span></div>
     ${items.map(([label, href]) => `<a href="${escapeAttr(href)}">${escapeHtml(label)}</a>`).join("")}
@@ -260,17 +282,15 @@ function activeRouteName() {
 
 function renderMobileBottomNav(active = activeRouteName()) {
   if (!mobileBottomNav) return;
-  const unread = state.notifications.filter((item) => !item.read).length;
   const items = [
     ["home", "Home", "#/home"],
     ["library", "Library", "#/library"],
     ["continue", "Read", continueReadingHref()],
     ["search", "Search", ""],
-    ["notifications", unread ? `Alerts ${unread}` : "Alerts", "#/notifications"],
   ];
   mobileBottomNav.innerHTML = items
     .map(([key, label, href]) => key === "search"
-      ? `<button type="button" data-mobile-search aria-label="Open search and command palette" title="Search" class="${active === "search" ? "active" : ""}">${escapeHtml(label)}</button>`
+      ? `<button type="button" data-mobile-search aria-label="Open search and command palette" aria-controls="commandDialog" title="Search" class="${active === "search" ? "active" : ""}">${escapeHtml(label)}</button>`
       : `<a href="${escapeAttr(href)}" title="${escapeAttr(label.replace(/\s+\d+$/, ""))}" aria-label="${escapeAttr(label)}" ${active === key || (active === "reader" && key === "continue") ? `aria-current="page"` : ""} class="${active === key || (active === "reader" && key === "continue") ? "active" : ""}">${escapeHtml(label)}</a>`)
     .join("");
   mobileBottomNav.querySelector("[data-mobile-search]")?.addEventListener("click", openCommandPalette);
@@ -329,6 +349,14 @@ function canTranslate() {
 
 function canViewReference() {
   return canTranslate();
+}
+
+function applyBranding() {
+  document.title = APP_BRAND.name;
+  document.querySelectorAll("[data-brand-name]").forEach((node) => { node.textContent = APP_BRAND.name; });
+  document.querySelectorAll("[data-brand-mark]").forEach((node) => { node.textContent = APP_BRAND.mark; });
+  document.querySelectorAll("[data-brand-tagline]").forEach((node) => { node.textContent = APP_BRAND.tagline; });
+  document.querySelectorAll("[data-brand-home]").forEach((node) => { node.setAttribute("aria-label", `${APP_BRAND.name} Home`); });
 }
 
 function setLoading(label = "Loading...") {
@@ -421,45 +449,44 @@ async function openHome() {
     const activeNovels = novels.filter((novel) => !novel.is_archived);
     const continueItem = normalizedContinueReading(personal?.continue_reading || latestLocalReading());
     const spotlight = activeNovels[0] || novels[0] || null;
-    const recentRead = (personal?.history?.length ? personal.history : state.recent.chapters || []).slice(0, 5);
+    const recentRead = dedupeRecentReading(personal?.history?.length ? personal.history : state.recent.chapters || []).slice(0, 5);
     const updates = [...activeNovels].sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || ""))).slice(0, 6);
     const added = [...activeNovels].sort((a, b) => String(b.created_at || b.updated_at || "").localeCompare(String(a.created_at || a.updated_at || ""))).slice(0, 5);
     app.innerHTML = `
       <section class="home-hero">
         <div class="home-hero-copy">
-          <p class="eyebrow">GodTranslator</p>
+          <p class="eyebrow">${escapeHtml(APP_BRAND.shortName)}</p>
           <h1>Your translated reading room.</h1>
           <p>${activeNovels.length === 1 ? "One active novel is ready for focused reading, resume, and translation progress." : `${activeNovels.length} active novels are ready for reading, resume, and translation progress.`}</p>
           <div class="actions">
             <a class="button primary" href="${escapeAttr(continueReadingHref(continueItem))}">${continueItem ? "Continue Reading" : "Open Library"}</a>
-            ${spotlight ? `<a class="button" href="#/novel/${encodeURIComponent(spotlight.id)}">Open ${escapeHtml(spotlight.title || "Novel")}</a>` : ""}
+            ${spotlight ? `<a class="button" href="#/novel/${encodeURIComponent(spotlight.id)}">Open ${escapeHtml(displayNovelTitle(spotlight))}</a>` : ""}
             <a class="button" href="#/settings/reader">Reader Settings</a>
           </div>
         </div>
         <div class="home-hero-panel">
           <span class="badge ok">${continueItem ? "Progress saved" : "Catalog ready"}</span>
-          <strong>${continueItem ? `Chapter ${continueItem.chapter_number}` : spotlight ? escapeHtml(spotlight.title || "Start reading") : "No novel selected"}</strong>
-          <p>${continueItem ? escapeHtml(continueItem.novel_title) : "Start from the catalog, then GodTranslator will keep the next read within reach."}</p>
-          <div class="home-metrics">
-            ${metric("Novels", activeNovels.length)}
-            ${metric("Chapters", sum(activeNovels, "chapter_count"))}
-            ${metric("English Ready", sum(activeNovels, "english_count"))}
-            ${metric("Needs Translation", sum(activeNovels, "remaining_count"))}
-          </div>
+          <strong>${continueItem ? `Chapter ${continueItem.chapter_number}` : spotlight ? escapeHtml(displayNovelTitle(spotlight)) : "No novel selected"}</strong>
+          <p>${continueItem ? escapeHtml(continueItem.novel_title) : `Start from the catalog, then ${escapeHtml(APP_BRAND.shortName)} will keep the next read within reach.`}</p>
         </div>
       </section>
       ${renderContinueReading(continueItem)}
-      <section class="home-grid">
+      <section class="home-grid home-primary-grid">
         ${renderLibrarySpotlight(spotlight)}
         ${renderRecentlyRead(recentRead)}
+        ${renderReadingStats(activeNovels, personal)}
+        <section class="panel next-action"><h2>Next Action</h2>${renderNextAction(continueItem, spotlight)}</section>
+      </section>
+      <details class="home-secondary">
+        <summary>Catalog details</summary>
+        <div class="home-grid">
         ${renderHomeFavorites(personal?.favorites || [])}
         ${renderHomeBookmarks(personal?.bookmarks || [])}
-        ${renderReadingStats(activeNovels, personal)}
         ${renderRecentUpdates(updates)}
         ${renderRecentlyAdded(added)}
         ${renderHomeOperations(operations)}
-        <section class="panel next-action"><h2>Next Action</h2>${renderNextAction(continueItem, spotlight)}</section>
-      </section>`;
+        </div>
+      </details>`;
     bindCopyLinks(app);
     restoreScrollPosition();
   } catch (error) {
@@ -485,11 +512,12 @@ function renderLibrarySpotlight(novel) {
   const pct = progress(novel);
   const coverageTotal = coverageDenominator(novel);
   const coverageLabel = coverageBasisLabel(novel);
+  const title = displayNovelTitle(novel);
   return `<section class="panel spotlight-card">
     <h2>Library Spotlight</h2>
     <div class="spotlight-row">
-      <a class="mini-cover" href="#/novel/${encodeURIComponent(novel.id)}">${novel.cover_url ? `<img src="${escapeAttr(novel.cover_url)}" alt="">` : `<span>${escapeHtml(initials(novel.title || novel.id))}</span>`}</a>
-      <div><h3>${escapeHtml(novel.title || novel.id)}</h3>${novel.author ? `<p class="muted">${escapeHtml(novel.author)}</p>` : ""}<div class="mini-progress"><span style="width:${pct}%"></span></div><p class="muted">${novel.english_count ?? novel.ai_count ?? 0}/${coverageTotal} English chapters across ${escapeHtml(coverageLabel)}.</p><div class="actions"><a class="button primary" href="#/novel/${encodeURIComponent(novel.id)}">Open Novel</a><a class="button" href="#/reader/${encodeURIComponent(novel.id)}/1/${safeReaderSource()}">Start Reading</a></div></div>
+      <a class="mini-cover" href="#/novel/${encodeURIComponent(novel.id)}">${novel.cover_url ? `<img src="${escapeAttr(novel.cover_url)}" alt="">` : `<span>${escapeHtml(initials(title))}</span>`}</a>
+      <div><h3>${escapeHtml(title)}</h3>${novel.author ? `<p class="muted">${escapeHtml(novel.author)}</p>` : ""}<div class="mini-progress"><span style="width:${pct}%"></span></div><p class="muted">${novel.english_count ?? novel.ai_count ?? 0}/${coverageTotal} English chapters across ${escapeHtml(coverageLabel)}.</p><div class="actions"><a class="button primary" href="#/novel/${encodeURIComponent(novel.id)}">Open Novel</a><a class="button" href="#/reader/${encodeURIComponent(novel.id)}/1/${safeReaderSource()}">Start Reading</a></div></div>
     </div>
   </section>`;
 }
@@ -503,12 +531,14 @@ function renderRecentlyRead(items) {
 
 function renderHomeFavorites(items) {
   const favorites = (items || []).slice(0, 5);
-  return `<section class="panel"><h2>Favorites</h2><div class="stack-list">${favorites.map((item) => `<a class="list-row" href="#/novel/${encodeURIComponent(item.novel_id || item.id)}"><strong>${escapeHtml(item.title || item.novel_title || item.novel_id)}</strong><span>${escapeHtml(item.author || "Favorite")}</span></a>`).join("") || `<p class="empty-state">Favorite novels to keep them close.</p>`}</div></section>`;
+  if (!favorites.length && !state.account) return "";
+  return `<section class="panel"><h2>Favorites</h2><div class="stack-list">${favorites.map((item) => `<a class="list-row" href="#/novel/${encodeURIComponent(item.novel_id || item.id)}"><strong>${escapeHtml(displayNovelTitle({id: item.novel_id || item.id, title: item.title || item.novel_title}))}</strong><span>${escapeHtml(item.author || "Favorite")}</span></a>`).join("") || `<p class="empty-state">Favorite novels to keep them close.</p>`}</div></section>`;
 }
 
 function renderHomeBookmarks(items) {
   const bookmarks = (items || []).slice(0, 5);
-  return `<section class="panel"><h2>Bookmarks</h2><div class="stack-list">${bookmarks.map((item) => `<a class="list-row" href="#/reader/${encodeURIComponent(item.novel_id)}/${item.chapter_number}/${safeReaderSource(item.source)}"><strong>${escapeHtml(item.novel_title || item.novel_id)}</strong><span>Chapter ${item.chapter_number}</span></a>`).join("") || `<p class="empty-state">Bookmark chapters to build quick return points.</p>`}</div></section>`;
+  if (!bookmarks.length && !state.account) return "";
+  return `<section class="panel"><h2>Bookmarks</h2><div class="stack-list">${bookmarks.map((item) => `<a class="list-row" href="#/reader/${encodeURIComponent(item.novel_id)}/${item.chapter_number}/${safeReaderSource(item.source)}"><strong>${escapeHtml(displayNovelTitle({id: item.novel_id, title: item.novel_title}))}</strong><span>Chapter ${item.chapter_number}</span></a>`).join("") || `<p class="empty-state">Bookmark chapters to build quick return points.</p>`}</div></section>`;
 }
 
 function renderReadingStats(novels, personal) {
@@ -516,7 +546,8 @@ function renderReadingStats(novels, personal) {
   const bookmarks = personal?.bookmarks || [];
   const favorites = personal?.favorites || [];
   const readable = sum(novels, "english_count") || sum(novels, "ai_count") || 0;
-  return `<section class="panel"><h2>Reading Statistics</h2><div class="metric-grid">${metric("Readable Chapters", readable)}${metric("Recent Reads", history.length)}${metric("Bookmarks", bookmarks.length)}${metric("Favorites", favorites.length)}</div></section>`;
+  const accountMetrics = state.account ? `${metric("Bookmarks", bookmarks.length)}${metric("Favorites", favorites.length)}` : "";
+  return `<section class="panel compact-panel reading-progress-panel"><h2>Reading Progress</h2><div class="metric-grid">${metric("Readable Chapters", readable)}${metric("Recent Reads", history.length)}${accountMetrics}</div></section>`;
 }
 
 function renderRecentUpdates(novels) {
@@ -545,7 +576,7 @@ function renderHomeOperations(operations) {
 
 function renderNextAction(continueItem, spotlight) {
   if (continueItem) return `<p class="muted">Resume the latest saved or local reading position.</p><a class="button primary" href="${escapeAttr(continueReadingHref(continueItem))}">Continue Chapter ${continueItem.chapter_number}</a>`;
-  if (spotlight) return `<p class="muted">Start with the first chapter, then GodTranslator will remember where you left off.</p><a class="button primary" href="#/reader/${encodeURIComponent(spotlight.id)}/1/${safeReaderSource()}">Start Reading</a>`;
+  if (spotlight) return `<p class="muted">Start with the first chapter, then ${escapeHtml(APP_BRAND.shortName)} will remember where you left off.</p><a class="button primary" href="#/reader/${encodeURIComponent(spotlight.id)}/1/${safeReaderSource()}">Start Reading</a>`;
   return `<p class="muted">No novels are available yet.</p>${state.admin ? `<a class="button primary" href="#/admin/novels">Add Novel</a>` : `<a class="button" href="#/library">Open Library</a>`}`;
 }
 
@@ -710,10 +741,10 @@ function renderLibraryCards() {
     if (["completed", "in-progress", "want-to-read", "paused"].includes(filter) && readingStatus(novel.id) !== filter) return false;
     if (filter === "collection" && !collectionNovelIds(state.libraryView.collection).has(novel.id)) return false;
     if (!query) return true;
-    return `${novel.title} ${novel.author || ""}`.toLowerCase().includes(query);
+    return `${displayNovelTitle(novel)} ${novel.author || ""} ${novel.id || ""}`.toLowerCase().includes(query);
   });
   novels = novels.sort((a, b) => {
-    if (sort === "title") return String(a.title).localeCompare(String(b.title));
+    if (sort === "title") return displayNovelTitle(a).localeCompare(displayNovelTitle(b));
     if (sort === "progress") return progress(b) - progress(a);
     return String(b.updated_at || "").localeCompare(String(a.updated_at || ""));
   });
@@ -792,7 +823,7 @@ function collectionIdFor(name, existing) {
 function renderContinueReading(progress) {
   progress = normalizedContinueReading(progress);
   if (!progress) {
-    return state.account ? `<section class="continue-card"><div><p class="eyebrow">Continue Reading</p><h2>No saved progress yet</h2><p class="muted">Open a chapter and GodTranslator will remember your place.</p></div></section>` : "";
+    return state.account ? `<section class="continue-card"><div><p class="eyebrow">Continue Reading</p><h2>No saved progress yet</h2><p class="muted">Open a chapter and ${escapeHtml(APP_BRAND.shortName)} will remember your place.</p></div></section>` : "";
   }
   return `<section class="continue-card">
     <div><p class="eyebrow">Continue Reading</p><h2>${escapeHtml(progress.novel_title)}</h2><p>Chapter ${progress.chapter_number}: ${escapeHtml(progress.chapter_title)}</p><p class="muted">${sourceLabels[progress.source] || progress.source} · ${Math.round(progress.scroll_percent || 0)}%</p></div>
@@ -859,6 +890,7 @@ function renderNovelCard(novel) {
   const favorite = favoriteIds().has(novel.id);
   const pinned = pinnedIds().has(novel.id);
   const status = readingStatus(novel.id);
+  const title = displayNovelTitle(novel);
   const chapterCount = Number(novel.chapter_count || 0);
   const readLabel = chapterCount ? "Read" : "Open";
   const missingEnglish = novel.missing_counts_known === false ? "Unknown" : novel.missing_english_count ?? novel.remaining_count;
@@ -868,11 +900,11 @@ function renderNovelCard(novel) {
   return `
     <article class="novel-card">
       <a class="cover" href="#/novel/${encodeURIComponent(novel.id)}">
-        ${novel.cover_url ? `<img src="${escapeAttr(novel.cover_url)}" alt="">` : `<span class="cover-fallback">${escapeHtml(initials(novel.title || novel.id))}</span>`}
+        ${novel.cover_url ? `<img src="${escapeAttr(novel.cover_url)}" alt="">` : `<span class="cover-fallback">${escapeHtml(initials(title))}</span>`}
       </a>
       <div class="novel-card-body">
         <div class="status-row"><span class="badge ok">${novel.is_archived ? "Archived" : "Active"}</span><span class="badge">${titleCase(status)}</span>${pinned ? `<span class="badge ok">Pinned</span>` : ""}${state.account ? `<button class="ghost-btn" data-favorite="${escapeAttr(novel.id)}">${favorite ? "Favorited" : "Favorite"}</button>` : ""}<button class="ghost-btn" data-pin="${escapeAttr(novel.id)}">${pinned ? "Unpin" : "Pin"}</button><span>${pct}% English</span></div>
-        <h2>${escapeHtml(novel.title || novel.id)}</h2>
+        <h2>${escapeHtml(title)}</h2>
         ${novel.author ? `<p class="muted">${escapeHtml(novel.author)}</p>` : ""}
         ${novel.summary ? `<p class="card-summary">${escapeHtml(novel.summary)}</p>` : ""}
         ${metaLine.length ? `<p class="muted">${metaLine.map(escapeHtml).join(" · ")}</p>` : ""}
@@ -969,7 +1001,7 @@ async function openNovelDetail(novelId) {
           <p class="eyebrow">${escapeHtml(novel.status || "Active")}</p>
           <h1>${escapeHtml(novel.title || novel.id)}</h1>
           ${novel.author ? `<p class="muted">${escapeHtml(novel.author)}</p>` : ""}
-          <p>${escapeHtml(novel.summary || "A database-first GodTranslator novel workspace.")}</p>
+          <p>${escapeHtml(novel.summary || `A database-first ${APP_BRAND.name} novel workspace.`)}</p>
           <div class="mini-progress"><span style="width:${pct}%"></span></div>
           <div class="metric-grid">${stats}</div>
           <div class="actions">${primaryActions}</div>
@@ -1211,46 +1243,60 @@ function renderReader(novelId, chapterNumber, source, payload) {
   const novel = state.novels.find((item) => item.id === novelId) || {};
   const options = readerSourceOptions();
   const metrics = readerMetrics(payload, chapterNumber);
-  const sourceSwitch = options.length > 1 ? `<div class="segmented reader-source-switch" aria-label="Reader source">${options.map((item) => `<button data-source="${item}" class="${item === source ? "active" : ""}" aria-pressed="${item === source ? "true" : "false"}">${sourceLabels[item]}</button>`).join("")}</div>` : "";
   const bookmarkLabel = isBookmarkedLocally(novelId, chapterNumber) ? "Bookmarked" : "Bookmark";
+  const novelTitle = displayNovelTitle(novel);
+  const chapterLabel = `Chapter ${chapterNumber}`;
+  const detailedTitle = String(payload?.title || "").trim();
+  const showTitleDetail = detailedTitle && detailedTitle.toLowerCase() !== chapterLabel.toLowerCase();
+  const savedPercent = Number(localStorage.getItem(readerScrollKey(novelId, chapterNumber, source)) || 0);
+  const restoreNote = Number.isFinite(savedPercent) && savedPercent >= 8 ? `<p class="reader-restore-note">Continue where you stopped · ${Math.round(savedPercent)}%</p>` : "";
   rememberRecent("chapters", {novel_id: novelId, chapter_number: chapterNumber, source, label: `Chapter ${chapterNumber}`, href: `#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}`, at: new Date().toISOString()});
   document.documentElement.style.setProperty("--reader-font", `${state.fontSize}px`);
   document.body.dataset.zen = state.zen ? "on" : "off";
   app.innerHTML = `
     <section class="reader-panel ${state.zen ? "zen" : ""}" aria-labelledby="readerChapterHeading">
-      <div class="reader-nav reader-chrome"><a class="button" href="#/novel/${novelId}">Back to Novel</a><button id="openChapterDrawer" type="button" aria-haspopup="dialog">Table of Contents</button><div class="spacer"></div><button data-go="${previous || ""}" ${previous ? "" : "disabled"} aria-label="Previous chapter">Previous</button><button data-go="${next || ""}" ${next ? "" : "disabled"} aria-label="Next chapter">Next</button><button id="bookmarkChapter" type="button" aria-pressed="${bookmarkLabel === "Bookmarked" ? "true" : "false"}">${bookmarkLabel}</button><button id="zenToggle" type="button">${state.zen ? "Exit Focus" : "Focus"}</button></div>
-      <div class="reader-tabs reader-chrome">${sourceSwitch}<label class="font-control">Text size<input id="fontSize" type="range" min="16" max="25" value="${state.fontSize}" aria-label="Reader text size"></label><button id="readerSettingsToggle" type="button" aria-haspopup="dialog">Settings</button><button type="button" data-copy-link="#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}">Copy Link</button></div>
+      <div class="reader-toolbar reader-chrome"><a class="reader-back-link" href="#/novel/${novelId}">Back to Novel</a><strong>${escapeHtml(novelTitle)}</strong><button id="readerMenuToggle" type="button" aria-haspopup="dialog" aria-controls="readerMenuPanel">Menu</button></div>
+      <div class="reader-backdrop chapter-drawer-backdrop" id="chapterDrawerBackdrop" hidden></div>
+      <div class="reader-backdrop reader-menu-backdrop" id="readerMenuBackdrop" hidden></div>
       ${renderChapterDrawer(novelId, chapterNumber, source)}
-      ${renderReaderSettingsSheet()}
-      <header class="reader-heading"><span>${escapeHtml(novel.title || sourceLabels[source])}${canViewReference() ? ` · ${sourceLabels[source]}` : ""}</span><h1 id="readerChapterHeading">Chapter ${chapterNumber}</h1><p>${escapeHtml(payload.title || `Chapter ${chapterNumber}`)}</p><div class="reader-meta">${metric("Read Time", metrics.readTime)}${metric("Novel Progress", metrics.chapterProgress)}<div class="metric"><span>Position</span><strong id="readerProgressText">0%</strong></div></div><div class="reader-progress" aria-hidden="true"><span id="readerScrollProgress" style="width:0%"></span></div>${renderReaderEditionNotice(payload, source)}</header>
-      <section class="reader-tools"><label>Search chapter<input id="readerTextSearch" type="search" placeholder="Find text in this chapter"></label><span id="readerSearchCount" class="muted">No search active</span></section>
+      ${renderReaderMenuPanel(novelId, chapterNumber, source, payload, metrics, previous, next, bookmarkLabel)}
+      ${renderParagraphActionMenu(novelId, chapterNumber, source)}
+      <header class="reader-heading">
+        <div class="reader-kicker"><a href="#/novel/${encodeURIComponent(novelId)}">${escapeHtml(novelTitle)}</a></div>
+        <h1 id="readerChapterHeading">${escapeHtml(chapterLabel)}</h1>
+        ${showTitleDetail ? `<button id="readerTitleToggle" class="subtle-toggle" type="button" aria-expanded="false" aria-controls="readerOriginalTitle">Title details</button><p id="readerOriginalTitle" class="reader-original-title" hidden>${escapeHtml(detailedTitle)}</p>` : ""}
+        ${restoreNote}
+      </header>
       <article class="reader-text" tabindex="-1" aria-live="polite">${renderReaderText(payload, source)}</article>
-      <div class="reader-bottom reader-chrome"><button data-go="${previous || ""}" ${previous ? "" : "disabled"}>Previous Chapter</button><span>${metrics.chapterProgress}</span><button data-go="${next || ""}" ${next ? "" : "disabled"}>Next Chapter</button><button id="backToTop" type="button" hidden>Back to Top</button></div>
     </section>`;
   document.querySelectorAll("[data-go]").forEach((button) => button.addEventListener("click", () => { if (button.dataset.go) window.location.hash = `#/reader/${novelId}/${button.dataset.go}/${state.source}`; }));
   document.querySelectorAll("[data-source]").forEach((button) => button.addEventListener("click", () => { window.location.hash = `#/reader/${novelId}/${chapterNumber}/${button.dataset.source}`; }));
-  document.querySelector("#fontSize").addEventListener("input", (event) => {
+  document.querySelector("#readerMenuFontSize")?.addEventListener("input", (event) => {
     state.fontSize = Number(event.target.value);
     state.preferences.readerFontSize = state.fontSize;
     localStorage.setItem("gt-reader-font", String(state.fontSize));
     localStorage.setItem("gt-preferences", JSON.stringify(state.preferences));
     document.documentElement.style.setProperty("--reader-font", `${state.fontSize}px`);
+    const label = document.querySelector("#readerMenuFontSizeValue");
+    if (label) label.textContent = `${state.fontSize}px`;
     saveRemotePreferencesQuiet();
   });
-  document.querySelector("#bookmarkChapter").addEventListener("click", () => saveBookmark(novelId, chapterNumber));
-  document.querySelector("#zenToggle").addEventListener("click", () => { state.zen = !state.zen; renderReader(novelId, chapterNumber, source, payload); });
+  document.querySelector("#readerMenuToggle")?.addEventListener("click", openReaderMenu);
+  document.querySelector("#closeReaderMenu")?.addEventListener("click", closeReaderMenu);
+  document.querySelector("#readerMenuBackdrop")?.addEventListener("click", closeReaderMenu);
+  document.querySelector("#menuChapterDrawer")?.addEventListener("click", () => { closeReaderMenu(false); openChapterDrawer(); });
+  document.querySelector("#menuBookmark")?.addEventListener("click", () => saveBookmark(novelId, chapterNumber));
+  document.querySelector("#menuCopyLink")?.addEventListener("click", () => copyLink(`#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}`));
+  document.querySelector("#menuZenToggle")?.addEventListener("click", () => { state.zen = !state.zen; renderReader(novelId, chapterNumber, source, payload); });
   document.querySelector("#chapterSearch")?.addEventListener("input", filterChapterDrawer);
-  document.querySelector("#openChapterDrawer")?.addEventListener("click", openChapterDrawer);
-  document.querySelector("#bottomChapterDrawer")?.addEventListener("click", openChapterDrawer);
   document.querySelector("#closeChapterDrawer")?.addEventListener("click", closeChapterDrawer);
-  document.querySelector("#readerSettingsToggle")?.addEventListener("click", toggleReaderSettingsSheet);
-  document.querySelector("#closeReaderSettings")?.addEventListener("click", toggleReaderSettingsSheet);
-  document.querySelector("#zenToggleSheet")?.addEventListener("click", () => document.querySelector("#zenToggle")?.click());
-  document.querySelectorAll("#readerSettingsSheet [data-pref]").forEach((field) => field.addEventListener("input", saveReaderPreferenceFromField));
+  document.querySelector("#chapterDrawerBackdrop")?.addEventListener("click", closeChapterDrawer);
+  document.querySelector("#readerTitleToggle")?.addEventListener("click", toggleReaderTitleDetail);
+  document.querySelectorAll("#readerMenuPanel [data-pref]").forEach((field) => field.addEventListener("input", saveReaderPreferenceFromField));
   document.querySelector("#readerTextSearch")?.addEventListener("input", searchReaderText);
   document.querySelector("#readerRetry")?.addEventListener("click", route);
-  document.querySelectorAll("[data-copy-paragraph]").forEach((button) => button.addEventListener("click", copyParagraphText));
-  document.querySelector("#backToTop")?.addEventListener("click", () => window.scrollTo({top: 0, behavior: state.preferences.reduceMotion ? "auto" : "smooth"}));
+  bindParagraphInteractions(novelId, chapterNumber, source);
+  document.querySelector("#menuBackToTop")?.addEventListener("click", () => window.scrollTo({top: 0, behavior: state.preferences.reduceMotion ? "auto" : "smooth"}));
   bindCopyLinks(app);
   bindReaderProgress(novelId, chapterNumber, source);
   bindReaderChrome();
@@ -1265,8 +1311,84 @@ function renderReaderText(payload, source) {
   if (lines.length && isDuplicateChapterHeading(lines[0], payload)) lines.shift();
   return lines.map((line, index) => {
     const clean = line.replace(/^#{1,6}\s*/, "");
-    return `<p data-reader-paragraph="${escapeAttr(clean)}"><button class="copy-paragraph" type="button" data-copy-paragraph="${index}" title="Copy paragraph">Copy</button><span>${escapeHtml(clean)}</span></p>`;
+    return `<p data-reader-paragraph="${escapeAttr(clean)}" data-paragraph-index="${index}" tabindex="0"><span>${escapeHtml(clean)}</span></p>`;
   }).join("");
+}
+
+function renderReaderMenuPanel(novelId, chapterNumber, source, payload, metrics, previous, next, bookmarkLabel) {
+  const pref = state.preferences;
+  const sourceOptions = readerSourceOptions();
+  const sourceSwitch = sourceOptions.length > 1
+    ? `<div class="segmented reader-source-switch" aria-label="Reader source">${sourceOptions.map((item) => `<button data-source="${item}" class="${item === source ? "active" : ""}" aria-pressed="${item === source ? "true" : "false"}">${sourceLabels[item]}</button>`).join("")}</div>`
+    : `<p class="muted">${escapeHtml(sourceLabels[source] || "English")}</p>`;
+  const themeOptions = [
+    ["dark", "Dark"],
+    ["paper", "Light"],
+    ["sepia", "Sepia"],
+    ["oled", "AMOLED"],
+    ["midnight", "Midnight"],
+    ["green-night", "Green Night"],
+  ];
+  const themePicker = `<div class="reader-theme-grid" role="radiogroup" aria-label="Theme">${themeOptions.map(([value, label]) => `<label class="reader-theme-choice"><input data-pref="readerTone" type="radio" name="readerMenuTone" value="${value}" ${pref.readerTone === value ? "checked" : ""}>${label}</label>`).join("")}</div>`;
+  return `<section class="reader-menu-panel" id="readerMenuPanel" role="dialog" aria-modal="true" aria-labelledby="readerMenuTitle" hidden>
+    <div class="sheet-header reader-menu-header"><div><p class="eyebrow">Reader Menu</p><h2 id="readerMenuTitle">Chapter tools</h2></div><button id="closeReaderMenu" type="button">Close</button></div>
+    <div class="reader-menu-section reader-menu-compact">
+      <h3>Chapter</h3>
+      <div class="reader-menu-actions reader-menu-quick">
+        <button id="menuChapterDrawer" type="button">Table of Contents</button>
+        <button data-go="${previous || ""}" ${previous ? "" : "disabled"} type="button">Previous</button>
+        <button data-go="${next || ""}" ${next ? "" : "disabled"} type="button">Next</button>
+        <button id="menuBackToTop" type="button">Back to Top</button>
+      </div>
+    </div>
+    <div class="reader-menu-section">
+      <div class="reader-menu-row"><h3>Text Size</h3><span id="readerMenuFontSizeValue">${state.fontSize}px</span></div>
+      <input id="readerMenuFontSize" type="range" min="16" max="27" value="${state.fontSize}" aria-label="Reader text size">
+      <h3>Theme</h3>
+      ${themePicker}
+      <div class="reader-menu-source"><h3>Source</h3>${sourceSwitch}</div>
+    </div>
+    <div class="reader-menu-section">
+      <h3>Actions</h3>
+      <div class="reader-menu-actions">
+        <button id="menuBookmark" type="button" aria-pressed="${bookmarkLabel === "Bookmarked" ? "true" : "false"}">${escapeHtml(bookmarkLabel)}</button>
+        <button id="menuCopyLink" type="button">Copy Link</button>
+        <button id="menuZenToggle" type="button">${state.zen ? "Exit Focus Mode" : "Focus Mode"}</button>
+      </div>
+    </div>
+    <div class="reader-menu-section">
+      <h3>Find in Chapter</h3>
+      <label class="reader-find-row">Search<input id="readerTextSearch" type="search" placeholder="Find text in this chapter"></label>
+      <span id="readerSearchCount" class="muted">No search active</span>
+    </div>
+    <div class="reader-menu-section">
+      <a class="button reader-menu-preferences" href="#/settings/reader">Reading Preferences</a>
+    </div>
+    <details class="reader-menu-section reader-menu-details">
+      <summary>Accessibility</summary>
+      <div class="reader-menu-toggles">
+        ${radioToggle("reduceMotion", pref.reduceMotion, "Reduce motion", "Calmer transitions")}
+        ${radioToggle("contrastFocus", pref.contrastFocus, "High contrast focus", "Stronger keyboard focus")}
+        ${radioToggle("accessibilityComfort", pref.accessibilityComfort, "Comfort reading", "Stable spacing and softer reader chrome")}
+      </div>
+    </details>
+    <details class="reader-menu-section reader-menu-details">
+      <summary>Reader Information</summary>
+      <div class="reader-menu-info">${metric("Read Time", metrics.readTime)}${metric("Novel Progress", metrics.chapterProgress)}<div class="metric"><span>Position</span><strong id="readerProgressText">0%</strong></div>${metric("Source", sourceLabels[source] || source)}</div>
+      <div class="reader-progress menu-progress" aria-hidden="true"><span id="readerScrollProgress" style="width:0%"></span></div>
+      ${renderReaderEditionNotice(payload, source)}
+    </details>
+  </section>`;
+}
+
+function renderParagraphActionMenu(novelId, chapterNumber, source) {
+  return `<div class="reader-paragraph-menu" id="paragraphActionMenu" role="menu" hidden data-novel-id="${escapeAttr(novelId)}" data-chapter-number="${escapeAttr(chapterNumber)}" data-source="${escapeAttr(source)}">
+    <button type="button" role="menuitem" data-paragraph-action="copy">Copy paragraph</button>
+    <button type="button" role="menuitem" data-paragraph-action="bookmark">Bookmark here</button>
+    <button type="button" role="menuitem" data-paragraph-action="highlight">Highlight</button>
+    <button type="button" role="menuitem" data-paragraph-action="report">Report translation issue</button>
+    ${canViewReference() ? `<button type="button" role="menuitem" data-paragraph-action="original">View Original</button>` : ""}
+  </div>`;
 }
 
 function readerMissingMessage(payload, source) {
@@ -1326,12 +1448,106 @@ function highlightReaderParagraphs(query) {
   return count;
 }
 
+function bindParagraphInteractions(novelId, chapterNumber, source) {
+  const paragraphs = document.querySelectorAll("[data-reader-paragraph]");
+  paragraphs.forEach((paragraph) => {
+    paragraph.addEventListener("click", (event) => {
+      if (window.getSelection()?.toString()) return;
+      openParagraphMenu(paragraph, event.clientX, event.clientY);
+    });
+    paragraph.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      openParagraphMenu(paragraph, event.clientX, event.clientY);
+    });
+    paragraph.addEventListener("keydown", (event) => {
+      if (!["Enter", " "].includes(event.key)) return;
+      event.preventDefault();
+      const rect = paragraph.getBoundingClientRect();
+      openParagraphMenu(paragraph, rect.left + Math.min(rect.width, 420) / 2, rect.top + 24);
+    });
+    paragraph.addEventListener("pointerdown", (event) => {
+      if (event.pointerType === "mouse") return;
+      clearTimeout(paragraphTouchTimer);
+      paragraphTouchTimer = setTimeout(() => openParagraphMenu(paragraph, event.clientX, event.clientY), 520);
+    });
+    paragraph.addEventListener("pointerup", () => clearTimeout(paragraphTouchTimer));
+    paragraph.addEventListener("pointercancel", () => clearTimeout(paragraphTouchTimer));
+  });
+  document.querySelector("#paragraphActionMenu")?.addEventListener("click", (event) => handleParagraphMenuAction(event, novelId, chapterNumber, source));
+}
+
+function openParagraphMenu(paragraph, clientX, clientY) {
+  const menu = document.querySelector("#paragraphActionMenu");
+  if (!menu || !paragraph) return;
+  closeParagraphMenu(false);
+  menu.dataset.paragraphIndex = paragraph.dataset.paragraphIndex || "";
+  menu.dataset.paragraphText = paragraph.dataset.readerParagraph || "";
+  menu.hidden = false;
+  menu.classList.add("open");
+  paragraph.classList.add("paragraph-selected");
+  requestAnimationFrame(() => {
+    const rect = menu.getBoundingClientRect();
+    const left = clamp(clientX || window.innerWidth / 2, 12, Math.max(12, window.innerWidth - rect.width - 12));
+    const top = clamp(clientY || window.innerHeight / 2, 12, Math.max(12, window.innerHeight - rect.height - 12));
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  });
+}
+
+function closeParagraphMenu(restoreFocus = true) {
+  const menu = document.querySelector("#paragraphActionMenu");
+  if (!menu) return;
+  const selected = document.querySelector(".paragraph-selected");
+  selected?.classList.remove("paragraph-selected");
+  if (restoreFocus && selected) selected.focus({preventScroll: true});
+  menu.classList.remove("open");
+  menu.hidden = true;
+}
+
+async function handleParagraphMenuAction(event, novelId, chapterNumber, source) {
+  const button = event.target.closest("[data-paragraph-action]");
+  if (!button) return;
+  const menu = event.currentTarget;
+  const paragraph = [...document.querySelectorAll("[data-paragraph-index]")].find((item) => item.dataset.paragraphIndex === (menu.dataset.paragraphIndex || ""));
+  const text = menu.dataset.paragraphText || paragraph?.dataset.readerParagraph || "";
+  const action = button.dataset.paragraphAction;
+  if (action === "copy") copyParagraphValue(text);
+  if (action === "bookmark") await saveBookmark(novelId, chapterNumber);
+  if (action === "highlight" && paragraph) {
+    paragraph.classList.toggle("reader-highlighted");
+    toast(paragraph.classList.contains("reader-highlighted") ? "Paragraph highlighted." : "Highlight removed.");
+  }
+  if (action === "report") toast("Translation issue noted locally.");
+  if (action === "original" && canViewReference()) {
+    window.location.hash = `#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/original`;
+  }
+  closeParagraphMenu(false);
+}
+
 function copyParagraphText(event) {
   const paragraph = event.currentTarget.closest("[data-reader-paragraph]");
   const text = paragraph?.dataset.readerParagraph || "";
+  copyParagraphValue(text);
+}
+
+function copyParagraphValue(text) {
   if (!text) return;
   if (!navigator.clipboard?.writeText) return toast("Clipboard is unavailable in this browser.");
   navigator.clipboard.writeText(text).then(() => toast("Paragraph copied.")).catch(() => toast("Unable to copy paragraph."));
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function toggleReaderTitleDetail(event) {
+  const button = event.currentTarget;
+  const target = document.querySelector(`#${button.getAttribute("aria-controls")}`);
+  if (!target) return;
+  const nextHidden = !target.hidden;
+  target.hidden = nextHidden;
+  button.setAttribute("aria-expanded", nextHidden ? "false" : "true");
+  button.textContent = nextHidden ? "Title details" : "Hide title details";
 }
 
 function escapeRegExp(value) {
@@ -1339,8 +1555,8 @@ function escapeRegExp(value) {
 }
 
 function renderChapterDrawer(novelId, chapterNumber, source) {
-  return `<section class="chapter-drawer" id="chapterDrawer" hidden>
-    <div class="sheet-header"><div><p class="eyebrow">Chapter List</p><h2>Choose a chapter</h2></div><button id="closeChapterDrawer" type="button">Close</button></div>
+  return `<section class="chapter-drawer" id="chapterDrawer" role="dialog" aria-modal="true" aria-labelledby="chapterDrawerTitle" hidden>
+    <div class="sheet-header"><div><p class="eyebrow">Chapter List</p><h2 id="chapterDrawerTitle">Choose a chapter</h2></div><button id="closeChapterDrawer" type="button">Close</button></div>
     <input id="chapterSearch" type="search" placeholder="Search chapters">
     <div class="chapter-drawer-list">${state.chapters.map((chapter) => `<a class="${chapter.chapter_number === chapterNumber ? "current" : ""}" href="#/reader/${novelId}/${chapter.chapter_number}/${source}" data-chapter-row><strong>Chapter ${chapter.chapter_number}</strong><span>${escapeHtml(chapter.title || "")}</span><small>${chapter.has_english || chapter.has_ai ? "English" : chapter.has_original ? "Original" : "Missing"}</small></a>`).join("")}</div>
   </section>`;
@@ -1348,17 +1564,20 @@ function renderChapterDrawer(novelId, chapterNumber, source) {
 
 function renderReaderSettingsSheet() {
   const pref = state.preferences;
-  return `<section class="reader-settings-sheet" id="readerSettingsSheet" hidden>
-    <div class="sheet-header"><div><p class="eyebrow">Reader Settings</p><h2>Reading surface</h2></div><button id="closeReaderSettings" type="button">Close</button></div>
+  return `<section class="reader-settings-sheet" id="readerSettingsSheet" role="dialog" aria-modal="true" aria-labelledby="readerSettingsTitle" hidden>
+    <div class="sheet-header"><div><p class="eyebrow">Reader Settings</p><h2 id="readerSettingsTitle">Reading surface</h2></div><button id="closeReaderSettings" type="button">Close</button></div>
     <div class="reader-settings-preview"><p>Preview text scale, rhythm, width, and tone without leaving the chapter.</p></div>
     <div class="reader-settings-grid">
       <label>Theme<select data-pref="readerTone"><option value="dark" ${pref.readerTone === "dark" ? "selected" : ""}>Dark</option><option value="paper" ${pref.readerTone === "paper" ? "selected" : ""}>Light</option><option value="sepia" ${pref.readerTone === "sepia" ? "selected" : ""}>Sepia</option><option value="oled" ${pref.readerTone === "oled" ? "selected" : ""}>AMOLED</option></select></label>
       <label>Font<select data-pref="readerFont"><option value="serif" ${pref.readerFont === "serif" ? "selected" : ""}>Serif</option><option value="sans" ${pref.readerFont === "sans" ? "selected" : ""}>Sans</option><option value="system" ${pref.readerFont === "system" ? "selected" : ""}>System</option></select></label>
       <label>Size<input data-pref="readerFontSize" type="range" min="16" max="26" value="${escapeAttr(pref.readerFontSize || state.fontSize)}"></label>
-      <label>Line height<input data-pref="readerLineHeight" type="range" min="1.45" max="2.1" step="0.05" value="${escapeAttr(pref.readerLineHeight || 1.8)}"></label>
-      <label>Column width<input data-pref="readingWidth" type="range" min="620" max="1040" step="20" value="${escapeAttr(pref.readingWidth || 900)}"></label>
-      <label>Paragraph spacing<input data-pref="paragraphSpacing" type="range" min="0.8" max="1.8" step="0.05" value="${escapeAttr(pref.paragraphSpacing || 1.2)}"></label>
+      <label>Line height<input data-pref="readerLineHeight" type="range" min="1.55" max="2.1" step="0.05" value="${escapeAttr(pref.readerLineHeight || 1.86)}"></label>
+      <label>Column width<input data-pref="readingWidth" type="range" min="620" max="940" step="20" value="${escapeAttr(pref.readingWidth || 760)}"></label>
+      <label>Paragraph spacing<input data-pref="paragraphSpacing" type="range" min="0.85" max="1.6" step="0.05" value="${escapeAttr(pref.paragraphSpacing || 1.22)}"></label>
       <label>Alignment<select data-pref="textAlign"><option value="left" ${pref.textAlign === "left" ? "selected" : ""}>Left</option><option value="justify" ${pref.textAlign === "justify" ? "selected" : ""}>Justified</option></select></label>
+      ${radioToggle("reduceMotion", pref.reduceMotion, "Reduce motion", "Calmer transitions")}
+      ${radioToggle("contrastFocus", pref.contrastFocus, "High contrast focus", "Stronger focus outlines")}
+      ${radioToggle("accessibilityComfort", pref.accessibilityComfort, "Comfort reading", "Stable spacing and softer reader chrome")}
     </div>
     <div class="actions"><a class="button" href="#/settings/reader">Open Studio</a><button id="zenToggleSheet" class="primary" type="button">Toggle Focus</button></div>
   </section>`;
@@ -1373,44 +1592,67 @@ function filterChapterDrawer(event) {
 
 function openChapterDrawer() {
   const drawer = document.querySelector("#chapterDrawer");
+  const backdrop = document.querySelector("#chapterDrawerBackdrop");
   if (!drawer) return;
   drawer.hidden = false;
+  if (backdrop) backdrop.hidden = false;
   drawer.classList.add("open");
-  drawer.dataset.restoreFocus = "openChapterDrawer";
+  backdrop?.classList.add("open");
+  document.body.dataset.readerOverlay = "open";
+  drawer.dataset.restoreFocus = "readerMenuToggle";
   document.querySelector("#chapterSearch")?.focus();
   document.querySelector(".chapter-drawer .current")?.scrollIntoView({block: "center"});
 }
 
 function closeChapterDrawer() {
   const drawer = document.querySelector("#chapterDrawer");
+  const backdrop = document.querySelector("#chapterDrawerBackdrop");
   if (!drawer) return;
   drawer.classList.remove("open");
-  drawer.hidden = true;
-  document.querySelector(`#${drawer.dataset.restoreFocus || "openChapterDrawer"}`)?.focus();
+  backdrop?.classList.remove("open");
+  finishReaderOverlayClose(drawer, backdrop, () => {
+    if (document.querySelector("#readerMenuPanel")?.hidden !== false) document.body.dataset.readerOverlay = "closed";
+    document.querySelector(`#${drawer.dataset.restoreFocus || "openChapterDrawer"}`)?.focus();
+  });
 }
 
-function toggleReaderSettingsSheet() {
-  const sheet = document.querySelector("#readerSettingsSheet");
-  if (!sheet) return;
-  if (sheet.hidden) openReaderSettingsSheet();
-  else closeReaderSettingsSheet();
+function openReaderMenu() {
+  const menu = document.querySelector("#readerMenuPanel");
+  const backdrop = document.querySelector("#readerMenuBackdrop");
+  if (!menu) return;
+  menu.hidden = false;
+  if (backdrop) backdrop.hidden = false;
+  menu.classList.add("open");
+  backdrop?.classList.add("open");
+  document.body.dataset.readerOverlay = "open";
+  menu.dataset.restoreFocus = "readerMenuToggle";
+  menu.querySelector("button, a, input, select")?.focus();
 }
 
-function openReaderSettingsSheet() {
-  const sheet = document.querySelector("#readerSettingsSheet");
-  if (!sheet) return;
-  sheet.hidden = false;
-  sheet.classList.add("open");
-  sheet.dataset.restoreFocus = "readerSettingsToggle";
-  sheet.querySelector("button, a, input, select")?.focus();
+function closeReaderMenu(restoreFocus = true) {
+  const menu = document.querySelector("#readerMenuPanel");
+  const backdrop = document.querySelector("#readerMenuBackdrop");
+  if (!menu) return;
+  menu.classList.remove("open");
+  backdrop?.classList.remove("open");
+  finishReaderOverlayClose(menu, backdrop, () => {
+    if (document.querySelector("#chapterDrawer")?.hidden !== false) document.body.dataset.readerOverlay = "closed";
+    if (restoreFocus) document.querySelector(`#${menu.dataset.restoreFocus || "readerMenuToggle"}`)?.focus();
+  });
 }
 
-function closeReaderSettingsSheet() {
-  const sheet = document.querySelector("#readerSettingsSheet");
-  if (!sheet) return;
-  sheet.classList.remove("open");
-  sheet.hidden = true;
-  document.querySelector(`#${sheet.dataset.restoreFocus || "readerSettingsToggle"}`)?.focus();
+function finishReaderOverlayClose(panel, backdrop, afterClose) {
+  const complete = () => {
+    if (panel.classList.contains("open")) return;
+    panel.hidden = true;
+    if (backdrop) backdrop.hidden = true;
+    afterClose?.();
+  };
+  if (state.preferences.reduceMotion) {
+    complete();
+    return;
+  }
+  window.setTimeout(complete, 155);
 }
 
 function isDuplicateChapterHeading(line, payload) {
@@ -1425,10 +1667,15 @@ async function saveBookmark(novelId, chapterNumber) {
   if (!state.account) {
     toggleLocalBookmark(novelId, chapterNumber);
     const button = document.querySelector("#bookmarkChapter");
+    const menuButton = document.querySelector("#menuBookmark");
     const active = isBookmarkedLocally(novelId, chapterNumber);
     if (button) {
       button.textContent = active ? "Bookmarked" : "Bookmark";
       button.setAttribute("aria-pressed", active ? "true" : "false");
+    }
+    if (menuButton) {
+      menuButton.textContent = active ? "Bookmarked" : "Bookmark";
+      menuButton.setAttribute("aria-pressed", active ? "true" : "false");
     }
     return toast(active ? "Bookmark saved on this device." : "Bookmark removed from this device.");
   }
@@ -1482,7 +1729,7 @@ async function openHistory() {
   setLoading("Loading history...");
   try {
     const payload = await api("/api/account/history");
-    app.innerHTML = `${pageHeader("Reading History", "Your recent GodTranslator reading sessions.", [["Items", payload.history.length]])}
+    app.innerHTML = `${pageHeader("Reading History", `Your recent ${APP_BRAND.shortName} reading sessions.`, [["Items", payload.history.length]])}
       <section class="table-card"><table class="responsive-table"><thead><tr><th>Novel</th><th>Chapter</th><th>Source</th><th>Progress</th><th></th></tr></thead><tbody>
       ${payload.history.map((item) => `<tr><td data-label="Novel">${escapeHtml(item.novel_title)}</td><td data-label="Chapter">Chapter ${item.chapter_number}<br><span>${escapeHtml(item.chapter_title)}</span></td><td data-label="Source">${escapeHtml(sourceLabels[item.source] || item.source)}</td><td data-label="Progress">${Math.round(item.progress_percent || 0)}%</td><td data-label="Actions"><a class="button" href="#/reader/${item.novel_id}/${item.chapter_number}/${item.source}">Continue</a></td></tr>`).join("") || `<tr><td colspan="5">No reading history yet.</td></tr>`}
       </tbody></table><div class="actions"><button id="clearHistory" type="button">Clear History</button></div></section>`;
@@ -2613,7 +2860,6 @@ function openSettings(section = "appearance", intent = "") {
     ["reader", "Reader"],
     ["library", "Library"],
     ["notifications", "Notifications"],
-    ["accessibility", "Accessibility"],
     ["keyboard", "Keyboard"],
     ["account", "Account"],
     ["privacy", "Privacy"],
@@ -2622,7 +2868,7 @@ function openSettings(section = "appearance", intent = "") {
   ];
   const activeSection = sections.some(([key]) => key === section) ? section : "appearance";
   app.innerHTML = `
-    ${pageHeader("Settings", "Tune reading, library, desktop sync, privacy, accessibility, and account behavior.", [["Theme", titleCase(pref.theme)], ["Density", titleCase(pref.density)], ["Mode", titleCase(pref.settingsDepth || "basic")]])}
+    ${pageHeader("Settings", "Tune reading, library, desktop sync, privacy, and account behavior.", [["Theme", titleCase(pref.theme)], ["Density", titleCase(pref.density)], ["Mode", titleCase(pref.settingsDepth || "basic")]])}
     <section class="settings-layout">
       <nav class="settings-nav">
         ${sections.map(([key, label]) => `<a class="${activeSection === key ? "active" : ""}" href="#/settings/${key}">${label}</a>`).join("")}
@@ -2644,7 +2890,6 @@ function renderSettingsSection(section, pref, intent = "") {
   if (section === "reader") return renderReaderSettings(pref);
   if (section === "library") return renderLibrarySettings(pref);
   if (section === "notifications") return renderNotificationSettings(pref);
-  if (section === "accessibility") return renderAccessibilitySettings(pref);
   if (section === "keyboard") return renderKeyboardSettings(pref);
   if (section === "account") return renderAccountSettings(intent);
   if (section === "privacy") return renderPrivacySettings(pref);
@@ -2660,7 +2905,7 @@ function renderAppearanceSettings(pref) {
     <div class="choice-grid">${["obsidian", "forest", "midnight", "warm-dark", "light"].map((item) => radioCard("theme", item, pref.theme, titleCase(item), "visual theme")).join("")}</div>
     <h3>Accent</h3>
     <div class="swatch-row">${["green", "teal", "blue", "purple", "amber"].map((item) => `<label class="swatch ${pref.accent === item ? "active" : ""}" data-accent-swatch="${item}"><input data-pref="accent" type="radio" name="accent" value="${item}" ${pref.accent === item ? "checked" : ""}><span></span>${titleCase(item)}</label>`).join("")}</div>
-    <details open><summary>Advanced</summary><div class="preview-grid">${["compact", "comfortable", "spacious"].map((item) => radioCard("density", item, pref.density, `${titleCase(item)} density`, "spacing preview")).join("")}${radioToggle("interfaceBlur", pref.interfaceBlur, "Interface blur", "Soft translucent surfaces")}</div></details>
+    <details open><summary>Advanced</summary><div class="preview-grid">${["compact", "comfortable", "spacious"].map((item) => radioCard("density", item, pref.density, `${titleCase(item)} density`, "spacing preview")).join("")}${radioToggle("interfaceBlur", pref.interfaceBlur, "Interface blur", "Soft translucent surfaces")}${radioToggle("reduceMotion", pref.reduceMotion, "Reduce motion", "Disable interface animation")}${radioToggle("contrastFocus", pref.contrastFocus, "High contrast focus", "Stronger keyboard focus")}</div></details>
     <div class="actions"><button id="resetPrefs" type="button">Reset to defaults</button></div>
   </section>`;
 }
@@ -2731,12 +2976,15 @@ function renderReaderSettings(pref) {
     <article class="reader-preview"><p>Chapter text appears here with your current font, spacing, width, and theme.</p><p>Use the controls below to shape long reading sessions without crowding the Reader itself.</p></article>
     <h3>Basic</h3>
     <div class="choice-grid">${["paper", "sepia", "dark", "oled", "green-night", "midnight"].map((item) => radioCard("readerTone", item, pref.readerTone, titleCase(item), "reader theme")).join("")}</div>
-    <div class="form-grid"><label>Font size<input data-pref="readerFontSize" type="range" min="16" max="25" value="${pref.readerFontSize}"></label><label>Reading width<input data-pref="readingWidth" type="range" min="680" max="1080" step="20" value="${pref.readingWidth}"></label></div>
+    <div class="form-grid"><label>Font size<input data-pref="readerFontSize" type="range" min="16" max="25" value="${pref.readerFontSize}"></label><label>Reading width<input data-pref="readingWidth" type="range" min="620" max="940" step="20" value="${pref.readingWidth}"></label></div>
     <details open><summary>Advanced</summary><div class="form-grid">
       <label>Font family<select data-pref="readerFont">${["serif", "sans", "system"].map((item) => `<option value="${item}" ${pref.readerFont === item ? "selected" : ""}>${titleCase(item)}</option>`).join("")}</select></label>
-      <label>Line height<input data-pref="readerLineHeight" type="range" min="1.55" max="2.15" step="0.05" value="${pref.readerLineHeight}"></label>
-      <label>Paragraph spacing<input data-pref="paragraphSpacing" type="range" min="0.7" max="1.8" step="0.1" value="${pref.paragraphSpacing}"></label>
+      <label>Line height<input data-pref="readerLineHeight" type="range" min="1.55" max="2.1" step="0.05" value="${pref.readerLineHeight}"></label>
+      <label>Paragraph spacing<input data-pref="paragraphSpacing" type="range" min="0.85" max="1.6" step="0.05" value="${pref.paragraphSpacing}"></label>
       <label>Alignment<select data-pref="textAlign">${["left", "justify"].map((item) => `<option value="${item}" ${pref.textAlign === item ? "selected" : ""}>${titleCase(item)}</option>`).join("")}</select></label>
+      ${radioToggle("reduceMotion", pref.reduceMotion, "Reduce motion", "Calmer reader transitions")}
+      ${radioToggle("contrastFocus", pref.contrastFocus, "High contrast focus", "Stronger keyboard focus in Reader")}
+      ${radioToggle("accessibilityComfort", pref.accessibilityComfort, "Comfort reading", "Favor stable spacing and calmer reader chrome")}
     </div></details>
     <div class="actions"><button id="resetPrefs" type="button">Reset to defaults</button></div>
   </section>`;
@@ -2779,20 +3027,33 @@ function renderAccountSettings(intent = "") {
   }
   const configured = Boolean(state.authConfig?.configured && state.supabaseClient);
   const title = intent === "signup" ? "Create Account" : intent === "forgot-password" || intent === "reset-password" ? "Reset Password" : "Sign In";
-  return `<section class="panel account-panel">
-    <h2>${title}</h2>
-    ${configured ? "" : `<p class="empty-state">Account features are not configured. Public reading and local personalization still work.</p>`}
-    <form id="authForm" class="form-grid">
-      <label>Email<input id="authEmail" type="email" autocomplete="email" ${configured ? "" : "disabled"}></label>
-      <label>Password<input id="authPassword" type="password" autocomplete="current-password" ${configured ? "" : "disabled"}></label>
-      <div class="actions wide">
-        <button class="primary" id="signInBtn" type="button" ${configured ? "" : "disabled"}>Sign In</button>
-        <button id="signUpBtn" type="button" ${configured ? "" : "disabled"}>Create Account</button>
-        <button id="forgotBtn" type="button" ${configured ? "" : "disabled"}>Forgot Password</button>
-        <button id="googleBtn" type="button" ${configured ? "" : "disabled"}>Continue with Google</button>
+  return `<section class="account-landing">
+    <div class="account-copy">
+      <p class="eyebrow">${escapeHtml(APP_BRAND.shortName)} Account</p>
+      <h2>${title}</h2>
+      <p>Sign in to sync progress, bookmarks, and reading preferences. Public reading and local settings continue to work without an account.</p>
+      <div class="account-quick-links">
+        <a href="#/library">Browse Library</a>
+        <a href="${escapeAttr(continueReadingHref())}">Continue Reading</a>
+        <a href="#/settings/reader">Reader Settings</a>
       </div>
-    </form>
-    <div class="actions">${state.admin ? `<button id="exitAdminBtn" type="button">Exit Admin Mode</button>` : `<a class="button" href="#/admin">Emergency Admin Login</a>`}<a class="button" href="#/home">Back Home</a></div>
+    </div>
+    <div class="auth-card">
+      ${configured ? "" : `<p class="empty-state compact">Account features are not configured on this deployment.</p>`}
+      <form id="authForm" class="auth-form">
+        <label>Email<input id="authEmail" type="email" autocomplete="email" placeholder="reader@example.com" ${configured ? "" : "disabled"}></label>
+        <label>Password<input id="authPassword" type="password" autocomplete="current-password" placeholder="Password" ${configured ? "" : "disabled"}></label>
+        <div class="auth-actions">
+          <button class="primary" id="signInBtn" type="button" ${configured ? "" : "disabled"}>Sign In</button>
+          <button id="googleBtn" type="button" ${configured ? "" : "disabled"}>Continue with Google</button>
+        </div>
+        <div class="auth-secondary">
+          <button id="signUpBtn" type="button" ${configured ? "" : "disabled"}>Create Account</button>
+          <button id="forgotBtn" type="button" ${configured ? "" : "disabled"}>Forgot Password</button>
+        </div>
+      </form>
+      <div class="actions account-footer">${state.admin ? `<button id="exitAdminBtn" type="button">Exit Admin Mode</button>` : `<a class="button" href="#/admin">Admin Login</a>`}<a class="button" href="#/home">Back Home</a></div>
+    </div>
   </section>`;
 }
 
@@ -2825,7 +3086,7 @@ function adminNotice() {
 }
 
 function pageHeader(title, subtitle, stats = []) {
-  return `${renderBreadcrumbs()}<section class="page-header"><div><p class="eyebrow">GodTranslator</p><h1>${escapeHtml(title)}</h1><p>${escapeHtml(subtitle)}</p></div>${stats.length ? `<div class="stats">${stats.map(([label, value]) => metric(label, value)).join("")}</div>` : ""}</section>`;
+  return `${renderBreadcrumbs()}<section class="page-header"><div><p class="eyebrow">${escapeHtml(APP_BRAND.shortName)}</p><h1>${escapeHtml(title)}</h1><p>${escapeHtml(subtitle)}</p></div>${stats.length ? `<div class="stats">${stats.map(([label, value]) => metric(label, value)).join("")}</div>` : ""}</section>`;
 }
 
 function metric(label, value) {
@@ -2857,7 +3118,7 @@ function breadcrumbsForHash(hash) {
   const parts = path.split("/").filter(Boolean);
   const novelId = parts[1] || state.currentNovelId;
   const novel = state.novels.find((item) => item.id === novelId);
-  const novelLabel = novel?.title || novelId || "Novel";
+  const novelLabel = novel ? displayNovelTitle(novel) : humanizeId(novelId || "Novel");
   const root = [{label: "Home", href: "#/home"}];
   if (!parts.length || parts[0] === "home") return root;
   if (parts[0] === "library") return [...root, {label: "Library", href: "#/library"}];
@@ -2940,6 +3201,7 @@ function bindReaderChrome() {
   lastReaderScrollY = window.scrollY;
   document.body.dataset.readerChrome = "visible";
   readerChromeHandler = () => {
+    closeParagraphMenu(false);
     if (state.preferences.reduceMotion || !window.location.hash.startsWith("#/reader/")) return;
     const current = window.scrollY;
     const movingDown = current > lastReaderScrollY + 18;
@@ -3198,6 +3460,20 @@ function initials(value) {
   return String(value || "GT").split(/\s+/).map((word) => word[0]).join("").slice(0, 2).toUpperCase();
 }
 
+function humanizeId(value) {
+  return String(value || "Novel")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function displayNovelTitle(novel) {
+  const title = String(novel?.title || "").trim();
+  if (title && !/^[a-z0-9]+(?:[-_][a-z0-9]+){2,}$/i.test(title)) return title;
+  return humanizeId(title || novel?.id);
+}
+
 function numberOrNull(selector) {
   const field = document.querySelector(selector);
   const value = field?.value;
@@ -3222,9 +3498,26 @@ function writeStored(key, value) {
 
 function rememberRecent(type, item) {
   const list = state.recent[type] || [];
-  const key = item.id || item.href || item.label;
-  state.recent[type] = [item, ...list.filter((existing) => (existing.id || existing.href || existing.label) !== key)].slice(0, 8);
+  const key = recentItemKey(item);
+  state.recent[type] = [item, ...list.filter((existing) => recentItemKey(existing) !== key)].slice(0, 8);
   writeStored("gt-recent", state.recent);
+}
+
+function recentItemKey(item) {
+  if (item?.novel_id && item?.chapter_number) return `${item.novel_id}:${item.chapter_number}:${item.source || ""}`;
+  return item?.id || item?.href || item?.label || "";
+}
+
+function dedupeRecentReading(items = []) {
+  const seen = new Set();
+  return (items || []).filter((item) => {
+    const normalized = normalizedContinueReading(item);
+    if (!normalized) return false;
+    const key = recentItemKey(normalized);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function bindCopyLinks(root = document) {
@@ -3303,10 +3596,10 @@ function defaultPreferences() {
     accessibilityComfort: false,
     interfaceBlur: true,
     readerFont: "serif",
-    readerFontSize: Number(localStorage.getItem("gt-reader-font") || 19),
-    readerLineHeight: 1.8,
-    paragraphSpacing: 1.2,
-    readingWidth: 900,
+    readerFontSize: Number(localStorage.getItem("gt-reader-font") || 20),
+    readerLineHeight: 1.86,
+    paragraphSpacing: 1.22,
+    readingWidth: 760,
     readerTone: "dark",
     textAlign: "left",
     settingsDepth: "basic",
@@ -3375,7 +3668,7 @@ function saveReaderPreferenceFromField(event) {
   if (key === "readerFontSize") {
     state.fontSize = value;
     localStorage.setItem("gt-reader-font", String(value));
-    const slider = document.querySelector("#fontSize");
+    const slider = document.querySelector("#readerMenuFontSize");
     if (slider) slider.value = String(value);
   }
   localStorage.setItem("gt-preferences", JSON.stringify(state.preferences));
@@ -3468,10 +3761,46 @@ function bindShellControls() {
   document.querySelector("#globalSearchBtn")?.addEventListener("click", openCommandPalette);
   document.querySelector("#jobCenterBtn")?.addEventListener("click", () => { window.location.hash = canTranslate() ? "#/activity" : "#/settings/account"; });
   commandInput?.addEventListener("input", renderCommandResults);
-  commandDialog?.addEventListener("close", () => { if (commandInput) commandInput.value = ""; });
+  commandInput?.addEventListener("keydown", closeCommandPaletteOnEscape);
+  document.querySelector("#commandClose")?.addEventListener("click", () => closeCommandPalette());
+  commandDialog?.addEventListener("keydown", closeCommandPaletteOnEscape, {capture: true});
+  commandDialog?.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeCommandPalette();
+  });
+  commandDialog?.addEventListener("click", (event) => {
+    if (event.target === commandDialog) closeCommandPalette();
+  });
+  commandDialog?.addEventListener("touchstart", (event) => {
+    commandTouchStartY = event.changedTouches?.[0]?.clientY || 0;
+  }, {passive: true});
+  commandDialog?.addEventListener("touchend", (event) => {
+    const y = event.changedTouches?.[0]?.clientY || 0;
+    if (commandTouchStartY && y - commandTouchStartY > 64) closeCommandPalette();
+    commandTouchStartY = 0;
+  }, {passive: true});
+  commandDialog?.addEventListener("close", () => {
+    if (commandInput) commandInput.value = "";
+    renderMobileBottomNav(activeRouteName());
+    if (commandPaletteClosingFromPop) return;
+    if (commandPaletteOpenFromHistory) {
+      commandPaletteOpenFromHistory = false;
+      history.back();
+    }
+  });
   document.addEventListener("keydown", (event) => {
     const target = event.target;
     const typing = target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+    if (event.key === "Escape" && !document.querySelector("#paragraphActionMenu")?.hidden) {
+      event.preventDefault();
+      closeParagraphMenu();
+      return;
+    }
+    if (event.key === "Escape" && commandDialog?.open) {
+      event.preventDefault();
+      closeCommandPalette();
+      return;
+    }
     if (state.preferences.keyboardShortcuts && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
       openCommandPalette();
@@ -3511,19 +3840,19 @@ function bindShellControls() {
       }
       if (event.key.toLowerCase() === "s") {
         event.preventDefault();
-        openReaderSettingsSheet();
+        openReaderMenu();
       }
       if (event.key.toLowerCase() === "b") saveBookmark(novelId, chapter);
     }
     if (state.preferences.keyboardShortcuts && window.location.hash.startsWith("#/reader/") && event.key === "Escape") {
       const drawer = document.querySelector("#chapterDrawer");
-      const settings = document.querySelector("#readerSettingsSheet");
+      const menu = document.querySelector("#readerMenuPanel");
       if (drawer && !drawer.hidden) {
         event.preventDefault();
         closeChapterDrawer();
-      } else if (settings && !settings.hidden) {
+      } else if (menu && !menu.hidden) {
         event.preventDefault();
-        closeReaderSettingsSheet();
+        closeReaderMenu();
       } else if (state.zen) {
         event.preventDefault();
         state.zen = false;
@@ -3532,13 +3861,60 @@ function bindShellControls() {
       }
     }
   });
+  document.addEventListener("pointerdown", (event) => {
+    if (event.target.closest("#paragraphActionMenu") || event.target.closest("[data-reader-paragraph]")) return;
+    closeParagraphMenu(false);
+  }, {capture: true});
+}
+
+function closeCommandPaletteOnEscape(event) {
+  if (event.key !== "Escape" || !commandDialog?.open) return;
+  event.preventDefault();
+  event.stopPropagation();
+  closeCommandPalette();
 }
 
 function openCommandPalette() {
   if (!commandDialog || !commandInput) return;
   renderCommandResults();
-  commandDialog.showModal();
+  if (!commandDialog.open) {
+    commandPaletteOpenFromHistory = true;
+    history.pushState({commandPalette: true}, "", window.location.href);
+    commandDialog.showModal();
+  }
   commandInput.focus();
+  renderMobileBottomNav("search");
+}
+
+function closeCommandPalette() {
+  if (!commandDialog) return;
+  const restoreHistory = commandPaletteOpenFromHistory;
+  commandPaletteOpenFromHistory = false;
+  commandPaletteClosingFromPop = restoreHistory;
+  if (commandDialog.open) commandDialog.close();
+  if (restoreHistory) {
+    history.back();
+    setTimeout(() => { commandPaletteClosingFromPop = false; }, 0);
+  }
+}
+
+function closeCommandPaletteFromHistory() {
+  if (!commandDialog?.open) return;
+  commandPaletteClosingFromPop = true;
+  commandPaletteOpenFromHistory = false;
+  commandDialog.close();
+  setTimeout(() => { commandPaletteClosingFromPop = false; }, 0);
+}
+
+function navigateFromCommandPalette(href) {
+  if (!href) return;
+  commandPaletteClosingFromPop = true;
+  commandPaletteOpenFromHistory = false;
+  if (commandDialog?.open) commandDialog.close();
+  history.replaceState(null, "", href);
+  activeRouteKey = window.location.hash || "#/home";
+  route();
+  setTimeout(() => { commandPaletteClosingFromPop = false; }, 0);
 }
 
 function showShortcutHelp() {
@@ -3547,7 +3923,7 @@ function showShortcutHelp() {
   const dialog = document.createElement("dialog");
   dialog.id = "shortcutDialog";
   dialog.className = "command-dialog shortcut-dialog";
-  dialog.innerHTML = `<form method="dialog"><section class="panel"><h2>Keyboard Shortcuts</h2><div class="shortcut-grid"><span>Ctrl/Cmd + K</span><strong>Search and commands</strong><span>?</span><strong>Shortcut help</strong><span>Left / Right</span><strong>Previous / next chapter</strong><span>T</span><strong>Table of contents</strong><span>S</span><strong>Reader settings</strong><span>B</span><strong>Bookmark chapter</strong><span>F</span><strong>Reader focus mode</strong><span>Esc</span><strong>Close reader panels</strong></div><div class="actions"><button class="primary">Close</button></div></section></form>`;
+  dialog.innerHTML = `<form method="dialog"><section class="panel"><h2>Keyboard Shortcuts</h2><div class="shortcut-grid"><span>Ctrl/Cmd + K</span><strong>Search and commands</strong><span>?</span><strong>Shortcut help</strong><span>Left / Right</span><strong>Previous / next chapter</strong><span>T</span><strong>Table of contents</strong><span>S</span><strong>Reader menu</strong><span>B</span><strong>Bookmark chapter</strong><span>F</span><strong>Reader focus mode</strong><span>Esc</span><strong>Close reader panels</strong></div><div class="actions"><button class="primary">Close</button></div></section></form>`;
   document.body.appendChild(dialog);
   dialog.addEventListener("close", () => dialog.remove());
   dialog.showModal();
@@ -3569,7 +3945,6 @@ function renderCommandResults() {
     ["Settings: Reader", "#/settings/reader", true],
     ["Settings: Library", "#/settings/library", true],
     ["Settings: Notifications", "#/settings/notifications", true],
-    ["Settings: Accessibility", "#/settings/accessibility", true],
     ["Settings: Keyboard", "#/settings/keyboard", true],
     ["Settings: Account", "#/settings/account", true],
     ["Settings: Privacy", "#/settings/privacy", true],
@@ -3582,7 +3957,7 @@ function renderCommandResults() {
     ["Open Novel Recovery", "#/admin/recovery", state.admin],
     ["Open Admin", "#/admin", state.admin],
   ];
-  const novelMatches = state.novels.map((novel) => [`Novel: ${novel.title}${novel.author ? ` by ${novel.author}` : ""}`, `#/novel/${novel.id}`, true]);
+  const novelMatches = state.novels.map((novel) => [`Novel: ${displayNovelTitle(novel)}${novel.author ? ` by ${novel.author}` : ""}`, `#/novel/${novel.id}`, true]);
   const chapterMatches = state.chapters.slice(0, 500).map((chapter) => [`Chapter ${chapter.chapter_number}: ${chapter.title}`, `#/reader/${state.currentNovelId}/${chapter.chapter_number}/${safeReaderSource()}`, true]);
   const recentMatches = [
     ...(state.recent.novels || []).map((item) => [`Recent Novel: ${item.label}`, item.href, true]),
@@ -3603,14 +3978,17 @@ function renderCommandResults() {
   ].filter(([, rows]) => rows.length);
   commandResults.innerHTML = sections.map(([title, rows]) => `<section class="command-section"><h2>${escapeHtml(title)}</h2>${rows.map(([label, href]) => `<a href="${href}" data-command-result>${escapeHtml(label)}</a>`).join("")}</section>`).join("") || `<p class="muted">No matches.</p>`;
   commandResults.querySelectorAll("[data-command-result]").forEach((link) => link.addEventListener("click", (event) => {
+    event.preventDefault();
     if (link.getAttribute("href") === "#shortcuts") {
-      event.preventDefault();
-      commandDialog?.close();
+      commandPaletteClosingFromPop = true;
+      commandPaletteOpenFromHistory = false;
+      if (commandDialog?.open) commandDialog.close();
+      setTimeout(() => { commandPaletteClosingFromPop = false; }, 0);
       showShortcutHelp();
       return;
     }
     if (query) rememberRecent("searches", {label: query, href: link.getAttribute("href"), at: new Date().toISOString()});
-    commandDialog?.close();
+    navigateFromCommandPalette(link.getAttribute("href"));
   }));
 }
 
@@ -3644,6 +4022,7 @@ function titleCase(value) {
 
 window.addEventListener("hashchange", () => {
   saveScrollPosition();
+  closeParagraphMenu(false);
   activeRouteKey = window.location.hash || "#/home";
   if (!activeRouteKey.startsWith("#/reader/") && readerScrollHandler) {
     window.removeEventListener("scroll", readerScrollHandler);
@@ -3661,7 +4040,11 @@ window.addEventListener("hashchange", () => {
   }
   route();
 });
+window.addEventListener("popstate", () => {
+  if (commandDialog?.open) closeCommandPaletteFromHistory();
+});
 window.addEventListener("DOMContentLoaded", async () => {
+  applyBranding();
   applyPreferences();
   bindShellControls();
   await loadAuth();
