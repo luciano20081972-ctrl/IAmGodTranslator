@@ -15,17 +15,17 @@ def require(label: str, condition: bool) -> None:
 
 def main() -> None:
     for label in (
-        "Back to Novel",
         "Table of Contents",
         "Previous Chapter",
         "Next Chapter",
         "Bookmark",
-        "Reader Settings",
+        "Reading Preferences",
         "Settings",
         "Focus",
         "Back to Top",
     ):
         require(f"reader control {label}", label in APP_JS)
+    require("compact reader back link", 'class="reader-back-link"' in APP_JS and ">Back</a>" in APP_JS)
 
     require("reader progress text", "readerProgressText" in APP_JS and "readerScrollProgress" in APP_JS)
     require("reader progress updates on scroll", "updateReaderProgressUi(percent)" in APP_JS)
@@ -33,7 +33,7 @@ def main() -> None:
     require("chapter progress", "Novel Progress" in APP_JS and "chapterProgress" in APP_JS)
     require("chapter search", "readerTextSearch" in APP_JS and "searchReaderText" in APP_JS)
     require("chapter highlight", "<mark>$1</mark>" in APP_JS)
-    require("paragraph copy", "data-copy-paragraph" in APP_JS and "copyParagraphText" in APP_JS)
+    require("paragraph copy", "data-paragraph-action=\"copy\"" in APP_JS and "copyParagraphValue" in APP_JS)
     require("duplicate heading suppression", "isDuplicateChapterHeading" in APP_JS and "lines.shift()" in APP_JS)
     require("bounded prefetch neighbors only", "prefetchNeighborChapters" in APP_JS and "[neighborChapter(chapterNumber, -1), neighborChapter(chapterNumber, 1)]" in APP_JS)
     require("reference remains role gated", 'return canViewReference() ? ["english", "original", "reference"] : ["english"]' in APP_JS)
@@ -44,14 +44,13 @@ def main() -> None:
     require("single chapter body endpoint", "chapterTextPath(novelId, chapterNumber, source)" in APP_JS)
 
     for css in (
-        ".reader-meta",
         ".reader-progress",
-        ".reader-tools",
-        ".copy-paragraph",
+        ".reader-menu-panel",
+        ".reader-paragraph-menu",
         ".reader-text mark",
     ):
         require(f"reader css {css}", css in CSS)
-    require("mobile reader tool wrapping", ".reader-tools" in CSS and "grid-template-columns: 1fr" in CSS)
+    require("mobile reader menu", ".reader-menu-panel" in CSS and "grid-template-columns: 1fr" in CSS)
 
     print({
         "ok": True,

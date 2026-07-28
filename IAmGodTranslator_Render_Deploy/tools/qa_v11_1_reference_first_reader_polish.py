@@ -161,7 +161,7 @@ def static_reader_and_privacy_checks() -> None:
     require("bounded cache", "READER_CACHE_LIMIT" in APP_JS and "rememberCachePayload" in APP_JS)
     require("guest bookmarks", "gt-local-bookmarks" in APP_JS and "toggleLocalBookmark" in APP_JS)
     require("keyboard T S Escape", 'event.key.toLowerCase() === "t"' in APP_JS and 'event.key.toLowerCase() === "s"' in APP_JS and 'event.key === "Escape"' in APP_JS)
-    require("Reader settings sheet controls", "reader-settings-grid" in APP_JS and "AMOLED" in APP_JS)
+    require("Reader menu settings controls", "reader-menu-toggles" in APP_JS and "AMOLED" in APP_JS)
     require("Reader chrome quiet", 'data-reader-chrome="quiet"' in CSS or "readerChrome" in APP_JS)
     require("TOC search", "filterChapterDrawer" in APP_JS and "data-chapter-row" in APP_JS)
 

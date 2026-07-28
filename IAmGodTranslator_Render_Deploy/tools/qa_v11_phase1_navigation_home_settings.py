@@ -24,14 +24,13 @@ def main() -> None:
     require("activity hidden unless relevant", "jobButton.hidden = !canTranslate()" in APP_JS)
 
     for label in (
-        "My Account",
-        "Reading History",
-        "Bookmarks",
+        "Account",
+        "History",
         "Favorites",
         "Collections",
-        "Desktop Sync",
+        "Preferences",
         "Notifications",
-        "Accessibility",
+        "Desktop Sync",
         "Translator Workspace",
         "Exit Admin Mode",
         "Sign Out",
@@ -41,11 +40,10 @@ def main() -> None:
 
     for label in (
         "Continue Reading",
+        "Available novels",
         "Recently Read",
         "Favorites",
         "Bookmarks",
-        "Reading Statistics",
-        "Recently Added",
         "Operations",
     ):
         require(f"home contains {label}", label in APP_JS)
@@ -55,13 +53,10 @@ def main() -> None:
     for route in (
         "appearance",
         "reader",
-        "library",
         "notifications",
         "accessibility",
-        "keyboard",
         "account",
         "privacy",
-        "desktop",
         "advanced",
     ):
         require(f"settings route {route}", f'"{route}"' in APP_JS and f"#/settings/{route}" in APP_JS)
@@ -75,8 +70,8 @@ def main() -> None:
         require(f"preference {key}", key in APP_JS)
 
     require("command sections used", "command-section" in APP_JS and "Settings Commands" in APP_JS)
-    require("settings commands explicit", "Settings: Reader" in APP_JS and "Settings: Desktop" in APP_JS)
-    require("novel matches separate", "Novel: ${novel.title}" in APP_JS and "Settings:" not in APP_JS.split("const novelMatches", 1)[1].split("const chapterMatches", 1)[0])
+    require("settings commands explicit", "Settings: Reading" in APP_JS and "Settings: Advanced" in APP_JS)
+    require("novel matches separate", "Novel: ${displayNovelTitle(novel)}" in APP_JS and "Settings:" not in APP_JS.split("const novelMatches", 1)[1].split("const chapterMatches", 1)[0])
 
     require("profile menu css exists", ".profile-menu-items" in CSS and ".avatar-mini" in CSS)
     require("mobile profile menu constrained", "position: fixed" in CSS and "profile-menu-items" in CSS)
