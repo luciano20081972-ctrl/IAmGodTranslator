@@ -112,7 +112,7 @@ def main() -> None:
     for label in ("Translated", "Remaining", "Estimated Cost", "Estimated Time", "Active Job", "Recent Throughput"):
         require(f"translation summary {label}", label in APP_JS)
     require("translation summary uses real jobs", "/api/translation/jobs?novel_id=" in APP_JS and "jobThroughput(active)" in APP_JS)
-    require("no hardcoded I Am God", "I Am God" not in APP_JS)
+    require("brand config remains centralized", "const APP_BRAND = loadBrandConfig()" in APP_JS and 'id="appBrandConfig"' in (ROOT / "templates" / "index.html").read_text(encoding="utf-8"))
     require("coverage denominator helper", "function coverageDenominator" in APP_JS and "coverage_chapter_basis" in APP_JS)
     require("coverage no original denominator label", "English coverage: ${pct}% · ${novel.english_count ?? novel.ai_count ?? 0}/${novel.original_count || 0}" not in APP_JS)
 

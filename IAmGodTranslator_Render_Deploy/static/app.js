@@ -27,6 +27,9 @@ let paragraphTouchTimer = null;
 const notificationSessionStartedAt = Date.now();
 const readerRequestMap = new Map();
 const READER_CACHE_LIMIT = 9;
+const CHAPTER_SEARCH_INDEX_LIMIT = 5000;
+const SEARCH_LIBRARY_FIELDS = ["title", "alternate", "author", "description", "status", "language", "tags", "counts", "source"];
+const SEARCH_CHAPTER_FIELDS = ["number", "title", "displayLabel", "status", "flags"];
 
 const state = {
   novels: [],
@@ -52,6 +55,12 @@ const state = {
   recent: readStored("gt-recent", {novels: [], chapters: [], jobs: [], searches: [], admin: []}),
   notifications: readStored("gt-notifications", []),
   cache: new Map(),
+};
+
+const searchRuntime = {
+  unavailableWarned: false,
+  library: {signature: "", docs: [], docMap: new Map(), index: null, engine: "fallback", buildMs: 0, queryMs: 0},
+  chapters: {signature: "", docs: [], docMap: new Map(), index: null, engine: "fallback", buildMs: 0, queryMs: 0},
 };
 
 const sourceLabels = {english: "English", ai: "English", reference: "Reference", original: "Original"};
@@ -745,15 +754,29 @@ async function openLibrary() {
       </section>
       ${state.account ? renderCollectionShelf() : ""}
       <section class="toolbar">
-        <input class="search" id="librarySearch" type="search" value="${escapeAttr(state.libraryView.search)}" placeholder="Search novels">
+        <div class="search-input-group"><label class="sr-only" for="librarySearch">Search novels</label><input class="search" id="librarySearch" type="search" value="${escapeAttr(state.libraryView.search)}" placeholder="Search novels"><button id="clearLibrarySearch" type="button" aria-label="Clear library search" ${state.libraryView.search ? "" : "hidden"}>Clear</button></div>
         <select id="libraryFilter"><option value="active" ${state.libraryView.filter === "active" ? "selected" : ""}>Available</option><option value="all" ${state.libraryView.filter === "all" ? "selected" : ""}>All</option><option value="favorites" ${state.libraryView.filter === "favorites" ? "selected" : ""}>Favorites</option><option value="pinned" ${state.libraryView.filter === "pinned" ? "selected" : ""}>Pinned</option><option value="completed" ${state.libraryView.filter === "completed" ? "selected" : ""}>Completed</option><option value="in-progress" ${state.libraryView.filter === "in-progress" ? "selected" : ""}>In Progress</option><option value="want-to-read" ${state.libraryView.filter === "want-to-read" ? "selected" : ""}>Want to Read</option><option value="paused" ${state.libraryView.filter === "paused" ? "selected" : ""}>Paused</option>${state.account ? `<option value="collection" ${state.libraryView.filter === "collection" ? "selected" : ""}>Collection</option>` : ""}${state.admin ? `<option value="archived" ${state.libraryView.filter === "archived" ? "selected" : ""}>Archived</option>` : ""}</select>
         <select id="librarySort"><option value="updated" ${state.libraryView.sort === "updated" ? "selected" : ""}>Recently updated</option><option value="title" ${state.libraryView.sort === "title" ? "selected" : ""}>Title</option><option value="progress" ${state.libraryView.sort === "progress" ? "selected" : ""}>Reading progress</option></select>
         <select id="libraryViewMode"><option value="grid" ${libraryViewMode() === "grid" ? "selected" : ""}>Grid</option><option value="compact" ${libraryViewMode() === "compact" ? "selected" : ""}>Compact</option><option value="list" ${libraryViewMode() === "list" ? "selected" : ""}>List</option><option value="covers" ${libraryViewMode() === "covers" ? "selected" : ""}>Covers</option></select>
         <button id="resetLibraryFilters" type="button">Reset Filters</button>
+        <span id="librarySearchStatus" class="search-status" role="status" aria-live="polite"></span>
       </section>
       <section class="novel-grid ${libraryViewClass()}" id="novelGrid"></section>
     `;
-    ["librarySearch", "libraryFilter", "librarySort", "libraryViewMode"].forEach((id) => document.querySelector(`#${id}`).addEventListener("input", renderLibraryCards));
+    const debouncedLibraryRender = debounce(renderLibraryCards, 120);
+    document.querySelector("#librarySearch").addEventListener("input", debouncedLibraryRender);
+    document.querySelector("#librarySearch").addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && event.currentTarget.value) {
+        event.currentTarget.value = "";
+        renderLibraryCards();
+      }
+    });
+    ["libraryFilter", "librarySort", "libraryViewMode"].forEach((id) => document.querySelector(`#${id}`).addEventListener("input", renderLibraryCards));
+    document.querySelector("#clearLibrarySearch").addEventListener("click", () => {
+      document.querySelector("#librarySearch").value = "";
+      renderLibraryCards();
+      document.querySelector("#librarySearch").focus();
+    });
     document.querySelector("#resetLibraryFilters").addEventListener("click", () => {
       state.libraryView = {search: "", filter: "active", sort: "updated", view: "grid", collection: ""};
       writeStored("gt-library-view", state.libraryView);
@@ -772,7 +795,6 @@ function renderLibraryCards() {
   const grid = document.querySelector("#novelGrid");
   if (!grid) return;
   const rawQuery = document.querySelector("#librarySearch").value.trim();
-  const query = rawQuery.toLowerCase();
   const filter = document.querySelector("#libraryFilter").value;
   const sort = document.querySelector("#librarySort").value;
   const view = document.querySelector("#libraryViewMode").value;
@@ -781,24 +803,19 @@ function renderLibraryCards() {
   }
   state.libraryView = {...state.libraryView, search: rawQuery, filter, sort, view};
   writeStored("gt-library-view", state.libraryView);
-  if (query) rememberRecent("searches", {label: query, href: "#/library", at: new Date().toISOString()});
+  if (rawQuery) rememberRecent("searches", {label: rawQuery, href: "#/library", at: new Date().toISOString()});
   grid.className = `novel-grid ${libraryViewClass()}`;
-  let novels = state.novels.filter((novel) => {
-    if (filter === "active" && novel.is_archived) return false;
-    if (filter === "archived" && (!state.admin || !novel.is_archived)) return false;
-    if (filter === "favorites" && !favoriteIds().has(novel.id)) return false;
-    if (filter === "pinned" && !pinnedIds().has(novel.id)) return false;
-    if (["completed", "in-progress", "want-to-read", "paused"].includes(filter) && readingStatus(novel.id) !== filter) return false;
-    if (filter === "collection" && !collectionNovelIds(state.libraryView.collection).has(novel.id)) return false;
-    if (!query) return true;
-    return `${displayNovelTitle(novel)} ${novel.author || ""} ${novel.id || ""}`.toLowerCase().includes(query);
-  });
-  novels = novels.sort((a, b) => {
-    if (sort === "title") return displayNovelTitle(a).localeCompare(displayNovelTitle(b));
-    if (sort === "progress") return progress(b) - progress(a);
-    return String(b.updated_at || "").localeCompare(String(a.updated_at || ""));
-  });
-  grid.innerHTML = novels.map(renderNovelCard).join("") || `<div class="empty-state">No novels match this view.</div>`;
+  const filteredNovels = filterLibraryNovelsByView(state.novels, filter);
+  const searched = searchLibraryNovels(filteredNovels, rawQuery);
+  const novels = searched.novels.sort(librarySortComparator(sort, rawQuery ? searched.scores : null));
+  const searchStatus = document.querySelector("#librarySearchStatus");
+  const clearButton = document.querySelector("#clearLibrarySearch");
+  if (clearButton) clearButton.hidden = !rawQuery;
+  if (searchStatus) {
+    const engine = searched.engine === "minisearch" ? "MiniSearch" : "basic search";
+    searchStatus.textContent = rawQuery ? `${novels.length} of ${filteredNovels.length} novels matched by ${engine}.` : `${filteredNovels.length} novels ready.`;
+  }
+  grid.innerHTML = novels.map(renderNovelCard).join("") || `<div class="empty-state">No novels match this search or filter.</div>`;
   grid.querySelectorAll("[data-favorite]").forEach((button) => button.addEventListener("click", toggleFavorite));
   grid.querySelectorAll("[data-pin]").forEach((button) => button.addEventListener("click", togglePinnedNovel));
   bindCopyLinks(grid);
@@ -1263,11 +1280,16 @@ async function openChapters(novelId) {
 }
 
 async function loadChapters(novelId) {
-  const path = `/api/novels/${encodeURIComponent(novelId)}/library?limit=${state.pageSize}&offset=${state.chapterOffset}&view=${encodeURIComponent(state.chapterView)}&search=${encodeURIComponent(state.chapterSearch)}`;
+  const path = `/api/novels/${encodeURIComponent(novelId)}/library?limit=${CHAPTER_SEARCH_INDEX_LIMIT}&offset=0&view=${encodeURIComponent(state.chapterView)}`;
   const payload = await cachedApi(path);
-  state.chapters = payload.chapters || [];
-  state.chapterTotal = payload.total || 0;
-  return payload;
+  const allChapters = payload.chapters || [];
+  const searched = searchChapters(allChapters, state.chapterSearch);
+  const total = searched.chapters.length;
+  const maxOffset = total ? Math.floor((total - 1) / state.pageSize) * state.pageSize : 0;
+  if (state.chapterOffset > maxOffset) state.chapterOffset = maxOffset;
+  state.chapters = searched.chapters.slice(state.chapterOffset, state.chapterOffset + state.pageSize);
+  state.chapterTotal = total;
+  return {...payload, chapters: state.chapters, total, all_chapters: allChapters, search: searched, truncated: Number(payload.total || 0) > allChapters.length};
 }
 
 function renderChapters(payload) {
@@ -1283,9 +1305,10 @@ function renderChapters(payload) {
       ${canSwitchNovels ? `<select id="chapterNovel">${state.novels.map((n) => `<option value="${n.id}" ${n.id === novel.id ? "selected" : ""}>${escapeHtml(n.title)}</option>`).join("")}</select>` : ""}
     </section>
     <section class="chapter-list-tools">
-      <input class="search" id="chapterSearch" type="search" value="${escapeAttr(state.chapterSearch)}" placeholder="Search chapter number or title">
+      <div class="search-input-group"><label class="sr-only" for="chapterSearch">Search chapter number or title</label><input class="search" id="chapterSearch" type="search" value="${escapeAttr(state.chapterSearch)}" placeholder="Search chapter number or title"><button id="clearChapterSearch" type="button" aria-label="Clear chapter search" ${state.chapterSearch ? "" : "hidden"}>Clear</button></div>
       <select id="chapterView">${visibleChapterViews().map(([value, label]) => `<option value="${value}" ${value === state.chapterView ? "selected" : ""}>${label}</option>`).join("")}</select>
       ${canTranslate() ? `<a class="button" href="#/translate/${novel.id}">Translate</a>` : ""}${state.admin ? `<a class="button" href="#/admin/recovery">Novel Recovery</a>` : ""}
+      <span id="chapterSearchStatus" class="search-status" role="status" aria-live="polite">${chapterSearchStatusText(payload)}</span>
     </section>
     <section class="chapter-list">
       <div class="table-meta">Showing ${state.chapterTotal ? state.chapterOffset + 1 : 0}-${Math.min(state.chapterOffset + state.pageSize, state.chapterTotal)} of ${state.chapterTotal} chapters</div>
@@ -1303,11 +1326,36 @@ function renderChapters(payload) {
     </section>`;
   document.querySelector("#chapterNovel")?.addEventListener("change", (e) => { window.location.hash = `#/chapters/${e.target.value}`; });
   document.querySelector("#chapterSearch").addEventListener("input", debounce((e) => { state.chapterSearch = e.target.value; state.chapterOffset = 0; persistChapterState(novel.id); openChapters(novel.id); }, 250));
+  document.querySelector("#chapterSearch").addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && event.currentTarget.value) {
+      event.currentTarget.value = "";
+      state.chapterSearch = "";
+      state.chapterOffset = 0;
+      persistChapterState(novel.id);
+      openChapters(novel.id);
+    }
+  });
+  document.querySelector("#clearChapterSearch")?.addEventListener("click", () => {
+    state.chapterSearch = "";
+    state.chapterOffset = 0;
+    persistChapterState(novel.id);
+    openChapters(novel.id);
+  });
   document.querySelector("#chapterView").addEventListener("change", (e) => { state.chapterView = e.target.value; state.chapterOffset = 0; persistChapterState(novel.id); openChapters(novel.id); });
   document.querySelector("#prevPage").addEventListener("click", () => { state.chapterOffset = Math.max(0, state.chapterOffset - state.pageSize); persistChapterState(novel.id); openChapters(novel.id); });
   document.querySelector("#nextPage").addEventListener("click", () => { state.chapterOffset += state.pageSize; persistChapterState(novel.id); openChapters(novel.id); });
   bindCopyLinks(app);
   restoreScrollPosition();
+}
+
+function chapterSearchStatusText(payload) {
+  const rawQuery = normalizeSearchQuery(state.chapterSearch);
+  const engine = payload?.search?.engine === "minisearch" ? "MiniSearch" : "basic search";
+  const loaded = Number(payload?.all_chapters?.length || 0);
+  const total = Number(payload?.total || state.chapterTotal || 0);
+  const truncated = payload?.truncated ? ` Showing the first ${loaded} loaded chapters.` : "";
+  if (!rawQuery) return `${total} chapters ready.${truncated}`;
+  return `${state.chapterTotal} chapter${state.chapterTotal === 1 ? "" : "s"} matched by ${engine}.${truncated}`;
 }
 
 function visibleChapterViews() {
@@ -3652,6 +3700,232 @@ function displayNovelTitle(novel) {
   const title = String(novel?.title || "").trim();
   if (title && !/^[a-z0-9]+(?:[-_][a-z0-9]+){2,}$/i.test(title)) return title;
   return humanizeId(title || novel?.id);
+}
+
+function miniSearchConstructor() {
+  if (typeof window === "undefined") return null;
+  return typeof window.MiniSearch === "function" ? window.MiniSearch : null;
+}
+
+function debugSearchEnabled() {
+  try {
+    return localStorage.getItem("gt-debug-search") === "1" || localStorage.getItem("gt-debug") === "1";
+  } catch {
+    return false;
+  }
+}
+
+function warnMiniSearchUnavailable() {
+  if (searchRuntime.unavailableWarned) return;
+  searchRuntime.unavailableWarned = true;
+  if (debugSearchEnabled() && typeof console !== "undefined" && typeof console.warn === "function") {
+    console.warn("MiniSearch unavailable; falling back to local substring search.");
+  }
+}
+
+function normalizeSearchValue(value) {
+  return String(value ?? "").normalize("NFKC").replace(/\s+/g, " ").trim();
+}
+
+function normalizeSearchQuery(value) {
+  return normalizeSearchValue(value);
+}
+
+function searchTerms(query) {
+  return normalizeSearchQuery(query).toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+function searchSignature(docs, fields) {
+  return docs.map((doc) => [doc.id, ...fields.map((field) => doc[field] || "")].join("\u001f")).join("\u001e");
+}
+
+function buildMiniSearchRuntime(runtime, docs, fields, boosts) {
+  const signature = searchSignature(docs, fields);
+  if (runtime.signature === signature) return runtime;
+  runtime.signature = signature;
+  runtime.docs = docs;
+  runtime.docMap = new Map(docs.map((doc) => [String(doc.id), doc]));
+  runtime.index = null;
+  runtime.engine = "fallback";
+  runtime.buildMs = 0;
+  const MiniSearch = miniSearchConstructor();
+  if (!MiniSearch) {
+    warnMiniSearchUnavailable();
+    return runtime;
+  }
+  const started = performance.now();
+  const index = new MiniSearch({
+    idField: "id",
+    fields,
+    storeFields: ["id"],
+    searchOptions: {prefix: true, fuzzy: 0.16, boost: boosts},
+  });
+  index.addAll(docs);
+  runtime.index = index;
+  runtime.engine = "minisearch";
+  runtime.buildMs = performance.now() - started;
+  return runtime;
+}
+
+function fallbackSearchDocs(docs, query, fields) {
+  const terms = searchTerms(query);
+  if (!terms.length) return docs.map((doc, index) => ({doc, score: 0, index}));
+  return docs
+    .map((doc, index) => {
+      const values = fields.map((field) => normalizeSearchValue(doc[field]).toLowerCase());
+      const title = values[0] || "";
+      const exactTitle = title === normalizeSearchValue(query).toLowerCase();
+      const allTermsMatch = terms.every((term) => values.some((value) => value.includes(term)));
+      if (!allTermsMatch) return null;
+      const score = terms.reduce((total, term) => {
+        if (title === term) return total + 80;
+        if (title.startsWith(term)) return total + 40;
+        if (title.includes(term)) return total + 24;
+        return total + (values.some((value) => value.startsWith(term)) ? 12 : 6);
+      }, exactTitle ? 160 : 0);
+      return {doc, score, index};
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score || a.index - b.index);
+}
+
+function querySearchRuntime(runtime, query, fields, boosts, candidates, exactTitleField = "title") {
+  buildMiniSearchRuntime(runtime, runtime.docs.length ? runtime.docs : candidates, fields, boosts);
+  const normalized = normalizeSearchQuery(query);
+  const allowed = new Set(candidates.map((doc) => String(doc.id)));
+  const started = performance.now();
+  if (!normalized) {
+    runtime.queryMs = performance.now() - started;
+    return {docs: candidates, scores: new Map(), engine: runtime.engine, buildMs: runtime.buildMs, queryMs: runtime.queryMs};
+  }
+  let ranked;
+  if (runtime.index) {
+    ranked = runtime.index
+      .search(normalized, {prefix: true, fuzzy: 0.16, boost: boosts})
+      .filter((result) => allowed.has(String(result.id)))
+      .map((result, index) => {
+        const doc = runtime.docMap.get(String(result.id));
+        const exact = normalizeSearchValue(doc?.[exactTitleField]).toLowerCase() === normalized.toLowerCase();
+        return {doc, score: Number(result.score || 0) + (exact ? 500 : 0), index};
+      })
+      .filter((item) => item.doc);
+  } else {
+    ranked = fallbackSearchDocs(candidates, normalized, fields);
+  }
+  runtime.queryMs = performance.now() - started;
+  const scores = new Map(ranked.map((item) => [String(item.doc.id), {score: item.score, rank: item.index}]));
+  return {docs: ranked.map((item) => item.doc), scores, engine: runtime.engine, buildMs: runtime.buildMs, queryMs: runtime.queryMs};
+}
+
+function librarySearchDocument(novel) {
+  const metadata = novel.metadata && typeof novel.metadata === "object" ? novel.metadata : {};
+  const tags = Array.isArray(metadata.tags) ? metadata.tags.join(" ") : normalizeSearchValue(metadata.tags);
+  const counts = [
+    `chapters ${novel.chapter_count ?? 0}`,
+    `original ${novel.original_count ?? 0}`,
+    `english ${novel.english_count ?? novel.ai_count ?? 0}`,
+    novel.missing_counts_known === false ? "missing unknown" : `missing english ${novel.missing_english_count ?? novel.remaining_count ?? 0}`,
+  ].join(" ");
+  return {
+    id: String(novel.id),
+    title: displayNovelTitle(novel),
+    alternate: normalizeSearchValue(novel.alternate_title || novel.original_title || metadata.alternate_title || metadata.original_title),
+    author: normalizeSearchValue(novel.author),
+    description: normalizeSearchValue(novel.summary || novel.description),
+    status: titleCase(readingStatus(novel.id)),
+    language: normalizeSearchValue(novel.language || metadata.language || novel.genre || metadata.genre),
+    tags,
+    counts,
+    source: normalizeSearchValue(novel.source_label || metadata.source_label || metadata.source),
+    record: novel,
+  };
+}
+
+function filterLibraryNovelsByView(novels, filter) {
+  return novels.filter((novel) => {
+    if (filter === "active" && novel.is_archived) return false;
+    if (filter === "archived" && (!state.admin || !novel.is_archived)) return false;
+    if (filter === "favorites" && !favoriteIds().has(novel.id)) return false;
+    if (filter === "pinned" && !pinnedIds().has(novel.id)) return false;
+    if (["completed", "in-progress", "want-to-read", "paused"].includes(filter) && readingStatus(novel.id) !== filter) return false;
+    if (filter === "collection" && !collectionNovelIds(state.libraryView.collection).has(novel.id)) return false;
+    return true;
+  });
+}
+
+function librarySortComparator(sort, scores = null) {
+  return (a, b) => {
+    if (scores) {
+      const aScore = scores.get(String(a.id));
+      const bScore = scores.get(String(b.id));
+      if (aScore || bScore) {
+        const scoreDelta = Number(bScore?.score || 0) - Number(aScore?.score || 0);
+        if (Math.abs(scoreDelta) > 0.0001) return scoreDelta;
+        const rankDelta = Number(aScore?.rank ?? 999_999) - Number(bScore?.rank ?? 999_999);
+        if (rankDelta) return rankDelta;
+      }
+    }
+    if (sort === "title") return displayNovelTitle(a).localeCompare(displayNovelTitle(b));
+    if (sort === "progress") return progress(b) - progress(a) || displayNovelTitle(a).localeCompare(displayNovelTitle(b));
+    return String(b.updated_at || "").localeCompare(String(a.updated_at || "")) || displayNovelTitle(a).localeCompare(displayNovelTitle(b));
+  };
+}
+
+function searchLibraryNovels(candidates, query) {
+  const allDocs = state.novels.map(librarySearchDocument);
+  buildMiniSearchRuntime(searchRuntime.library, allDocs, SEARCH_LIBRARY_FIELDS, {title: 5, alternate: 4, author: 3, tags: 2});
+  const candidateDocs = candidates.map(librarySearchDocument);
+  const result = querySearchRuntime(searchRuntime.library, query, SEARCH_LIBRARY_FIELDS, {title: 5, alternate: 4, author: 3, tags: 2}, candidateDocs);
+  return {...result, novels: result.docs.map((doc) => doc.record)};
+}
+
+function chapterSearchDocument(chapter) {
+  const number = Number(chapter.chapter_number || 0);
+  const baseTitle = number ? `Chapter ${number}` : "Chapter";
+  const displayLabel = displayChapterTitle(chapter, safeReaderSource());
+  const flags = [
+    chapter.has_original ? "original" : "missing original",
+    chapter.has_english || chapter.has_ai ? "english" : "untranslated",
+    chapter.has_reference ? "reference" : "",
+    chapter.translation_status || "",
+  ].filter(Boolean).join(" ");
+  const status = chapterStatusLabel(chapter, false);
+  return {
+    id: String(chapter.id || `chapter-${number}`),
+    number: String(number),
+    title: normalizeSearchValue(chapter.title || baseTitle),
+    displayLabel: normalizeSearchValue(displayLabel),
+    status,
+    flags,
+    record: chapter,
+  };
+}
+
+function chapterSortByNumber(a, b) {
+  return Number(a.chapter_number || 0) - Number(b.chapter_number || 0);
+}
+
+function searchChapters(chapters, query) {
+  const docs = chapters.map(chapterSearchDocument);
+  buildMiniSearchRuntime(searchRuntime.chapters, docs, SEARCH_CHAPTER_FIELDS, {number: 8, title: 5, displayLabel: 5, status: 2});
+  const result = querySearchRuntime(searchRuntime.chapters, query, SEARCH_CHAPTER_FIELDS, {number: 8, title: 5, displayLabel: 5, status: 2}, docs, "displayLabel");
+  const exactNumber = Number(normalizeSearchQuery(query));
+  const records = result.docs
+    .map((doc) => doc.record)
+    .sort((a, b) => {
+      if (Number.isInteger(exactNumber) && exactNumber > 0) {
+        const aExact = Number(a.chapter_number) === exactNumber ? 1 : 0;
+        const bExact = Number(b.chapter_number) === exactNumber ? 1 : 0;
+        if (aExact !== bExact) return bExact - aExact;
+      }
+      const aScore = result.scores.get(String(a.id || `chapter-${a.chapter_number}`));
+      const bScore = result.scores.get(String(b.id || `chapter-${b.chapter_number}`));
+      const scoreDelta = Number(bScore?.score || 0) - Number(aScore?.score || 0);
+      if (Math.abs(scoreDelta) > 0.0001) return scoreDelta;
+      return chapterSortByNumber(a, b);
+    });
+  if (!normalizeSearchQuery(query)) records.sort(chapterSortByNumber);
+  return {...result, chapters: records};
 }
 
 function numberOrNull(selector) {
