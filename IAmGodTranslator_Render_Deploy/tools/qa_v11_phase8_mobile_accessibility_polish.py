@@ -38,7 +38,7 @@ def main() -> None:
         (
             "renderMobileBottomNav",
             "aria-current",
-            "Open search and command palette",
+            "Global search and commands",
             "openNotifications",
             "pushNotification",
             "notifyOnce",
@@ -93,7 +93,9 @@ def main() -> None:
         "theme and accent options",
     )
     require("no raw browser dialogs", not re.search(r"\b(alert|prompt|confirm)\s*\(", APP_JS))
-    require("no debug console calls", "console." not in APP_JS)
+    console_uses = re.findall(r"console\.[a-zA-Z]+\(", APP_JS)
+    require("no unexpected debug console calls", console_uses == ["console.warn("])
+    require("MiniSearch debug warning is gated", "debugSearchEnabled()" in APP_JS and "MiniSearch unavailable" in APP_JS)
     require("no debugger statements", "debugger" not in APP_JS)
     require("OpenAI disabled", not bool(os.getenv("OPENAI_API_KEY")))
     require("production DATABASE_URL not used", not bool(os.getenv("DATABASE_URL")))
