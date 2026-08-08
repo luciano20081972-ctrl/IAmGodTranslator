@@ -20,9 +20,12 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def sha256(path: Path) -> str:
+def sha256(path: Path, *, normalize_lf: bool = False) -> str:
     digest = hashlib.sha256()
-    digest.update(path.read_bytes())
+    data = path.read_bytes()
+    if normalize_lf:
+        data = data.replace(b"\r\n", b"\n")
+    digest.update(data)
     return digest.hexdigest()
 
 
@@ -45,8 +48,8 @@ def main() -> None:
 
     require(VENDOR_JS.exists(), "MiniSearch browser artifact is vendored locally")
     require(LICENSE.exists(), "MiniSearch license is vendored locally")
-    require(sha256(VENDOR_JS) == EXPECTED_VENDOR_SHA256, "MiniSearch browser artifact checksum matches the recorded release artifact")
-    require(sha256(LICENSE) == EXPECTED_LICENSE_SHA256, "MiniSearch license checksum matches the npm package license")
+    require(sha256(VENDOR_JS, normalize_lf=True) == EXPECTED_VENDOR_SHA256, "MiniSearch browser artifact checksum matches the recorded release artifact")
+    require(sha256(LICENSE, normalize_lf=True) == EXPECTED_LICENSE_SHA256, "MiniSearch license checksum matches the npm package license")
     require("MiniSearch=e()" in read(VENDOR_JS), "Vendored artifact exposes the UMD MiniSearch global")
     license_text = read(LICENSE)
     require("Permission is hereby granted, free of charge" in license_text and "THE SOFTWARE IS PROVIDED" in license_text, "Vendored license contains MIT grant and warranty text")

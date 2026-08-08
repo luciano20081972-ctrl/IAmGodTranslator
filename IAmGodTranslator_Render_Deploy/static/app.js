@@ -543,7 +543,7 @@ function renderHomeNovelTile(novel) {
       ? `${chapterCount} chapter${chapterCount === 1 ? "" : "s"} in library`
       : "No chapters imported yet";
   return `<article class="home-novel-tile">
-    <a class="mini-cover book-cover" href="#/novel/${encodeURIComponent(novel.id)}">${renderCoverArt(novel, title)}</a>
+    <a class="mini-cover book-cover" href="#/novel/${encodeURIComponent(novel.id)}" aria-label="Open ${escapeAttr(title)}">${renderCoverArt(novel, title)}</a>
     <div>
       <span class="badge">${escapeHtml(status)}</span>
       <h3>${escapeHtml(title)}</h3>

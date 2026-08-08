@@ -71,10 +71,10 @@ async function run() {
       await waitForRoute(page, ".reader-text", `reader ${viewport.name}`);
       await assertNoOverflow(page, `reader ${viewport.name}`);
       requireCheck("Reference hidden for guest", await page.locator(".reader-source-switch button", {hasText: "Reference"}).count() === 0);
-      requireCheck("Reader controls present", await page.locator("#openChapterDrawer").count() === 1);
+      requireCheck("Reader menu control present", await page.locator("#readerMenuToggle").count() === 1);
 
       await page.goto(`${baseUrl}/#/settings/accessibility`, {waitUntil: "domcontentloaded"});
-      await waitForRoute(page, ".settings-layout", `settings ${viewport.name}`);
+      await waitForRoute(page, ".settings-root, .settings-subpage", `settings ${viewport.name}`);
       await assertNoOverflow(page, `settings ${viewport.name}`);
 
       requireCheck(`no console errors on ${viewport.name}`, errors.length === 0);
