@@ -33,6 +33,7 @@ except ModuleNotFoundError:
 
 from app.db import Database, PLATFORM_BACKUP_TABLE_NAMES, model_pricing
 from app.content_import import payload_from_uploads
+from app.acquisition import ExecutionStrategy, FixtureNovelAdapter, RateLimitPolicy
 from app.recovery import parse_uploads, recovery_request, recovery_diagnostic, reference_diagnostic
 
 
@@ -1338,6 +1339,55 @@ def apply_reference_import(novel_id: str, job_id: str, _: None = Depends(require
 @app.get("/api/admin/overview")
 def admin_overview(_: None = Depends(require_admin)) -> dict[str, object]:
     return {"ok": True, "overview": database.admin_overview()}
+
+
+@app.get("/api/admin/acquisition/sources")
+def admin_acquisition_sources(_: None = Depends(require_admin)) -> dict[str, object]:
+    fixture = FixtureNovelAdapter()
+    planned = [
+        {
+            "source": fixture.name,
+            "display_name": fixture.display_name,
+            "status": "fixture_only",
+            "execution_strategy": fixture.execution_strategy.value,
+            "allowed_hosts": list(fixture.allowed_hosts),
+            "rate_limit_policy": fixture.rate_limit_policy.__dict__,
+            "server_execution": True,
+            "desktop_execution": True,
+        },
+        {
+            "source": "novelfire",
+            "display_name": "NovelFire / NovelPhoenix",
+            "status": "desktop_active_server_research",
+            "execution_strategy": ExecutionStrategy.DESKTOP_ONLY.value,
+            "allowed_hosts": [],
+            "rate_limit_policy": RateLimitPolicy().__dict__,
+            "server_execution": False,
+            "desktop_execution": True,
+        },
+    ]
+    return {
+        "ok": True,
+        "contract": {
+            "states": [
+                "PENDING",
+                "VALIDATING",
+                "DISCOVERING",
+                "DOWNLOADING",
+                "NORMALIZING",
+                "READY_FOR_IMPORT",
+                "COMPLETED",
+                "PARTIAL",
+                "FAILED",
+                "CANCELLED",
+                "DESKTOP_REQUIRED",
+            ],
+            "strategies": ["HTTP", "PLAYWRIGHT", "DESKTOP_ONLY"],
+            "canonical_flow": ["Acquire", "Normalize", "Validate", "Hash", "Stage/Pack", "Preview Import", "Execute Import"],
+        },
+        "sources": planned,
+        "live_fetching_enabled": False,
+    }
 
 
 @app.get("/api/admin/db-health")
