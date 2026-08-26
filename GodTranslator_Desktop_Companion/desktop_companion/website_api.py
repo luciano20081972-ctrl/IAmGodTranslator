@@ -2,17 +2,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 from typing import Any
 import urllib.error
 import urllib.request
 
+from .models import default_website_url, normalize_website_base_url
+
 
 @dataclass
 class WebsiteClient:
-    base_url: str = "https://iamgodtranslator.onrender.com"
+    base_url: str = ""
     auth_token: str = ""
     timeout: int = 20
+
+    def __post_init__(self) -> None:
+        self.base_url = normalize_website_base_url(self.base_url or os.getenv("GT_WEBSITE_URL") or default_website_url())
 
     def _headers(self) -> dict[str, str]:
         headers = {"Accept": "application/json"}

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
+from urllib.parse import urlsplit, urlunsplit
 
 
 JobStatus = Literal[
@@ -30,6 +32,38 @@ def utc_now() -> str:
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:12]}"
+
+
+def normalize_website_base_url(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raw = default_website_url()
+    parsed = urlsplit(raw)
+    if not parsed.scheme and parsed.path:
+        raw_host = raw.split("/", 1)[0].rsplit("@", 1)[-1]
+        candidate_host = raw_host.rsplit(":", 1)[0].strip("[]").lower().rstrip(".")
+        is_bare_local = candidate_host in {"localhost", "127.0.0.1", "::1"} or candidate_host.endswith(".local")
+        parsed = urlsplit(f"{'http' if is_bare_local else 'https'}://{raw}")
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"}:
+        raise ValueError("Website URL must use http or https.")
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if not host:
+        raise ValueError("Website URL must include a host.")
+    is_local = host in {"localhost", "127.0.0.1", "::1"} or host.endswith(".local")
+    if scheme == "http" and not is_local:
+        raise ValueError("Use HTTPS for non-local website URLs.")
+    netloc = host
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+    return urlunsplit((scheme, netloc, "", "", ""))
+
+
+def default_website_url() -> str:
+    configured = os.getenv("GT_WEBSITE_URL") or os.getenv("IAMGODTRANSLATOR_URL") or ""
+    if configured:
+        return normalize_website_base_url(configured)
+    return "http://127.0.0.1:8007"
 
 
 @dataclass
@@ -194,7 +228,7 @@ class UploadJob:
     pack_path: str
     novel_id: str
     content_type: str = "original"
-    website_url: str = "https://iamgodtranslator.onrender.com"
+    website_url: str = field(default_factory=default_website_url)
     status: UploadStatus = "queued"
     preview: dict[str, Any] = field(default_factory=dict)
     result: dict[str, Any] = field(default_factory=dict)
@@ -214,7 +248,7 @@ class UploadJob:
             pack_path=str(payload.get("pack_path") or ""),
             novel_id=str(payload.get("novel_id") or ""),
             content_type=str(payload.get("content_type") or "original"),
-            website_url=str(payload.get("website_url") or "https://iamgodtranslator.onrender.com"),
+            website_url=normalize_website_base_url(str(payload.get("website_url") or default_website_url())),
             status=payload.get("status") if payload.get("status") in {"queued", "previewing", "previewed", "uploading", "imported", "failed", "cancelled"} else "queued",
             preview=dict(payload.get("preview") or {}),
             result=dict(payload.get("result") or {}),
@@ -229,7 +263,7 @@ class UploadJob:
 @dataclass
 class WebsiteConnectionProfile:
     name: str = "Production"
-    base_url: str = "https://iamgodtranslator.onrender.com"
+    base_url: str = field(default_factory=default_website_url)
     auth_token: str = ""
     last_health: str = "Not tested"
     last_sync_at: str = ""

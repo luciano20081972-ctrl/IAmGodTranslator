@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import DownloadJob, UploadJob, WebsiteConnectionProfile, utc_now
+from .models import default_website_url, normalize_website_base_url
 from .paths import AppPaths, ensure_app_dirs
 
 
@@ -66,7 +67,7 @@ class CompanionStore:
                 "mode": "simple",
                 "downloads_folder": str(self.paths.downloads_dir),
                 "default_adapter": "novelfire",
-                "default_website_url": "https://iamgodtranslator.onrender.com",
+                "default_website_url": default_website_url(),
                 "created_at": utc_now(),
             }
             write_json(self.paths.settings_file, payload)
@@ -124,7 +125,7 @@ class CompanionStore:
                 profiles.append(
                     WebsiteConnectionProfile(
                         name=item.get("name") or "Production",
-                        base_url=item.get("base_url") or "https://iamgodtranslator.onrender.com",
+                        base_url=normalize_website_base_url(item.get("base_url") or default_website_url()),
                         auth_token="",
                         last_health=item.get("last_health") or "Not tested",
                         last_sync_at=item.get("last_sync_at") or "",

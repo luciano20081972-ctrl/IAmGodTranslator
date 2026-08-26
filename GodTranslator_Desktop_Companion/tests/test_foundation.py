@@ -10,6 +10,7 @@ from pathlib import Path
 import desktop_companion
 from desktop_companion.jobs import JobManager
 from desktop_companion.models import WebsiteConnectionProfile
+from desktop_companion.models import default_website_url, normalize_website_base_url
 from desktop_companion.adapters import adapter_descriptors, adapter_names
 from desktop_companion.packs import build_auto_packs, build_pack, validate_pack
 from desktop_companion.packs import chapter_number_from_file
@@ -307,6 +308,28 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
             self.assertTrue(sync.center_snapshot()["version_compatible"])
             self.assertEqual(store.connection_profiles()[0].auth_token, "")
             self.assertNotIn("auth_token", profile.safe_dict())
+
+    def test_self_hosted_website_url_configuration_precedence_and_validation(self) -> None:
+        self.assertEqual(normalize_website_base_url("https://IAGT.tailnet.EXAMPLE./"), "https://iagt.tailnet.example")
+        self.assertEqual(normalize_website_base_url("127.0.0.1:8007"), "http://127.0.0.1:8007")
+        self.assertEqual(normalize_website_base_url("http://127.0.0.1:8007/"), "http://127.0.0.1:8007")
+        with self.assertRaises(ValueError):
+            normalize_website_base_url("ftp://example.com")
+        with self.assertRaises(ValueError):
+            normalize_website_base_url("http://example.com")
+        with patch.dict(os.environ, {"GT_WEBSITE_URL": "https://iagt.tailnet.example/"}, clear=False):
+            self.assertEqual(default_website_url(), "https://iagt.tailnet.example")
+
+        with tempfile.TemporaryDirectory() as temp:
+            paths = app_paths(Path(temp))
+            store = CompanionStore(paths)
+            settings = store.settings()
+            self.assertEqual(settings["default_website_url"], "http://127.0.0.1:8007")
+            sync = SyncManager(store)
+            profile = sync.save_profile("https://IAGT.tailnet.EXAMPLE///", "session-token")
+            self.assertEqual(profile.base_url, "https://iagt.tailnet.example")
+            raw = read_json(paths.connection_profiles_file, {})
+            self.assertNotIn("session-token", str(raw))
 
     def test_connection_profile_does_not_require_password(self) -> None:
         profile = WebsiteConnectionProfile(auth_token="session-token")

@@ -5,7 +5,7 @@ from typing import Any
 import webbrowser
 
 from . import APP_VERSION
-from .models import UploadJob, WebsiteConnectionProfile, new_id, utc_now
+from .models import UploadJob, WebsiteConnectionProfile, new_id, normalize_website_base_url, utc_now
 from .storage import CompanionStore
 from .website_api import WebsiteClient
 
@@ -25,7 +25,7 @@ class SyncManager:
         self._session_token = auth_token.strip()
         profile = WebsiteConnectionProfile(
             name=current.name or "Production",
-            base_url=base_url.rstrip("/") or current.base_url,
+            base_url=normalize_website_base_url(base_url or current.base_url),
             auth_token=self._session_token,
             last_health=current.last_health,
             last_sync_at=current.last_sync_at,
