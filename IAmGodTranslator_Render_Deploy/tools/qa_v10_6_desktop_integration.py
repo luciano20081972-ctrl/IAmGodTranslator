@@ -9,7 +9,13 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DESKTOP_ROOT = ROOT.parent / "GodTranslator_Desktop_Companion"
 sys.path.insert(0, str(ROOT))
+sys.path.insert(1, str(DESKTOP_ROOT))
+
+
+def major_version(value: str) -> str:
+    return str(value or "").split(".", 1)[0]
 
 
 def install_fastapi_stubs() -> None:
@@ -108,10 +114,17 @@ class WebsiteDesktopIntegrationTests(unittest.TestCase):
         cls._temp.cleanup()
 
     def test_v10_6_runtime_labels(self) -> None:
-        self.assertEqual(self.main.VERSION, "11.0.0")
+        from desktop_companion import APP_VERSION as desktop_version
+        from desktop_companion.sync import version_compatible
+
+        self.assertTrue(self.main.VERSION.startswith("11."))
         health = self.main.desktop_health()
         self.assertTrue(health["ok"])
-        self.assertEqual(health["desktop_api"], "11.0.0")
+        self.assertEqual(health["desktop_api"], self.main.DESKTOP_API_VERSION)
+        self.assertTrue(version_compatible(desktop_version, health["desktop_api"]))
+        self.assertEqual(major_version(self.main.VERSION), major_version(health["desktop_api"]))
+        self.assertFalse(version_compatible(desktop_version, ""))
+        self.assertFalse(version_compatible(desktop_version, "12.0.0"))
         self.assertFalse(health["auth"]["passwords_accepted_by_desktop_api"])
         self.assertIn("Connected", health["sync_states"])
         self.assertIn("pack_preview", health["supports"])
@@ -130,8 +143,8 @@ class WebsiteDesktopIntegrationTests(unittest.TestCase):
         self.main.database.upsert_chapter("desktop-fixture", 1, "Chapter 1", "Original", "Reference", "", None)
         payload = self.main.desktop_sync_status("desktop-fixture")
         self.assertTrue(payload["ok"])
-        self.assertEqual(payload["version"], "11.0.0")
-        self.assertEqual(payload["desktop_api"], "11.0.0")
+        self.assertEqual(payload["version"], self.main.VERSION)
+        self.assertEqual(payload["desktop_api"], self.main.DESKTOP_API_VERSION)
         self.assertEqual(payload["novel"]["id"], "desktop-fixture")
         self.assertEqual(payload["missing"]["missing_english"], [1])
         self.assertIn("pack_preview", payload["sync"])

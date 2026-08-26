@@ -26,11 +26,15 @@ def main() -> int:
     app_js = read(APP_ROOT / "static" / "app.js")
     styles = read(APP_ROOT / "static" / "styles.css")
     sw = read(APP_ROOT / "static" / "sw.js")
+    profiler = read(APP_ROOT / "tools" / "profile_v11_6_runtime.py")
+    browser_smoke = read(APP_ROOT / "tools" / "browser_v11_6_pwa_smoke.py")
+    desktop_packs = read(APP_ROOT.parent / "GodTranslator_Desktop_Companion" / "desktop_companion" / "packs.py")
+    desktop_tests = read(APP_ROOT.parent / "GodTranslator_Desktop_Companion" / "tests" / "test_foundation.py")
     icon = APP_ROOT / "static" / "icons" / "dark-hour-icon.svg"
 
     require("GZip middleware configured", "GZipMiddleware" in main_py and "minimum_size=1024" in main_py, failures)
     require("static cache headers configured", "VersionedStaticFiles" in main_py and "Cache-Control" in main_py, failures)
-    require("API/auth responses are no-store", 'path.startswith("/api/")' in main_py and "no-store" in main_py, failures)
+    require("API/auth/healthz responses are no-store", 'path.startswith("/api/")' in main_py and 'path == "/healthz"' in main_py and "no-store" in main_py, failures)
     require("healthz readiness endpoint exists", '@app.get("/healthz")' in main_py, failures)
     require("web manifest endpoint exists", '@app.get("/manifest.webmanifest")' in main_py, failures)
     require("service worker endpoint is no-cache", '@app.get("/sw.js")' in main_py and "Service-Worker-Allowed" in main_py, failures)
@@ -39,6 +43,7 @@ def main() -> int:
     require("theme color uses Dark Hour blue", '#0a36c9' in index and '#0a36c9' in main_py, failures)
     require("versioned app shell assets referenced", "v=11.6.0" in index and 'APP_VERSION = "11.6.0"' in app_js, failures)
     require("service worker registered safely", "registerServiceWorker" in app_js and "window.isSecureContext" in app_js, failures)
+    require("cached GETs dedupe in-flight requests", "cacheRequestMap" in app_js and "cacheRequestMap.has(path)" in app_js, failures)
 
     require("service worker cache is versioned", 'GT_CACHE_VERSION = "iagt-app-shell-11.6.0"' in sw, failures)
     require("service worker excludes API cache", 'pathname.startsWith("/api/")' in sw, failures)
@@ -50,6 +55,10 @@ def main() -> int:
     require("Persona 4 yellow palette not introduced", "Persona 4" not in styles + app_js + index + main_py, failures)
     require("no Atlus/SEGA assets referenced", "Atlus" not in styles + app_js + index and "SEGA" not in styles + app_js + index, failures)
     require("original PWA icon exists", icon.exists(), failures)
+    require("runtime profiler exists", "RouteMetric" in profiler and "Content-Encoding" in profiler, failures)
+    require("browser PWA smoke exists", "service_worker_controlled_after_reload" in browser_smoke, failures)
+    require("desktop CJK chapter filenames parse", "第\\s*0*(\\d+)\\s*章" in desktop_packs, failures)
+    require("desktop Unicode path regression exists", "test_unicode_and_spaced_paths_pack_as_utf8_chapters" in desktop_tests, failures)
 
     result = {
         "ok": not failures,

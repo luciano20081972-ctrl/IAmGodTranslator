@@ -286,7 +286,7 @@ def service_worker() -> Response:
 async def platform_cache_headers(request: Request, call_next: Any) -> Response:
     response = await call_next(request)
     path = request.url.path
-    if path.startswith("/api/") or path.startswith("/auth/"):
+    if path == "/healthz" or path.startswith("/api/") or path.startswith("/auth/"):
         response.headers.setdefault("Cache-Control", "no-store")
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     return response

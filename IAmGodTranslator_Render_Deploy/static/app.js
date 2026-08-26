@@ -25,6 +25,7 @@ let commandPaletteClosingFromPop = false;
 let commandTouchStartY = 0;
 let paragraphTouchTimer = null;
 const notificationSessionStartedAt = Date.now();
+const cacheRequestMap = new Map();
 const readerRequestMap = new Map();
 const READER_CACHE_LIMIT = 9;
 const CHAPTER_SEARCH_INDEX_LIMIT = 5000;
@@ -160,9 +161,15 @@ async function apiOnce(path, options = {}) {
 async function cachedApi(path, ttl = CACHE_TTL_MS) {
   const cached = state.cache.get(path);
   if (cached && Date.now() - cached.time < ttl) return cached.payload;
-  const payload = await api(path);
-  rememberCachePayload(path, payload);
-  return payload;
+  if (cacheRequestMap.has(path)) return cacheRequestMap.get(path);
+  const request = api(path)
+    .then((payload) => {
+      rememberCachePayload(path, payload);
+      return payload;
+    })
+    .finally(() => cacheRequestMap.delete(path));
+  cacheRequestMap.set(path, request);
+  return request;
 }
 
 function rememberCachePayload(path, payload) {
@@ -176,6 +183,9 @@ function rememberCachePayload(path, payload) {
 function invalidateCache(prefix = "") {
   for (const key of [...state.cache.keys()]) {
     if (!prefix || key.startsWith(prefix)) state.cache.delete(key);
+  }
+  for (const key of [...cacheRequestMap.keys()]) {
+    if (!prefix || key.startsWith(prefix)) cacheRequestMap.delete(key);
   }
 }
 
@@ -500,7 +510,7 @@ async function loadNovels(force = false) {
 async function openHome() {
   setLoading("Opening home...");
   try {
-    const novels = await loadNovels(true);
+    const novels = await loadNovels();
     const personal = await loadPersonalHome(true);
     const operations = await loadHomeOperations();
     const activeNovels = novels.filter((novel) => !novel.is_archived);
