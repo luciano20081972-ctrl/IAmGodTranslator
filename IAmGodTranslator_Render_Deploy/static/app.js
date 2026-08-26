@@ -12,7 +12,7 @@ const mobileBottomNav = document.querySelector("#mobileBottomNav");
 
 const CACHE_TTL_MS = 45_000;
 const APP_BRAND = loadBrandConfig();
-const APP_VERSION = "11.1.0";
+const APP_VERSION = "11.6.0";
 let activeRouteKey = window.location.hash || "#/home";
 let connectionInterrupted = false;
 let readerScrollHandler = null;
@@ -393,6 +393,18 @@ function applyBranding() {
   });
   document.querySelectorAll("[data-brand-tagline]").forEach((node) => { node.textContent = APP_BRAND.subtitle || APP_BRAND.tagline; });
   document.querySelectorAll("[data-brand-home]").forEach((node) => { node.setAttribute("aria-label", APP_BRAND.accessibleLogoLabel || `${APP_BRAND.name} Home`); });
+}
+
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  if (!window.isSecureContext && !["localhost", "127.0.0.1"].includes(window.location.hostname)) return;
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js")
+      .then((registration) => {
+        if (registration.waiting) registration.waiting.postMessage({type: "SKIP_WAITING"});
+      })
+      .catch(() => {});
+  }, {once: true});
 }
 
 function brandMarkSvg() {
@@ -4582,6 +4594,7 @@ window.addEventListener("popstate", () => {
 });
 window.addEventListener("DOMContentLoaded", async () => {
   applyBranding();
+  registerServiceWorker();
   applyPreferences();
   bindShellControls();
   await loadAuth();

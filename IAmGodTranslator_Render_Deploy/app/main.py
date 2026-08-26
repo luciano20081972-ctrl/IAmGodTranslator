@@ -26,6 +26,11 @@ from fastapi import Body, Depends, FastAPI, File, HTTPException, Query, Request,
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+try:
+    from starlette.middleware.gzip import GZipMiddleware
+except ModuleNotFoundError:
+    GZipMiddleware = None
+
 from app.db import Database, PLATFORM_BACKUP_TABLE_NAMES, model_pricing
 from app.content_import import payload_from_uploads
 from app.recovery import parse_uploads, recovery_request, recovery_diagnostic, reference_diagnostic
@@ -39,8 +44,25 @@ SESSION_TTL_SECONDS = 60 * 60 * 12
 LOGGER = logging.getLogger(__name__)
 DISABLED_ACCOUNT_ROLES = {"disabled", "expired", "removed", "revoked"}
 
+if isinstance(StaticFiles, type):
+    class VersionedStaticFiles(StaticFiles):
+        async def get_response(self, path: str, scope: dict[str, Any]) -> Response:
+            response = await super().get_response(path, scope)
+            normalized = path.replace("\\", "/")
+            if normalized.startswith("vendor/"):
+                response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+            else:
+                response.headers.setdefault("Cache-Control", "public, max-age=300, stale-while-revalidate=86400")
+            response.headers.setdefault("X-Content-Type-Options", "nosniff")
+            return response
+else:
+    VersionedStaticFiles = StaticFiles
+
+
 app = FastAPI(title="GodTranslator", version=VERSION)
-app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
+if GZipMiddleware is not None:
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
+app.mount("/static", VersionedStaticFiles(directory=ROOT / "static"), name="static")
 database = Database()
 BACKUP_BATCH_SIZE = max(10, min(1000, int(os.getenv("PLATFORM_BACKUP_BATCH_SIZE") or "100")))
 BACKUP_WORKERS: dict[str, threading.Thread] = {}
@@ -218,12 +240,60 @@ def startup() -> None:
 
 @app.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
-    return HTMLResponse((ROOT / "templates" / "index.html").read_text(encoding="utf-8"))
+    return HTMLResponse(
+        (ROOT / "templates" / "index.html").read_text(encoding="utf-8"),
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
 
 
 @app.get("/auth/callback", response_class=HTMLResponse)
 def auth_callback() -> HTMLResponse:
     return index()
+
+
+@app.get("/healthz")
+def healthz() -> dict[str, object]:
+    return health()
+
+
+@app.get("/manifest.webmanifest")
+def web_manifest() -> JSONResponse:
+    manifest = {
+        "name": "IAmGodTranslator",
+        "short_name": "IAG Reader",
+        "description": "Private novel reading, translation, and acquisition workspace.",
+        "start_url": "/#/home",
+        "scope": "/",
+        "display": "standalone",
+        "background_color": "#030a1a",
+        "theme_color": "#0a36c9",
+        "icons": [
+            {"src": "/static/icons/dark-hour-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}
+        ],
+    }
+    return JSONResponse(manifest, headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/sw.js")
+def service_worker() -> Response:
+    return Response(
+        (ROOT / "static" / "sw.js").read_text(encoding="utf-8"),
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache, must-revalidate", "Service-Worker-Allowed": "/"},
+    )
+
+
+async def platform_cache_headers(request: Request, call_next: Any) -> Response:
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/api/") or path.startswith("/auth/"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    return response
+
+
+if hasattr(app, "middleware"):
+    app.middleware("http")(platform_cache_headers)
 
 
 @app.get("/api/health")
