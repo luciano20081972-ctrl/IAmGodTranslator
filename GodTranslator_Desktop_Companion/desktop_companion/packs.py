@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -142,6 +143,9 @@ def chapter_number_from_file(path: Path) -> int | None:
     stem = path.stem
     if stem.isdigit():
         return int(stem)
+    cjk_match = re.search(r"第\s*0*(\d+)\s*章", stem)
+    if cjk_match:
+        return int(cjk_match.group(1))
     lowered = stem.lower().replace("_", " ").replace("-", " ")
     parts = lowered.split()
     for index, part in enumerate(parts[:-1]):

@@ -12,6 +12,7 @@ from desktop_companion.jobs import JobManager
 from desktop_companion.models import WebsiteConnectionProfile
 from desktop_companion.adapters import adapter_descriptors, adapter_names
 from desktop_companion.packs import build_auto_packs, build_pack, validate_pack
+from desktop_companion.packs import chapter_number_from_file
 from desktop_companion.paths import app_paths
 from desktop_companion.recovery import load_recovery_request
 from desktop_companion.storage import CompanionStore, read_json
@@ -188,6 +189,31 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
             self.assertEqual(manifest["format"], "godtranslator-reference-pack-v1")
             self.assertIn("cookies", manifest["excluded"])
             self.assertIn("api_keys", manifest["excluded"])
+
+    def test_unicode_and_spaced_paths_pack_as_utf8_chapters(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="God Translator 空格 ") as temp:
+            root = Path(temp) / "Mixed Case Novel" / "Reference"
+            root.mkdir(parents=True)
+            body = "第58章\n\n" + ("中文段落 with readable fixture text. " * 40)
+            chapter_59 = "Chapter 59\n\n" + ("fixture text " * 80)
+            (root / "第58章.txt").write_text(body, encoding="utf-8", newline="\n")
+            (root / "Chapter 059.txt").write_text(chapter_59, encoding="utf-8", newline="\n")
+
+            self.assertEqual(chapter_number_from_file(root / "Chapter 059.txt"), 59)
+            self.assertEqual(chapter_number_from_file(root / "第58章.txt"), 58)
+
+            result = build_pack(
+                source_dir=root,
+                output_dir=Path(temp) / "Packs With Spaces",
+                novel_id="unicode-novel",
+                novel_title="Unicode Novel",
+                target_mode="reference",
+            )
+            validation = validate_pack(result.path)
+            self.assertTrue(validation["ok"])
+            self.assertEqual(validation["chapter_count"], 2)
+            self.assertEqual(validation["manifest"]["chapters"]["58"]["character_count"], len(body))
+            self.assertEqual(validation["manifest"]["chapters"]["59"]["character_count"], len(chapter_59))
 
     def test_ui_sections_smoke(self) -> None:
         self.assertEqual(
