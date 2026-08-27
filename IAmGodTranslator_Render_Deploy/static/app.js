@@ -12,7 +12,7 @@ const mobileBottomNav = document.querySelector("#mobileBottomNav");
 
 const CACHE_TTL_MS = 45_000;
 const APP_BRAND = loadBrandConfig();
-const APP_VERSION = "11.6.0";
+const APP_VERSION = "11.6.1";
 let activeRouteKey = window.location.hash || "#/home";
 let connectionInterrupted = false;
 let readerScrollHandler = null;
@@ -28,7 +28,10 @@ const notificationSessionStartedAt = Date.now();
 const cacheRequestMap = new Map();
 const readerRequestMap = new Map();
 const READER_CACHE_LIMIT = 9;
-const CHAPTER_SEARCH_INDEX_LIMIT = 5000;
+const READER_PERSISTENT_CACHE_LIMIT = 12;
+const READER_PERSISTENT_CACHE_BYTES = 2_500_000;
+const READER_PERSISTENT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const READER_PROGRESS_SYNC_INTERVAL_MS = 5_000;
 const SEARCH_LIBRARY_FIELDS = ["title", "alternate", "author", "description", "status", "language", "tags", "counts", "source"];
 const SEARCH_CHAPTER_FIELDS = ["number", "title", "displayLabel", "status", "flags"];
 
@@ -178,6 +181,137 @@ function rememberCachePayload(path, payload) {
   while (readerKeys.length > READER_CACHE_LIMIT) {
     state.cache.delete(readerKeys.shift());
   }
+}
+
+const readerPersistentCache = {
+  dbPromise: null,
+  unavailable: false,
+  lastRevalidated: new Map(),
+};
+
+const readerProgressSync = {
+  pending: null,
+  timer: null,
+  inflight: false,
+  lastFlushAt: 0,
+};
+
+function readerCacheNamespace() {
+  return state.account?.user_id ? `user:${state.account.user_id}` : "guest";
+}
+
+function readerPersistentKey(novelId, chapterNumber, source) {
+  return `${readerCacheNamespace()}:${novelId}:${chapterNumber}:${source}`;
+}
+
+function openReaderPersistentDb() {
+  if (readerPersistentCache.unavailable || !("indexedDB" in window)) return Promise.resolve(null);
+  if (readerPersistentCache.dbPromise) return readerPersistentCache.dbPromise;
+  readerPersistentCache.dbPromise = new Promise((resolve) => {
+    const request = indexedDB.open("iagt-reader-cache-v1", 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains("chapters")) {
+        const store = db.createObjectStore("chapters", {keyPath: "key"});
+        store.createIndex("namespace", "namespace", {unique: false});
+        store.createIndex("lastAccessedAt", "lastAccessedAt", {unique: false});
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => {
+      readerPersistentCache.unavailable = true;
+      resolve(null);
+    };
+    request.onblocked = () => resolve(null);
+  });
+  return readerPersistentCache.dbPromise;
+}
+
+async function readPersistentChapter(novelId, chapterNumber, source) {
+  const db = await openReaderPersistentDb();
+  if (!db) return null;
+  const key = readerPersistentKey(novelId, chapterNumber, source);
+  return new Promise((resolve) => {
+    const tx = db.transaction("chapters", "readwrite");
+    const store = tx.objectStore("chapters");
+    const request = store.get(key);
+    request.onsuccess = () => {
+      const record = request.result;
+      if (!record || Date.now() - Number(record.fetchedAt || 0) > READER_PERSISTENT_CACHE_TTL_MS) {
+        if (record) store.delete(key);
+        resolve(null);
+        return;
+      }
+      record.lastAccessedAt = Date.now();
+      store.put(record);
+      resolve(record.payload || null);
+    };
+    request.onerror = () => resolve(null);
+  });
+}
+
+async function writePersistentChapter(novelId, chapterNumber, source, payload) {
+  if (!payload?.ok || !payload.text || !payload.content_hash) return;
+  const db = await openReaderPersistentDb();
+  if (!db) return;
+  const key = readerPersistentKey(novelId, chapterNumber, source);
+  const now = Date.now();
+  const record = {
+    key,
+    namespace: readerCacheNamespace(),
+    novelId,
+    chapterNumber: Number(chapterNumber),
+    source,
+    contentHash: payload.content_hash,
+    payload,
+    fetchedAt: now,
+    lastAccessedAt: now,
+    estimatedBytes: new Blob([JSON.stringify(payload)]).size,
+  };
+  await new Promise((resolve) => {
+    const tx = db.transaction("chapters", "readwrite");
+    tx.objectStore("chapters").put(record);
+    tx.oncomplete = resolve;
+    tx.onerror = resolve;
+  });
+  enforceReaderPersistentLimit(db, record.namespace).catch(() => {});
+}
+
+async function enforceReaderPersistentLimit(db, namespace) {
+  const records = await new Promise((resolve) => {
+    const tx = db.transaction("chapters", "readonly");
+    const request = tx.objectStore("chapters").getAll();
+    request.onsuccess = () => resolve((request.result || []).filter((item) => item.namespace === namespace));
+    request.onerror = () => resolve([]);
+  });
+  let totalBytes = records.reduce((sum, item) => sum + Number(item.estimatedBytes || 0), 0);
+  const sorted = records.sort((a, b) => Number(a.lastAccessedAt || 0) - Number(b.lastAccessedAt || 0));
+  const deletions = [];
+  while (sorted.length > READER_PERSISTENT_CACHE_LIMIT || totalBytes > READER_PERSISTENT_CACHE_BYTES) {
+    const stale = sorted.shift();
+    if (!stale) break;
+    totalBytes -= Number(stale.estimatedBytes || 0);
+    deletions.push(stale.key);
+  }
+  if (!deletions.length) return;
+  await new Promise((resolve) => {
+    const tx = db.transaction("chapters", "readwrite");
+    const store = tx.objectStore("chapters");
+    deletions.forEach((key) => store.delete(key));
+    tx.oncomplete = resolve;
+    tx.onerror = resolve;
+  });
+}
+
+async function clearReaderPersistentCache() {
+  const db = await openReaderPersistentDb();
+  if (!db) return;
+  await new Promise((resolve) => {
+    const tx = db.transaction("chapters", "readwrite");
+    tx.objectStore("chapters").clear();
+    tx.oncomplete = resolve;
+    tx.onerror = resolve;
+  });
 }
 
 function invalidateCache(prefix = "") {
@@ -1302,16 +1436,23 @@ async function openChapters(novelId) {
 }
 
 async function loadChapters(novelId) {
-  const path = `/api/novels/${encodeURIComponent(novelId)}/library?limit=${CHAPTER_SEARCH_INDEX_LIMIT}&offset=0&view=${encodeURIComponent(state.chapterView)}`;
+  const params = new URLSearchParams({
+    limit: String(state.pageSize),
+    offset: String(state.chapterOffset),
+    view: state.chapterView,
+  });
+  if (state.chapterSearch.trim()) params.set("search", state.chapterSearch.trim());
+  const path = `/api/novels/${encodeURIComponent(novelId)}/library?${params.toString()}`;
   const payload = await cachedApi(path);
-  const allChapters = payload.chapters || [];
-  const searched = searchChapters(allChapters, state.chapterSearch);
-  const total = searched.chapters.length;
+  const total = Number(payload.total || 0);
   const maxOffset = total ? Math.floor((total - 1) / state.pageSize) * state.pageSize : 0;
-  if (state.chapterOffset > maxOffset) state.chapterOffset = maxOffset;
-  state.chapters = searched.chapters.slice(state.chapterOffset, state.chapterOffset + state.pageSize);
+  if (state.chapterOffset > maxOffset) {
+    state.chapterOffset = maxOffset;
+    return loadChapters(novelId);
+  }
+  state.chapters = payload.chapters || [];
   state.chapterTotal = total;
-  return {...payload, chapters: state.chapters, total, all_chapters: allChapters, search: searched, truncated: Number(payload.total || 0) > allChapters.length};
+  return {...payload, chapters: state.chapters, total, all_chapters: state.chapters, search: {chapters: state.chapters, engine: "server"}, truncated: false};
 }
 
 function renderChapters(payload) {
@@ -1412,22 +1553,16 @@ function displayChapterTitle(chapter, source = state.source) {
 async function openReader(novelId, chapterNumber, requestedSource) {
   setLoading("Opening reader...");
   try {
-    if (!state.chapters.length || state.currentNovelId !== novelId) {
-      state.currentNovelId = novelId;
-      state.chapterOffset = Math.max(0, chapterNumber - 25);
-      await loadChapters(novelId);
-      state.chapterOffset = 0;
-      await cachedApi(`/api/novels/${novelId}/library?limit=5000`, 120_000).then((payload) => { state.chapters = payload.chapters || []; });
-    }
+    state.currentNovelId = novelId;
     const chapter = state.chapters.find((item) => item.chapter_number === chapterNumber);
     const requested = ["english", "ai", "reference", "original"].includes(requestedSource) ? (requestedSource === "ai" ? "english" : requestedSource) : preferredSource(chapter);
     const source = readerSourceOptions().includes(requested) ? requested : safeReaderSource(preferredSource(chapter));
     state.source = source;
     localStorage.setItem("gt-reader-source", source);
     state.lastReaderHref = `#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}`;
-    const payload = await fetchReaderChapter(novelId, chapterNumber, source);
+    const payload = await fetchReaderChapter(novelId, chapterNumber, source, {foreground: true});
     renderReader(novelId, chapterNumber, source, payload);
-    prefetchNeighborChapters(novelId, chapterNumber, source);
+    prefetchNeighborChapters(novelId, chapterNumber, source, payload?.neighbors);
   } catch (error) {
     if (error.name === "AbortError") return;
     setError(error.message);
@@ -1435,8 +1570,8 @@ async function openReader(novelId, chapterNumber, requestedSource) {
 }
 
 function renderReader(novelId, chapterNumber, source, payload) {
-  const previous = neighborChapter(chapterNumber, -1);
-  const next = neighborChapter(chapterNumber, 1);
+  const previous = payload?.neighbors?.previous ?? neighborChapter(chapterNumber, -1);
+  const next = payload?.neighbors?.next ?? neighborChapter(chapterNumber, 1);
   const novel = state.novels.find((item) => item.id === novelId) || {};
   const options = readerSourceOptions();
   const metrics = readerMetrics(payload, chapterNumber);
@@ -1447,6 +1582,11 @@ function renderReader(novelId, chapterNumber, source, payload) {
   const showTitleDetail = detailedTitle && detailedTitle.toLowerCase() !== chapterLabel.toLowerCase();
   const savedPercent = Number(localStorage.getItem(readerScrollKey(novelId, chapterNumber, source)) || 0);
   const restoreNote = Number.isFinite(savedPercent) && savedPercent >= 8 ? `<p class="reader-restore-note">Continue where you stopped · ${Math.round(savedPercent)}%</p>` : "";
+  const cacheNote = payload?.cache_state === "offline"
+    ? `<p class="reader-cache-note">Offline copy</p>`
+    : payload?.cache_state === "local-first"
+      ? `<p class="reader-cache-note">Opened from local cache</p>`
+      : "";
   rememberRecent("chapters", {novel_id: novelId, chapter_number: chapterNumber, source, label: `Chapter ${chapterNumber}`, href: `#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}`, at: new Date().toISOString()});
   document.documentElement.style.setProperty("--reader-font", `${state.fontSize}px`);
   document.body.dataset.zen = state.zen ? "on" : "off";
@@ -1462,7 +1602,7 @@ function renderReader(novelId, chapterNumber, source, payload) {
       <header class="reader-heading">
         <div class="reader-kicker"><a href="#/novel/${encodeURIComponent(novelId)}">${escapeHtml(novelTitle)}</a></div>
         <h1 id="readerChapterHeading">${escapeHtml(chapterLabel)}</h1>
-        ${restoreNote}
+        ${restoreNote}${cacheNote}
       </header>
       <article class="reader-text" tabindex="-1" aria-live="polite">${renderReaderText(payload, source)}</article>
       <nav class="reader-bottom-nav" aria-label="Chapter navigation">
@@ -1910,15 +2050,44 @@ function toggleLocalBookmark(novelId, chapterNumber) {
   writeStored("gt-local-bookmarks", next.slice(0, 200));
 }
 
-const saveProgressDebounced = debounce(async (novelId, chapterNumber, source, scrollPercent) => {
+async function flushReaderProgress() {
   if (!state.account) return;
+  if (!readerProgressSync.pending || readerProgressSync.inflight) return;
+  const payload = readerProgressSync.pending;
+  readerProgressSync.pending = null;
+  readerProgressSync.inflight = true;
   try {
-    await api("/api/account/progress", {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify({novel_id: novelId, chapter_number: chapterNumber, source, scroll_percent: scrollPercent})});
+    await api("/api/account/progress", {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
     state.personal = null;
+    readerProgressSync.lastFlushAt = Date.now();
   } catch {
+    readerProgressSync.pending = readerProgressSync.pending || payload;
     // Reading should never be interrupted by private progress sync failure.
+  } finally {
+    readerProgressSync.inflight = false;
+    if (readerProgressSync.pending) scheduleReaderProgressFlush();
   }
-}, 700);
+}
+
+function scheduleReaderProgressFlush() {
+  if (!state.account) return;
+  clearTimeout(readerProgressSync.timer);
+  const elapsed = Date.now() - readerProgressSync.lastFlushAt;
+  const wait = Math.max(0, READER_PROGRESS_SYNC_INTERVAL_MS - elapsed);
+  readerProgressSync.timer = setTimeout(() => flushReaderProgress(), wait);
+}
+
+function queueReaderProgressSync(novelId, chapterNumber, source, scrollPercent) {
+  if (!state.account) return;
+  readerProgressSync.pending = {
+    novel_id: novelId,
+    chapter_number: chapterNumber,
+    source,
+    scroll_percent: scrollPercent,
+    client_updated_at: new Date().toISOString(),
+  };
+  scheduleReaderProgressFlush();
+}
 
 function readerScrollPercent() {
   const total = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
@@ -3094,6 +3263,10 @@ function openSettings(section = "", intent = "") {
   document.querySelectorAll(".pref-switch").forEach((field) => field.addEventListener("keydown", handleSwitchKeydown));
   if (activeSection === "account") bindAccountControls();
   if (activeSection === "account" && !state.account) requestAnimationFrame(() => document.querySelector("#authEmail")?.focus());
+  document.querySelector("#clearReaderCache")?.addEventListener("click", async () => {
+    await clearReaderPersistentCache();
+    toast("Offline reader cache cleared.");
+  });
   document.querySelector("#resetPrefs")?.addEventListener("click", () => {
     state.preferences = defaultPreferences();
     localStorage.setItem("gt-preferences", JSON.stringify(state.preferences));
@@ -3174,6 +3347,7 @@ function renderPrivacySettings(pref) {
     <div class="studio-heading"><h2>Privacy</h2><span>Reading data and local state</span></div>
     <h3>Basic</h3>
     <div class="preview-grid">${radioToggle("saveLocalHistory", pref.saveLocalHistory, "Local recent history", "Remember recent novels and chapters on this device")}${radioToggle("syncAccountProgress", pref.syncAccountProgress, "Sync account progress", "Save reading position when signed in")}</div>
+    <details open><summary>Offline Reader</summary><p class="muted">Previously opened chapters may be kept in a private bounded browser cache for faster reopen and temporary offline reading.</p><div class="actions"><button id="clearReaderCache" type="button">Clear Offline Reader Cache</button></div></details>
     <details><summary>Advanced</summary><p class="muted">Reference text remains protected by role server-side. Secrets, tokens, provider bodies, and chapter text are not stored in settings preferences.</p></details>
   </section>`;
 }
@@ -3404,17 +3578,28 @@ function renderJobDetail(job) {
   return `<section class="panel job-detail"><div class="actions"><h2>Job ${job.id.slice(0, 8)}</h2><button type="button" data-copy-link="#/jobs/${job.id}">Copy Link</button></div><div class="metric-grid">${metric("Status", job.status)}${metric("Completed", `${job.completed_items || 0}/${job.total_items || 0}`)}${metric("Active workers", job.activity?.active_workers || 0)}${metric("Speed", throughput.summary)}${metric("Remaining", throughput.remaining)}${metric("Updated", timeAgo(job.updated_at))}</div><details open><summary>Advanced worker details</summary><div class="job-items">${visible.map((item) => `<span class="job-item">${item.chapter_number} ${escapeHtml(item.status || "")}${item.worker_id ? ` - ${escapeHtml(item.worker_id.slice(0, 8))}` : ""}${item.failure_category ? ` - ${escapeHtml(item.failure_category)}` : ""}</span>`).join("") || `<p class="muted">No items.</p>`}</div></details></section>`;
 }
 
-async function fetchReaderChapter(novelId, chapterNumber, source) {
+async function fetchReaderChapter(novelId, chapterNumber, source, options = {}) {
   const path = chapterTextPath(novelId, chapterNumber, source);
   const cached = state.cache.get(path);
   if (cached && Date.now() - cached.time < 120_000) return cached.payload;
+  const persistent = await readPersistentChapter(novelId, chapterNumber, source);
+  if (persistent) {
+    rememberCachePayload(path, persistent);
+    if (navigator.onLine !== false) revalidateReaderChapter(novelId, chapterNumber, source, persistent.content_hash).catch(() => {});
+    return {...persistent, cache_state: navigator.onLine === false ? "offline" : "local-first"};
+  }
   const key = `${novelId}:${chapterNumber}:${source}`;
   if (readerRequestMap.has(key)) return readerRequestMap.get(key);
-  if (readerAbortController) readerAbortController.abort();
-  readerAbortController = new AbortController();
-  const request = api(path, {signal: readerAbortController.signal})
-    .then((payload) => {
+  const requestOptions = {};
+  if (options.foreground) {
+    if (readerAbortController) readerAbortController.abort();
+    readerAbortController = new AbortController();
+    requestOptions.signal = readerAbortController.signal;
+  }
+  const request = api(path, requestOptions)
+    .then(async (payload) => {
       rememberCachePayload(path, payload);
+      await writePersistentChapter(novelId, chapterNumber, source, payload);
       return payload;
     })
     .finally(() => readerRequestMap.delete(key));
@@ -3426,11 +3611,24 @@ function chapterTextPath(novelId, chapterNumber, source) {
   return `/api/novels/${encodeURIComponent(novelId)}/chapters/${chapterNumber}/${source}`;
 }
 
-function prefetchNeighborChapters(novelId, chapterNumber, source) {
+async function revalidateReaderChapter(novelId, chapterNumber, source, knownHash) {
+  const key = `${novelId}:${chapterNumber}:${source}`;
+  if (readerPersistentCache.lastRevalidated.get(key) && Date.now() - readerPersistentCache.lastRevalidated.get(key) < 30_000) return;
+  readerPersistentCache.lastRevalidated.set(key, Date.now());
+  const path = chapterTextPath(novelId, chapterNumber, source);
+  const payload = await api(path);
+  if (!payload?.ok) return;
+  if (payload.content_hash !== knownHash) {
+    rememberCachePayload(path, payload);
+  }
+  await writePersistentChapter(novelId, chapterNumber, source, payload);
+}
+
+function prefetchNeighborChapters(novelId, chapterNumber, source, neighbors = null) {
   if (source === "reference" && !canViewReference()) return;
-  [neighborChapter(chapterNumber, -1), neighborChapter(chapterNumber, 1)]
+  [neighbors?.next ?? neighborChapter(chapterNumber, 1)]
     .filter(Boolean)
-    .forEach((chapter) => cachedApi(chapterTextPath(novelId, chapter, source), 120_000).catch(() => {}));
+    .forEach((chapter) => fetchReaderChapter(novelId, chapter, source, {prefetch: true}).catch(() => {}));
 }
 
 function bindReaderProgress(novelId, chapterNumber, source) {
@@ -3439,7 +3637,7 @@ function bindReaderProgress(novelId, chapterNumber, source) {
     const percent = readerScrollPercent();
     localStorage.setItem(readerScrollKey(novelId, chapterNumber, source), String(percent));
     rememberRecent("chapters", {novel_id: novelId, chapter_number: chapterNumber, source, label: `Chapter ${chapterNumber}`, href: `#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}`, scroll_percent: percent, at: new Date().toISOString()});
-    saveProgressDebounced(novelId, chapterNumber, source, percent);
+    queueReaderProgressSync(novelId, chapterNumber, source, percent);
     updateBackToTop();
     updateReaderProgressUi(percent);
   }, 700);
@@ -4581,6 +4779,7 @@ function titleCase(value) {
 
 window.addEventListener("hashchange", () => {
   saveScrollPosition();
+  flushReaderProgress();
   closeParagraphMenu(false);
   activeRouteKey = window.location.hash || "#/home";
   if (!activeRouteKey.startsWith("#/reader/") && readerScrollHandler) {
@@ -4598,6 +4797,12 @@ window.addEventListener("hashchange", () => {
     readerRequestMap.clear();
   }
   route();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") flushReaderProgress();
+});
+window.addEventListener("pagehide", () => {
+  flushReaderProgress();
 });
 window.addEventListener("popstate", () => {
   if (commandDialog?.open) closeCommandPaletteFromHistory();

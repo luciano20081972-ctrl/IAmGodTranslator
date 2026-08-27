@@ -1361,6 +1361,28 @@ class Database:
             ).fetchall()
         return {"novel": novel, "total": int(total_row["total"]), "chapters": [public_chapter_row(row) for row in rows]}
 
+    def chapter_neighbors(self, novel_id: str, chapter_number: int) -> dict[str, int | None]:
+        chapters = self.table("chapters")
+        with self.connect() as conn:
+            previous = conn.execute(
+                f"SELECT MAX(chapter_number) AS chapter_number FROM {chapters} WHERE novel_id = ? AND chapter_number < ?",
+                (novel_id, int(chapter_number)),
+            ).fetchone()
+            next_row = conn.execute(
+                f"SELECT MIN(chapter_number) AS chapter_number FROM {chapters} WHERE novel_id = ? AND chapter_number > ?",
+                (novel_id, int(chapter_number)),
+            ).fetchone()
+        return {
+            "previous": optional_int(previous["chapter_number"] if previous else None),
+            "next": optional_int(next_row["chapter_number"] if next_row else None),
+        }
+
+    def chapter_response_metadata(self, novel_id: str, chapter_number: int, text: str) -> dict[str, Any]:
+        return {
+            "content_hash": hashlib.sha256((text or "").encode("utf-8")).hexdigest(),
+            "neighbors": self.chapter_neighbors(novel_id, chapter_number),
+        }
+
     def chapter_text(self, novel_id: str, chapter_number: int, mode: str) -> dict[str, Any]:
         if mode in {"english", "ai"}:
             with self.connect() as conn:
@@ -1402,6 +1424,7 @@ class Database:
                 "title": display_chapter_title(chapter_number, row["title"]),
                 "text": text,
                 "mode": "english",
+                **self.chapter_response_metadata(novel_id, chapter_number, text),
                 "edition": {
                     "edition_key": edition["edition_key"] if edition else "ai",
                     "edition_type": edition["edition_type"] if edition else "AI",
@@ -1417,7 +1440,14 @@ class Database:
         if not readable(text):
             status = {"original": "original_missing", "reference": "reference_missing", "ai": "ai_missing"}[mode]
             return {"ok": False, "status": status, "message": f"{mode.replace('_', ' ').title()} text is missing.", "chapter_number": chapter_number, "title": display_chapter_title(chapter_number, row["title"]), "text": ""}
-        return {"ok": True, "status": "ok", "chapter_number": chapter_number, "title": display_chapter_title(chapter_number, row["title"]), "text": text}
+        return {
+            "ok": True,
+            "status": "ok",
+            "chapter_number": chapter_number,
+            "title": display_chapter_title(chapter_number, row["title"]),
+            "text": text,
+            **self.chapter_response_metadata(novel_id, chapter_number, text),
+        }
 
     def verification_counts(self, novel_id: str) -> dict[str, int]:
         chapters = self.table("chapters")

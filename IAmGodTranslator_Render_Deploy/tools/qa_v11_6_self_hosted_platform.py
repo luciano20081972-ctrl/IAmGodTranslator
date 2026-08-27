@@ -32,7 +32,10 @@ def main() -> int:
     acquisition_qa = read(APP_ROOT / "tools" / "qa_v11_6_cycle3_acquisition.py")
     seeded_profile = read(APP_ROOT / "tools" / "profile_v11_6_seeded.py")
     seeded_browser_profile = read(APP_ROOT / "tools" / "browser_v11_6_seeded_profile.py")
+    cycle4_reader_qa = read(APP_ROOT / "tools" / "qa_v11_6_cycle4_reader_performance.py")
+    cycle4_browser_smoke = read(APP_ROOT / "tools" / "browser_v11_6_reader_cache_smoke.py")
     cycle3_report = read(APP_ROOT / "V11_6_CYCLE3_HYBRID_ACQUISITION_AND_PERFORMANCE.md")
+    cycle4_report = read(APP_ROOT / "V11_6_CYCLE4_READER_PERFORMANCE_AND_LOCAL_FIRST.md")
     desktop_packs = read(APP_ROOT.parent / "GodTranslator_Desktop_Companion" / "desktop_companion" / "packs.py")
     desktop_tests = read(APP_ROOT.parent / "GodTranslator_Desktop_Companion" / "tests" / "test_foundation.py")
     icon = APP_ROOT / "static" / "icons" / "dark-hour-icon.svg"
@@ -47,11 +50,11 @@ def main() -> int:
 
     require("manifest linked from shell", 'rel="manifest"' in index, failures)
     require("theme color uses Dark Hour blue", '#0a36c9' in index and '#0a36c9' in main_py, failures)
-    require("versioned app shell assets referenced", "v=11.6.0" in index and 'APP_VERSION = "11.6.0"' in app_js, failures)
+    require("versioned app shell assets referenced", "v=11.6.1" in index and 'APP_VERSION = "11.6.1"' in app_js, failures)
     require("service worker registered safely", "registerServiceWorker" in app_js and "window.isSecureContext" in app_js, failures)
     require("cached GETs dedupe in-flight requests", "cacheRequestMap" in app_js and "cacheRequestMap.has(path)" in app_js, failures)
 
-    require("service worker cache is versioned", 'GT_CACHE_VERSION = "iagt-app-shell-11.6.0"' in sw, failures)
+    require("service worker cache is versioned", 'GT_CACHE_VERSION = "iagt-app-shell-11.6.1"' in sw, failures)
     require("service worker excludes API cache", 'pathname.startsWith("/api/")' in sw, failures)
     require("service worker excludes auth cache", 'pathname.startsWith("/auth/")' in sw, failures)
     require("service worker handles activation cleanup", "caches.delete" in sw and "clients.claim" in sw, failures)
@@ -70,7 +73,10 @@ def main() -> int:
     require("cycle 3 acquisition QA exists", "redirect to forbidden host rejected" in acquisition_qa, failures)
     require("seeded profiling exists", "large-chapters" in seeded_profile and "production_content_used" in seeded_profile, failures)
     require("seeded browser profiling exists", "chapter_list_rows_visible_or_mounted" in seeded_browser_profile, failures)
+    require("cycle 4 reader performance QA exists", "reader cache uses IndexedDB" in cycle4_reader_qa and "production_database_used" in cycle4_reader_qa, failures)
+    require("cycle 4 browser cache smoke exists", "offline_cached_reopen" in cycle4_browser_smoke and "next_reused_prefetched_chapter_2" in cycle4_browser_smoke, failures)
     require("cycle 3 hybrid report exists", "Hybrid acquisition" in cycle3_report and "Cycle 4 Recommendation" in cycle3_report, failures)
+    require("cycle 4 reader performance report exists", "Local-First Reader Cache" in cycle4_report and "READY FOR CYCLE 5" in cycle4_report, failures)
     require("desktop CJK chapter filenames parse", "第\\s*0*(\\d+)\\s*章" in desktop_packs, failures)
     require("desktop Unicode path regression exists", "test_unicode_and_spaced_paths_pack_as_utf8_chapters" in desktop_tests, failures)
 
