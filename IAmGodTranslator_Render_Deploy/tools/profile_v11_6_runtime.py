@@ -23,8 +23,8 @@ ROUTES = [
     ("/api/desktop/health", "api", False),
     ("/manifest.webmanifest", "pwa", False),
     ("/sw.js", "pwa", False),
-    ("/static/app.js?v=11.6.1", "static", True),
-    ("/static/styles.css?v=11.6.1", "static", True),
+    ("/static/app.js?v=11.6.2", "static", True),
+    ("/static/styles.css?v=11.6.2", "static", True),
     ("/static/icons/dark-hour-icon.svg", "static", False),
 ]
 
@@ -76,11 +76,11 @@ def validate(metrics: list[RouteMetric]) -> list[str]:
         failures.append("HTML shell must be no-cache")
     if "no-cache" not in by_path["/sw.js"].cache_control:
         failures.append("service worker must be no-cache")
-    if "max-age" not in by_path["/static/app.js?v=11.6.1"].cache_control:
+    if "max-age" not in by_path["/static/app.js?v=11.6.2"].cache_control:
         failures.append("app.js static cache header missing")
     if "max-age" not in by_path["/manifest.webmanifest"].cache_control:
         failures.append("manifest cache header missing")
-    if by_path["/static/app.js?v=11.6.1"].content_encoding != "gzip":
+    if by_path["/static/app.js?v=11.6.2"].content_encoding != "gzip":
         failures.append("app.js did not return gzip content encoding")
     if by_path["/healthz"].content_encoding:
         failures.append("/healthz should stay uncompressed under the threshold")

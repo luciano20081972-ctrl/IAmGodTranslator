@@ -12,7 +12,7 @@ const mobileBottomNav = document.querySelector("#mobileBottomNav");
 
 const CACHE_TTL_MS = 45_000;
 const APP_BRAND = loadBrandConfig();
-const APP_VERSION = "11.6.1";
+const APP_VERSION = "11.6.2";
 let activeRouteKey = window.location.hash || "#/home";
 let connectionInterrupted = false;
 let readerScrollHandler = null;
@@ -79,13 +79,13 @@ const chapterViews = [
 
 function loadBrandConfig() {
   const defaults = {
-    name: "I Am God Reader",
-    shortName: "IAG Reader",
-    subtitle: "Novel Library",
-    tagline: "Novel Library",
+    name: "IAmGodTranslator",
+    shortName: "IAGT",
+    subtitle: "Dark Hour Reader",
+    tagline: "Read, import, and translate novels",
     mark: "book-portal",
-    browserTitle: "I Am God Reader",
-    accessibleLogoLabel: "I Am God Reader home",
+    browserTitle: "IAmGodTranslator",
+    accessibleLogoLabel: "IAmGodTranslator home",
   };
   const configNode = document.querySelector("#appBrandConfig");
   if (!configNode) return defaults;
@@ -382,6 +382,10 @@ function renderNav() {
     ["home", "Home", "#/home", true],
     ["library", "Library", "#/library", true],
     ["continue", "Continue Reading", continueHref, true],
+    ["download", "Add Novel", "#/admin/imports", state.admin],
+    ["translate", "Translate", `#/translate/${state.currentNovelId}`, canTranslate()],
+    ["settings", "Settings", "#/settings", true],
+    ["admin", "Admin", "#/admin", state.admin],
   ];
   nav.innerHTML = links.filter(([, , , allowed]) => allowed).map(([key, label, href]) => `<a data-nav="${key}" href="${href}">${label}</a>`).join("");
   if (accountBtn) {
