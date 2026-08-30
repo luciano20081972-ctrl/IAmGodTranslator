@@ -11,6 +11,8 @@ const notificationCenter = document.querySelector("#notificationCenter");
 const mobileBottomNav = document.querySelector("#mobileBottomNav");
 
 const CACHE_TTL_MS = 45_000;
+const PUBLIC_CACHE_TTL_MS = 10 * 60 * 1000;
+const PUBLIC_CACHE_PREFIX = "gt-public-cache:";
 const APP_BRAND = loadBrandConfig();
 const APP_VERSION = "11.6.2";
 let activeRouteKey = window.location.hash || "#/home";
@@ -116,13 +118,14 @@ async function api(path, options = {}) {
 }
 
 async function apiOnce(path, options = {}) {
-  const token = await getAccessToken();
+  const {auth = true, headers = {}, ...fetchOptions} = options;
+  const token = auth === false ? null : await getAccessToken();
   let response;
   try {
     response = await fetch(path, {
+      ...fetchOptions,
       credentials: "same-origin",
-      headers: {"Accept": "application/json", ...(token ? {"Authorization": `Bearer ${token}`} : {}), ...(options.headers || {})},
-      ...options,
+      headers: {"Accept": "application/json", ...(token ? {"Authorization": `Bearer ${token}`} : {}), ...headers},
     });
   } catch (error) {
     if (error.name === "AbortError") throw error;
@@ -173,6 +176,24 @@ async function cachedApi(path, ttl = CACHE_TTL_MS) {
     .finally(() => cacheRequestMap.delete(path));
   cacheRequestMap.set(path, request);
   return request;
+}
+
+function readPublicCache(path, maxAge = PUBLIC_CACHE_TTL_MS) {
+  try {
+    const cached = JSON.parse(localStorage.getItem(`${PUBLIC_CACHE_PREFIX}${path}`) || "null");
+    if (!cached || Date.now() - Number(cached.time || 0) > maxAge) return null;
+    return cached.payload || null;
+  } catch {
+    return null;
+  }
+}
+
+function writePublicCache(path, payload) {
+  try {
+    localStorage.setItem(`${PUBLIC_CACHE_PREFIX}${path}`, JSON.stringify({time: Date.now(), payload}));
+  } catch {
+    // Ignore quota pressure; network fetch remains the source of truth.
+  }
 }
 
 function rememberCachePayload(path, payload) {
@@ -636,13 +657,58 @@ async function getAccessToken() {
 
 async function loadNovels(force = false) {
   if (!force && state.novels.length) return state.novels;
-  const payload = force ? await api("/api/novels") : await cachedApi("/api/novels");
+  const path = "/api/novels";
+  if (!force) {
+    const cached = readPublicCache(path);
+    if (cached?.novels?.length) {
+      state.novels = cached.novels || [];
+      refreshNovelsInBackground(path);
+      ensureCurrentNovel();
+      return state.novels;
+    }
+  }
+  const payload = force ? await api(path, {auth: false}) : await cachedPublicApi(path);
   state.novels = payload.novels || [];
+  writePublicCache(path, payload);
+  ensureCurrentNovel();
+  return state.novels;
+}
+
+async function cachedPublicApi(path, ttl = CACHE_TTL_MS) {
+  const cached = state.cache.get(path);
+  if (cached && Date.now() - cached.time < ttl) return cached.payload;
+  if (cacheRequestMap.has(path)) return cacheRequestMap.get(path);
+  const request = api(path, {auth: false})
+    .then((payload) => {
+      rememberCachePayload(path, payload);
+      writePublicCache(path, payload);
+      return payload;
+    })
+    .finally(() => cacheRequestMap.delete(path));
+  cacheRequestMap.set(path, request);
+  return request;
+}
+
+function refreshNovelsInBackground(path = "/api/novels") {
+  if (cacheRequestMap.has(path)) return;
+  const request = api(path, {auth: false})
+    .then((payload) => {
+      state.novels = payload.novels || state.novels;
+      rememberCachePayload(path, payload);
+      writePublicCache(path, payload);
+      ensureCurrentNovel();
+      return payload;
+    })
+    .catch(() => null)
+    .finally(() => cacheRequestMap.delete(path));
+  cacheRequestMap.set(path, request);
+}
+
+function ensureCurrentNovel() {
   if (!state.novels.some((novel) => novel.id === state.currentNovelId) && state.novels[0]) {
     state.currentNovelId = state.novels[0].id;
     localStorage.setItem("gt-current-novel", state.currentNovelId);
   }
-  return state.novels;
 }
 
 async function openHome() {
@@ -892,7 +958,7 @@ function readerSourceOptions() {
 async function openLibrary() {
   setLoading("Opening library...");
   try {
-    const novels = await loadNovels(true);
+    const novels = await loadNovels();
     if (!state.admin && state.libraryView.filter === "archived") {
       state.libraryView = {...state.libraryView, filter: "active"};
       writeStored("gt-library-view", state.libraryView);
@@ -1072,7 +1138,7 @@ function readableChapterCount(novel) {
 }
 
 function renderCoverArt(novel, title = displayNovelTitle(novel || {})) {
-  if (novel?.cover_url) return `<img src="${escapeAttr(novel.cover_url)}" alt="">`;
+  if (novel?.cover_url) return `<img src="${escapeAttr(novel.cover_url)}" alt="" loading="lazy" decoding="async">`;
   return renderFallbackCover(title);
 }
 
@@ -1447,7 +1513,7 @@ async function loadChapters(novelId) {
   });
   if (state.chapterSearch.trim()) params.set("search", state.chapterSearch.trim());
   const path = `/api/novels/${encodeURIComponent(novelId)}/library?${params.toString()}`;
-  const payload = await cachedApi(path);
+  const payload = await cachedPublicApi(path);
   const total = Number(payload.total || 0);
   const maxOffset = total ? Math.floor((total - 1) / state.pageSize) * state.pageSize : 0;
   if (state.chapterOffset > maxOffset) {
@@ -3600,7 +3666,8 @@ async function fetchReaderChapter(novelId, chapterNumber, source, options = {}) 
     readerAbortController = new AbortController();
     requestOptions.signal = readerAbortController.signal;
   }
-  const request = api(path, requestOptions)
+  const needsProtectedSource = ["reference", "original"].includes(source) && canViewReference();
+  const request = api(path, {...requestOptions, auth: needsProtectedSource})
     .then(async (payload) => {
       rememberCachePayload(path, payload);
       await writePersistentChapter(novelId, chapterNumber, source, payload);
@@ -4816,9 +4883,15 @@ window.addEventListener("DOMContentLoaded", async () => {
   registerServiceWorker();
   applyPreferences();
   bindShellControls();
-  await loadAuth();
-  await refreshSession();
-  await loadNovels().catch(() => {});
   activeRouteKey = window.location.hash || "#/home";
   route();
+  bootstrapSessionState();
 });
+
+async function bootstrapSessionState() {
+  await loadAuth();
+  await refreshSession();
+  const current = window.location.hash || "#/home";
+  if (["#/home", "#/library", "#/settings", "#/settings/account"].includes(current)) route();
+  updateActivityIndicator();
+}

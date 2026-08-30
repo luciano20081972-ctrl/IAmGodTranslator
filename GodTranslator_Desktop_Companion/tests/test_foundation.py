@@ -79,6 +79,11 @@ class SlowFixtureDownloaderAdapter(FixtureDownloaderAdapter):
         return {"success": success, "failed": failed, "skipped": skipped}
 
 
+class BrokenSetupAdapter(FixtureDownloaderAdapter):
+    def build_options(self, **kwargs):
+        raise RuntimeError("adapter setup failed")
+
+
 def wait_for_job(store: CompanionStore, job_id: str, statuses: set[str]) -> None:
     deadline = time.time() + 5
     while time.time() < deadline:
@@ -102,18 +107,48 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
         self.assertEqual(request.missing_count, 3)
 
     def test_job_persistence_and_resume(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory() as temp, patch.dict("desktop_companion.jobs.ADAPTERS", {"fixture": FixtureDownloaderAdapter}):
             paths = app_paths(Path(temp))
             store = CompanionStore(paths)
             manager = JobManager(store, paths)
-            job = manager.create_job("Fixture Novel", "https://example.invalid/novel", [1, 2, 3], output_dir=paths.downloads_dir / "fixture")
+            job = manager.create_job("Fixture Novel", "https://example.invalid/novel", [1, 2, 3], output_dir=paths.downloads_dir / "fixture", source_adapter="fixture")
             self.assertEqual(job.status, "queued")
             manager.pause(job.id)
             self.assertEqual(store.job(job.id).status, "paused")
             manager.resume(job.id)
-            self.assertEqual(store.job(job.id).status, "queued")
+            wait_for_job(store, job.id, {"completed"})
+            self.assertEqual(store.job(job.id).downloaded_chapters, [1, 2, 3])
             payload = read_json(paths.jobs_file, {})
             self.assertEqual(payload["jobs"][0]["id"], job.id)
+
+    def test_resume_retry_restart_dispatch_real_executor_and_remove_keeps_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, patch.dict("desktop_companion.jobs.ADAPTERS", {"fixture": SlowFixtureDownloaderAdapter}):
+            paths = app_paths(Path(temp))
+            store = CompanionStore(paths)
+            manager = JobManager(store, paths)
+            job = manager.create_job("Fixture Novel", "https://example.invalid/novel", [1, 2], output_dir=paths.downloads_dir, source_adapter="fixture")
+            manager.pause(job.id)
+            manager.resume(job.id)
+            wait_for_job(store, job.id, {"completed"})
+            saved = store.job(job.id)
+            self.assertEqual(saved.downloaded_chapters, [1, 2])
+            self.assertTrue(Path(saved.output_dir, "0001.txt").exists())
+            manager.remove_job(job.id)
+            self.assertIsNone(store.job(job.id))
+            self.assertTrue(Path(saved.output_dir, "0001.txt").exists())
+
+    def test_adapter_setup_failure_marks_job_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, patch.dict("desktop_companion.jobs.ADAPTERS", {"broken": BrokenSetupAdapter}):
+            paths = app_paths(Path(temp))
+            store = CompanionStore(paths)
+            manager = JobManager(store, paths)
+            job = manager.create_job("Broken Novel", "https://example.invalid/novel", [1], source_adapter="broken")
+            manager.start(job.id)
+            wait_for_job(store, job.id, {"failed"})
+            saved = store.job(job.id)
+            self.assertEqual(saved.worker_state, "Failed")
+            self.assertIn("adapter setup failed", saved.errors["job"])
+            self.assertIn("Job failed: adapter setup failed", "\n".join(saved.live_log))
 
     def test_download_manager_persists_real_adapter_events_and_output_layout(self) -> None:
         with tempfile.TemporaryDirectory() as temp, patch.dict("desktop_companion.jobs.ADAPTERS", {"fixture": FixtureDownloaderAdapter}):
@@ -148,11 +183,12 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
             manager = JobManager(store, paths)
             job = manager.create_job("Fixture Novel", "https://example.invalid/novel", [1], source_adapter="fixture")
             restarted = manager.restart_job(job.id)
-            self.assertEqual(restarted.status, "queued")
+            self.assertIn(restarted.status, {"queued", "starting", "downloading"})
             self.assertFalse(restarted.skip_existing)
+            wait_for_job(store, job.id, {"completed"})
             duplicate = manager.duplicate_job(job.id)
             self.assertNotEqual(duplicate.id, job.id)
-            manager.delete_job(duplicate.id)
+            manager.remove_job(duplicate.id)
             self.assertIsNone(store.job(duplicate.id))
 
     def test_browser_jobs_are_bounded_and_queued_jobs_resume(self) -> None:

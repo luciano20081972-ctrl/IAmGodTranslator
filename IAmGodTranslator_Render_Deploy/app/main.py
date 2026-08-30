@@ -40,6 +40,8 @@ from app.recovery import parse_uploads, recovery_request, recovery_diagnostic, r
 VERSION = "11.6.2"
 DESKTOP_API_VERSION = "11.6.2"
 ROOT = Path(__file__).resolve().parents[1]
+ADMIN_PASSWORD_SECRET_FILE = "/run/secrets/admin_password"
+ADMIN_SESSION_SECRET_FILE = "/run/secrets/admin_session_secret"
 SESSION_COOKIE = "gt_admin_session"
 SESSION_TTL_SECONDS = 60 * 60 * 12
 LOGGER = logging.getLogger(__name__)
@@ -343,7 +345,7 @@ def desktop_health() -> dict[str, object]:
 
 @app.post("/api/admin/login")
 def admin_login(request: Request, response: Response, payload: dict[str, Any] = Body(...)) -> dict[str, object]:
-    expected = os.getenv("ADMIN_PASSWORD") or ""
+    expected = runtime_secret("ADMIN_PASSWORD", ADMIN_PASSWORD_SECRET_FILE)
     if not expected:
         raise HTTPException(status_code=503, detail="admin_password_not_configured")
     password = str(payload.get("password") or "")
@@ -527,8 +529,23 @@ def sign_session(timestamp: int) -> str:
 
 
 def session_signature(timestamp: int) -> str:
-    secret = os.getenv("ADMIN_SESSION_SECRET") or os.getenv("ADMIN_PASSWORD") or "development-only"
+    secret = (
+        runtime_secret("ADMIN_SESSION_SECRET", ADMIN_SESSION_SECRET_FILE)
+        or runtime_secret("ADMIN_PASSWORD", ADMIN_PASSWORD_SECRET_FILE)
+        or "development-only"
+    )
     return hmac.new(secret.encode("utf-8"), str(timestamp).encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def runtime_secret(env_name: str, file_path: str) -> str:
+    value = os.getenv(env_name)
+    if value:
+        return value
+    try:
+        with open(file_path, "r", encoding="utf-8") as handle:
+            return handle.read().rstrip("\r\n")
+    except OSError:
+        return ""
 
 
 def current_user(request: Request) -> RequestUser | None:

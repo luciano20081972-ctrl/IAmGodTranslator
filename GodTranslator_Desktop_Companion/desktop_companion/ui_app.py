@@ -285,7 +285,7 @@ class DesktopCompanionApp:
                 self._job_button(primary, "Retry Failed", "retry", job.id, bool(job.failed or job.failed_chapters or job.errors))
                 self._job_button(primary, "Restart Job", "restart", job.id, not active)
                 self._job_button(secondary, "Duplicate Job", "duplicate", job.id, True)
-                self._job_button(secondary, "Delete Job", "delete", job.id, not active)
+                self._job_button(secondary, "Remove Job", "remove", job.id, not active)
                 self._job_button(secondary, "Build Pack", "build_pack", job.id, not active, width=104)
                 self._job_button(secondary, "Send to GodTranslator", "send", job.id, bool(job.packs_built) or Path(job.output_dir).exists(), width=160)
                 self.ctk.CTkButton(secondary, text="Open Output Folder", width=132, command=lambda folder=job.novel_root_dir or job.output_dir: open_folder(Path(folder))).pack(side="left", padx=2, pady=2)
@@ -557,18 +557,18 @@ class DesktopCompanionApp:
             if action == "pause":
                 self.manager.pause(job_id)
             elif action == "resume":
-                self.manager.start(self.manager.resume(job_id).id)
+                self.manager.resume(job_id)
             elif action == "start":
                 self.manager.start(job_id)
             elif action == "retry":
-                self.manager.start(self.manager.retry_failed(job_id).id)
+                self.manager.retry_failed(job_id)
             elif action == "restart":
-                self.manager.start(self.manager.restart_job(job_id).id)
+                self.manager.restart_job(job_id)
             elif action == "duplicate":
                 self.manager.duplicate_job(job_id)
-            elif action == "delete":
-                if messagebox.askyesno(APP_NAME, "Delete this job from the local queue? Output files will not be deleted."):
-                    self.manager.delete_job(job_id)
+            elif action == "remove":
+                if messagebox.askyesno(APP_NAME, "Remove this job from the local queue? Output files and imported chapters will not be deleted."):
+                    self.manager.remove_job(job_id)
             elif action == "build_pack":
                 job = self.manager.build_pack_for_job(job_id)
                 messagebox.showinfo(APP_NAME, f"Pack ready:\n{job.packs_built[-1] if job.packs_built else 'No pack path recorded'}")

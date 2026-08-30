@@ -106,7 +106,9 @@ class JobManager:
         job.browser_state = "Closed"
         job.last_activity = "Ready to resume"
         self._append_live_log(job, "Resume queued")
-        return self.store.upsert_job(job)
+        saved = self.store.upsert_job(job)
+        self._start_next_queued_job()
+        return saved
 
     def stop(self, job_id: str) -> DownloadJob:
         job = self.require_job(job_id)
@@ -141,7 +143,9 @@ class JobManager:
         job.worker_state = "Failed chapters queued"
         job.last_activity = "Failed chapters queued"
         self._append_live_log(job, "Retry failed queued")
-        return self.store.upsert_job(job)
+        saved = self.store.upsert_job(job)
+        self._start_next_queued_job()
+        return saved
 
     def restart_job(self, job_id: str) -> DownloadJob:
         job = self.require_job(job_id)
@@ -166,7 +170,9 @@ class JobManager:
         job.skip_existing = False
         job.live_log = []
         self._append_live_log(job, "Restart queued")
-        return self.store.upsert_job(job)
+        saved = self.store.upsert_job(job)
+        self._start_next_queued_job()
+        return saved
 
     def duplicate_job(self, job_id: str) -> DownloadJob:
         job = self.require_job(job_id)
@@ -194,6 +200,9 @@ class JobManager:
         if self._thread_alive(job_id):
             raise ValueError("Stop the job before deleting it.")
         self.store.delete_job(job_id)
+
+    def remove_job(self, job_id: str) -> None:
+        self.delete_job(job_id)
 
     def start(self, job_id: str) -> DownloadJob:
         with self._lock:
@@ -226,21 +235,36 @@ class JobManager:
 
     def _run_job(self, job_id: str, control: JobControl) -> None:
         job = self.require_job(job_id)
-        adapter = ADAPTERS[job.source_adapter]()
-        output_dir = Path(job.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        options = adapter.build_options(
-            novel_url=job.source_url,
-            chapter_url_template="",
-            chapters=job.chapters,
-            output_dir=output_dir,
-            browser_mode=job.browser_mode,
-            browser_profile_dir=self.paths.browser_profiles_dir / job.source_adapter,
-            delay=job.delay_seconds,
-            retry_count=job.retry_count,
-            skip_existing=job.skip_existing if not job.resume_existing else True,
-        )
         started = time.perf_counter()
+        try:
+            adapter = ADAPTERS[job.source_adapter]()
+            output_dir = Path(job.output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            options = adapter.build_options(
+                novel_url=job.source_url,
+                chapter_url_template="",
+                chapters=job.chapters,
+                output_dir=output_dir,
+                browser_mode=job.browser_mode,
+                browser_profile_dir=self.paths.browser_profiles_dir / job.source_adapter,
+                delay=job.delay_seconds,
+                retry_count=job.retry_count,
+                skip_existing=job.skip_existing if not job.resume_existing else True,
+            )
+        except Exception as exc:
+            failed = self.require_job(job_id)
+            failed.status = "failed"
+            failed.worker_state = "Failed"
+            failed.browser_state = "Closed"
+            failed.elapsed_seconds = round(time.perf_counter() - started, 2)
+            failed.finished_at = utc_now()
+            failed.last_activity = str(exc)
+            failed.errors["job"] = str(exc)
+            self._append_live_log(failed, f"Job failed: {exc}")
+            self.store.upsert_job(failed)
+            self._controls.pop(job_id, None)
+            self._start_next_queued_job()
+            return
 
         def log(message: str) -> None:
             current = self.require_job(job_id)
