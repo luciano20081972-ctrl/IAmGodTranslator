@@ -14,6 +14,7 @@ from .storage import CompanionStore
 
 
 ACTIVE_STATUSES = {"starting", "opening_browser", "waiting_cloudflare", "downloading", "retrying"}
+TERMINAL_STATUSES = {"completed", "stopped", "failed", "cancelled"}
 CHAPTER_RE = re.compile(r"\bchapter\s+(\d+)\b", re.IGNORECASE)
 URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 LOG_LIMIT = 400
@@ -100,11 +101,13 @@ class JobManager:
 
     def resume(self, job_id: str) -> DownloadJob:
         job = self.require_job(job_id)
+        if job.status == "completed":
+            raise ValueError("Completed jobs cannot be resumed. Use Restart Job to run it again.")
         job.status = "queued"
         job.finished_at = None
-        job.worker_state = "Ready to resume"
+        job.worker_state = "Resume queued - waiting for worker"
         job.browser_state = "Closed"
-        job.last_activity = "Ready to resume"
+        job.last_activity = "Resume queued"
         self._append_live_log(job, "Resume queued")
         saved = self.store.upsert_job(job)
         self._start_next_queued_job()
@@ -138,9 +141,11 @@ class JobManager:
             job.skipped = 0
             job.failed_chapters = []
             job.errors = {}
+        elif job.status != "failed":
+            raise ValueError("Retry Failed requires failed chapters or a failed job.")
         job.status = "queued"
         job.finished_at = None
-        job.worker_state = "Failed chapters queued"
+        job.worker_state = "Retry queued - waiting for worker"
         job.last_activity = "Failed chapters queued"
         self._append_live_log(job, "Retry failed queued")
         saved = self.store.upsert_job(job)
@@ -174,6 +179,45 @@ class JobManager:
         self._start_next_queued_job()
         return saved
 
+    def cancel_job(self, job_id: str) -> DownloadJob:
+        job = self.require_job(job_id)
+        control = self._controls.get(job_id)
+        if control and self._thread_alive(job_id):
+            control.action = "cancel"
+            control.stop_event.set()
+            job.worker_state = "Cancel requested - stopping current operation"
+            job.last_activity = "Cancel requested"
+            self._append_live_log(job, "Cancel requested")
+            return self.store.upsert_job(job)
+        job.status = "cancelled"
+        job.worker_state = "Cancelled"
+        job.browser_state = "Closed"
+        job.finished_at = utc_now()
+        job.last_activity = "Cancelled"
+        self._append_live_log(job, "Job cancelled")
+        return self.store.upsert_job(job)
+
+    def create_update_job(
+        self,
+        novel_title: str,
+        source_url: str,
+        discovered_chapters: list[int],
+        existing_chapters: list[int],
+        **kwargs,
+    ) -> DownloadJob:
+        missing_chapters = sorted({int(chapter) for chapter in discovered_chapters} - {int(chapter) for chapter in existing_chapters})
+        job = self.create_job(
+            novel_title=novel_title,
+            source_url=source_url,
+            chapters=missing_chapters,
+            skip_existing=True,
+            resume_existing=True,
+            **kwargs,
+        )
+        job.last_activity = f"Update Novel queued: {len(missing_chapters)} new or missing chapters"
+        self._append_live_log(job, job.last_activity)
+        return self.store.upsert_job(job)
+
     def duplicate_job(self, job_id: str) -> DownloadJob:
         job = self.require_job(job_id)
         source_root = Path(job.novel_root_dir or Path(job.output_dir).parent)
@@ -199,6 +243,9 @@ class JobManager:
     def delete_job(self, job_id: str) -> None:
         if self._thread_alive(job_id):
             raise ValueError("Stop the job before deleting it.")
+        job = self.require_job(job_id)
+        if job.status not in TERMINAL_STATUSES:
+            raise ValueError("Only completed, stopped, failed, or cancelled jobs can be removed.")
         self.store.delete_job(job_id)
 
     def remove_job(self, job_id: str) -> None:
@@ -306,13 +353,13 @@ class JobManager:
                 finished.finished_at = None
                 finished.last_activity = "Job paused"
                 self._append_live_log(finished, "Job paused")
-            elif control.action == "stop":
-                finished.status = "stopped"
-                finished.worker_state = "Stopped"
+            elif control.action in {"stop", "cancel"}:
+                finished.status = "cancelled" if control.action == "cancel" else "stopped"
+                finished.worker_state = "Cancelled" if control.action == "cancel" else "Stopped"
                 finished.browser_state = "Closed"
                 finished.finished_at = utc_now()
-                finished.last_activity = "Job stopped"
-                self._append_live_log(finished, "Job stopped")
+                finished.last_activity = "Job cancelled" if control.action == "cancel" else "Job stopped"
+                self._append_live_log(finished, finished.last_activity)
             else:
                 finished.status = "failed" if finished.failed else "completed"
                 finished.worker_state = "Failed" if finished.failed else "Completed"
@@ -349,11 +396,11 @@ class JobManager:
                 failed.worker_state = "Paused after interruption"
                 failed.last_activity = "Job paused"
                 self._append_live_log(failed, "Job paused after downloader interruption")
-            elif control.action == "stop":
-                failed.status = "stopped"
-                failed.worker_state = "Stopped after interruption"
-                failed.last_activity = "Job stopped"
-                self._append_live_log(failed, "Job stopped after downloader interruption")
+            elif control.action in {"stop", "cancel"}:
+                failed.status = "cancelled" if control.action == "cancel" else "stopped"
+                failed.worker_state = "Cancelled after interruption" if control.action == "cancel" else "Stopped after interruption"
+                failed.last_activity = "Job cancelled" if control.action == "cancel" else "Job stopped"
+                self._append_live_log(failed, f"{failed.last_activity} after downloader interruption")
             else:
                 failed.status = "failed"
                 failed.worker_state = "Failed"

@@ -41,7 +41,7 @@ def main() -> None:
             "Dashboard",
             "Downloads",
             "Library",
-            "New Novel",
+            "New / Update Novel",
             "Recovery",
             "Packs",
             "Sync",
@@ -72,8 +72,10 @@ def main() -> None:
         "Pause",
         "Resume",
         "Stop",
+        "Cancel",
         "Retry Failed",
         "Restart Job",
+        "Remove Job",
         "Open Output Folder",
         "Build Pack",
         "Send to GodTranslator",
@@ -85,6 +87,9 @@ def main() -> None:
     require("next queued job starts after worker exits", "_start_next_queued_job()" in jobs)
     require("interrupted active jobs recover as paused", "Interrupted by desktop restart" in jobs)
     require("browser closed on stop/pause/finally", 'browser_state = "Closed"' in jobs)
+    require("completed jobs cannot silently resume", "Completed jobs cannot be resumed" in jobs)
+    require("remove is terminal-only", "Only completed, stopped, failed, or cancelled jobs can be removed" in jobs)
+    require("update novel helper skips existing chapters", "def create_update_job" in jobs and "missing_chapters" in jobs)
 
     require("default paths use LOCALAPPDATA GodTranslatorDesktop", "GodTranslatorDesktop" in str(app_paths().root))
     require("manual token label is memory-only", "Manual bearer token (kept in memory only)" in ui)

@@ -21,7 +21,7 @@ NAV_ITEMS = [
     "Dashboard",
     "Downloads",
     "Library",
-    "New Novel",
+    "New / Update Novel",
     "Recovery",
     "Packs",
     "Sync",
@@ -80,7 +80,7 @@ class DesktopCompanionApp:
             "Dashboard": self.show_home,
             "Downloads": self.show_downloads,
             "Library": self.show_desktop_library,
-            "New Novel": self.show_new_novel,
+            "New / Update Novel": self.show_new_novel,
             "Recovery": self.show_recovery_requests,
             "Packs": self.show_export_packs,
             "Sync": self.show_sync_center,
@@ -115,7 +115,7 @@ class DesktopCompanionApp:
         actions = self.ctk.CTkFrame(self.body)
         actions.grid(row=1, column=0, sticky="ew", pady=14)
         for text, command in (
-            ("Download New Novel", self.show_new_novel),
+            ("Download or Update Novel", self.show_new_novel),
             ("Open Recovery Request", self.open_recovery_request),
             ("Sync", self.show_sync_center),
             ("Open Downloads Folder", lambda: open_folder(Path(self.store.settings().get("downloads_folder") or self.paths.downloads_dir))),
@@ -128,7 +128,7 @@ class DesktopCompanionApp:
         self._jobs_table("Jobs", self.store.jobs(), row=0, with_actions=True)
 
     def show_new_novel(self) -> None:
-        self._clear("New Novel", "Paste a novel URL, download chapters, build packs, send to GodTranslator, then open the imported novel.")
+        self._clear("New / Update Novel", "Paste a novel URL, download new or missing chapters, build packs, send to GodTranslator, then open the imported novel.")
         form = self.ctk.CTkFrame(self.body)
         form.grid(row=0, column=0, sticky="ew", pady=8)
         for column in range(2):
@@ -282,10 +282,11 @@ class DesktopCompanionApp:
                 self._job_button(primary, "Pause", "pause", job.id, active)
                 self._job_button(primary, "Resume", "resume", job.id, job.status in {"paused", "stopped"})
                 self._job_button(primary, "Stop", "stop", job.id, active)
+                self._job_button(primary, "Cancel", "cancel", job.id, active or job.status in {"queued", "paused", "stopped"})
                 self._job_button(primary, "Retry Failed", "retry", job.id, bool(job.failed or job.failed_chapters or job.errors))
                 self._job_button(primary, "Restart Job", "restart", job.id, not active)
                 self._job_button(secondary, "Duplicate Job", "duplicate", job.id, True)
-                self._job_button(secondary, "Remove Job", "remove", job.id, not active)
+                self._job_button(secondary, "Remove Job", "remove", job.id, job.status in {"completed", "stopped", "failed", "cancelled"})
                 self._job_button(secondary, "Build Pack", "build_pack", job.id, not active, width=104)
                 self._job_button(secondary, "Send to GodTranslator", "send", job.id, bool(job.packs_built) or Path(job.output_dir).exists(), width=160)
                 self.ctk.CTkButton(secondary, text="Open Output Folder", width=132, command=lambda folder=job.novel_root_dir or job.output_dir: open_folder(Path(folder))).pack(side="left", padx=2, pady=2)
@@ -578,6 +579,8 @@ class DesktopCompanionApp:
                 self.reveal_current_chapter(job_id)
             elif action == "stop":
                 self.manager.stop(job_id)
+            elif action == "cancel":
+                self.manager.cancel_job(job_id)
             self.show_downloads()
         except Exception as exc:
             messagebox.showerror(APP_NAME, friendly_error(exc))

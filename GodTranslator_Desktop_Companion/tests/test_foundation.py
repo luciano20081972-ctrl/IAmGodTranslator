@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import time
 import unittest
+import zipfile
 from unittest.mock import patch
 from pathlib import Path
 
@@ -82,6 +84,35 @@ class SlowFixtureDownloaderAdapter(FixtureDownloaderAdapter):
 class BrokenSetupAdapter(FixtureDownloaderAdapter):
     def build_options(self, **kwargs):
         raise RuntimeError("adapter setup failed")
+
+
+class FailOnceDownloaderAdapter(FixtureDownloaderAdapter):
+    def download(self, options, stop_event, log, progress):
+        output_dir = Path(options["output_dir"])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        marker = output_dir / ".chapter-2-failed-once"
+        total = len(options["chapters"])
+        success = failed = skipped = 0
+        log("Browser launched")
+        for index, chapter in enumerate(options["chapters"], start=1):
+            if stop_event.is_set():
+                log("Stopped safely by user.")
+                break
+            progress(index - 1, total, success, failed, skipped, f"Chapter {chapter}")
+            log(f"Downloading Chapter {chapter}: https://example.invalid/chapter-{chapter}")
+            if chapter == 2 and not marker.exists():
+                marker.write_text("failed", encoding="utf-8")
+                failed += 1
+                log("Failed Chapter 2: fixture retry gate")
+                progress(index, total, success, failed, skipped, f"Chapter {chapter}")
+                continue
+            body = f"Chapter {chapter}\n\n" + ("fixture text " * 80)
+            (output_dir / f"{chapter:04d}.txt").write_text(body, encoding="utf-8")
+            log(f"Saved Chapter {chapter}: {chapter:04d}.txt ({len(body)} chars)")
+            success += 1
+            progress(index, total, success, failed, skipped, f"Chapter {chapter}")
+        log("Browser closed")
+        return {"success": success, "failed": failed, "skipped": skipped}
 
 
 def wait_for_job(store: CompanionStore, job_id: str, statuses: set[str]) -> None:
@@ -188,8 +219,91 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
             wait_for_job(store, job.id, {"completed"})
             duplicate = manager.duplicate_job(job.id)
             self.assertNotEqual(duplicate.id, job.id)
+            manager.cancel_job(duplicate.id)
             manager.remove_job(duplicate.id)
             self.assertIsNone(store.job(duplicate.id))
+
+    def test_full_downloader_fixture_update_retry_sync_and_remove(self) -> None:
+        imported: dict[tuple[str, str], set[int]] = {}
+
+        class FakeWebsite:
+            def _chapters(self, pack_path: Path) -> tuple[dict, list[int]]:
+                with zipfile.ZipFile(pack_path) as zf:
+                    manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+                chapters = manifest.get("chapters") or {}
+                numbers = sorted(int(item["chapter_number"]) for item in chapters.values())
+                return manifest, numbers
+
+            def preview_content_pack(self, pack_path: Path, novel_id: str = "", content_type: str = "", **kwargs):
+                manifest, numbers = self._chapters(pack_path)
+                key = (novel_id or manifest["novel_id"], content_type or manifest["content_type"])
+                stored = imported.setdefault(key, set())
+                duplicates = [chapter for chapter in numbers if chapter in stored]
+                new = [chapter for chapter in numbers if chapter not in stored]
+                return {"ok": True, "new": len(new), "duplicate": len(duplicates), "invalid": 0, "chapters": numbers}
+
+            def execute_content_pack(self, pack_path: Path, novel_id: str = "", content_type: str = "", **kwargs):
+                preview = self.preview_content_pack(pack_path, novel_id, content_type, **kwargs)
+                manifest, numbers = self._chapters(pack_path)
+                key = (novel_id or manifest["novel_id"], content_type or manifest["content_type"])
+                stored = imported.setdefault(key, set())
+                before = set(stored)
+                stored.update(numbers)
+                return {"ok": True, "summary": {"imported": len(stored - before), "duplicates": len(before & set(numbers)), "errors": 0}}
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict("desktop_companion.jobs.ADAPTERS", {"fixture": FailOnceDownloaderAdapter}):
+            paths = app_paths(Path(temp))
+            store = CompanionStore(paths)
+            manager = JobManager(store, paths)
+            job = manager.create_job("Fixture Novel", "https://example.invalid/novel", [1, 2, 3], output_dir=paths.downloads_dir, source_adapter="fixture", target_mode="original")
+            manager.start(job.id)
+            wait_for_job(store, job.id, {"failed"})
+            failed = store.job(job.id)
+            self.assertEqual(failed.failed_chapters, [2])
+            self.assertEqual(failed.downloaded_chapters, [1, 3])
+
+            manager.retry_failed(job.id)
+            wait_for_job(store, job.id, {"completed"})
+            completed = store.job(job.id)
+            self.assertEqual(completed.downloaded_chapters, [1, 2, 3])
+            self.assertEqual(sorted(path.name for path in Path(completed.output_dir).glob("*.txt")), ["0001.txt", "0002.txt", "0003.txt"])
+            self.assertTrue(completed.packs_built)
+
+            sync = SyncManager(store)
+            sync.client = lambda: FakeWebsite()  # type: ignore[method-assign]
+            upload = sync.queue_upload(Path(completed.packs_built[-1]), completed.novel_id, "original")
+            previewed = sync.preview_upload(upload.id)
+            self.assertEqual(previewed.preview["new"], 3)
+            imported_once = sync.execute_upload(upload.id)
+            self.assertEqual(imported_once.result["summary"], {"imported": 3, "duplicates": 0, "errors": 0})
+            second = sync.queue_upload(Path(completed.packs_built[-1]), completed.novel_id, "original")
+            second_preview = sync.preview_upload(second.id)
+            self.assertEqual(second_preview.preview["duplicate"], 3)
+            second_import = sync.execute_upload(second.id)
+            self.assertEqual(second_import.result["summary"], {"imported": 0, "duplicates": 3, "errors": 0})
+
+            update = manager.create_update_job(
+                "Fixture Novel",
+                "https://example.invalid/novel",
+                discovered_chapters=[1, 2, 3, 4, 5],
+                existing_chapters=sorted(imported[(completed.novel_id, "original")]),
+                output_dir=Path(completed.novel_root_dir),
+                source_adapter="fixture",
+                target_mode="original",
+            )
+            self.assertEqual(update.chapters, [4, 5])
+            manager.start(update.id)
+            wait_for_job(store, update.id, {"completed"})
+            updated = store.job(update.id)
+            self.assertEqual(updated.downloaded_chapters, [4, 5])
+
+            update_upload = sync.queue_upload(Path(updated.packs_built[-1]), updated.novel_id, "original")
+            sync.execute_upload(update_upload.id)
+            self.assertEqual(sorted(imported[(completed.novel_id, "original")]), [1, 2, 3, 4, 5])
+
+            manager.remove_job(job.id)
+            self.assertIsNone(store.job(job.id))
+            self.assertEqual(sorted(imported[(completed.novel_id, "original")]), [1, 2, 3, 4, 5])
 
     def test_browser_jobs_are_bounded_and_queued_jobs_resume(self) -> None:
         with tempfile.TemporaryDirectory() as temp, patch.dict("desktop_companion.jobs.ADAPTERS", {"fixture": SlowFixtureDownloaderAdapter}):
@@ -259,7 +373,7 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
                 "Dashboard",
                 "Downloads",
                 "Library",
-                "New Novel",
+                "New / Update Novel",
                 "Recovery",
                 "Packs",
                 "Sync",
