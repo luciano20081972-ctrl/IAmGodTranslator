@@ -37,8 +37,8 @@ from app.acquisition import ExecutionStrategy, FixtureNovelAdapter, RateLimitPol
 from app.recovery import parse_uploads, recovery_request, recovery_diagnostic, reference_diagnostic
 
 
-VERSION = "11.1.0"
-DESKTOP_API_VERSION = "11.1.0"
+VERSION = "11.6.2"
+DESKTOP_API_VERSION = "11.6.2"
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_COOKIE = "gt_admin_session"
 SESSION_TTL_SECONDS = 60 * 60 * 12

@@ -47,7 +47,7 @@ ENGLISH_EDITION_PRIORITY = {
 }
 ENGLISH_COVERAGE_POLICIES = {"original_translation_only", "reference_first", "manual"}
 REFERENCE_FIRST_NOVEL_IDS = {"i-am-god"}
-PLATFORM_BACKUP_APP_VERSION = "11.1.0"
+PLATFORM_BACKUP_APP_VERSION = "11.6.2"
 PLATFORM_BACKUP_TABLE_NAMES = [
     "novels",
     "chapters",

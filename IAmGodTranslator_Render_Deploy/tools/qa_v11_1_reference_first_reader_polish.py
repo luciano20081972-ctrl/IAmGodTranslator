@@ -147,9 +147,9 @@ def fixture_no_source() -> dict[str, Any]:
 
 
 def static_reader_and_privacy_checks() -> None:
-    require("version app", 'const APP_VERSION = "11.1.0"' in APP_JS)
-    require("version backend", 'VERSION = "11.1.0"' in MAIN_PY and 'DESKTOP_API_VERSION = "11.1.0"' in MAIN_PY)
-    require("cache keys", "v=11.1.0" in INDEX)
+    require("version app", 'const APP_VERSION = "11.6.2"' in APP_JS)
+    require("version backend", 'VERSION = "11.6.2"' in MAIN_PY and 'DESKTOP_API_VERSION = "11.6.2"' in MAIN_PY)
+    require("cache keys", "v=11.6.2" in INDEX)
     require("public English source only", 'return canViewReference() ? ["english", "original", "reference"] : ["english"]' in APP_JS)
     require("public edition scrub", 'payload.pop("edition", None)' in MAIN_PY)
     require("Reference endpoint role gate", 'if mode == "reference":' in MAIN_PY and "require_translator(request)" in MAIN_PY)

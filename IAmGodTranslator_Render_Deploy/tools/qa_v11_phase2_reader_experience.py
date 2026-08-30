@@ -35,7 +35,12 @@ def main() -> None:
     require("chapter highlight", "<mark>$1</mark>" in APP_JS)
     require("paragraph copy", "data-paragraph-action=\"copy\"" in APP_JS and "copyParagraphValue" in APP_JS)
     require("duplicate heading suppression", "isDuplicateChapterHeading" in APP_JS and "lines.shift()" in APP_JS)
-    require("bounded prefetch neighbors only", "prefetchNeighborChapters" in APP_JS and "[neighborChapter(chapterNumber, -1), neighborChapter(chapterNumber, 1)]" in APP_JS)
+    require(
+        "bounded next-chapter prefetch only",
+        "prefetchNeighborChapters" in APP_JS
+        and "neighbors?.next ?? neighborChapter(chapterNumber, 1)" in APP_JS
+        and "readerRequestMap.has(key)" in APP_JS,
+    )
     require("reference remains role gated", 'return canViewReference() ? ["english", "original", "reference"] : ["english"]' in APP_JS)
     require("stale reader request abort", "readerAbortController.abort()" in APP_JS and "AbortError" in APP_JS)
     require("reader cache bounded", "READER_CACHE_LIMIT" in APP_JS and "rememberCachePayload" in APP_JS)

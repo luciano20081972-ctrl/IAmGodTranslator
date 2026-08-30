@@ -33,7 +33,7 @@ def main() -> None:
     readme = read(DESKTOP_ROOT / "README.md")
     api_plan = read(DESKTOP_ROOT / "WEBSITE_API_INTEGRATION_PLAN.md")
 
-    require("desktop version is v11", APP_VERSION == "11.0.0")
+    require("desktop version matches v11.6 release", APP_VERSION == "11.6.2")
     require(
         "v11 desktop modules present",
         NAV_ITEMS
@@ -94,11 +94,11 @@ def main() -> None:
     require("execute import remains explicit", "Execute Import" in ui)
     require("upload retry supported", "def retry_upload" in sync)
 
-    require("website desktop API version is v11.1", 'DESKTOP_API_VERSION = "11.1.0"' in main_py)
+    require("website desktop API version matches v11.6 release", 'DESKTOP_API_VERSION = "11.6.2"' in main_py)
     require("desktop API does not accept passwords", '"passwords_accepted_by_desktop_api": False' in main_py)
     require("sync status includes desktop_api", '"desktop_api": DESKTOP_API_VERSION' in main_py)
-    require("version compatibility helper works", version_compatible("11.0.0", "11.0.0"))
-    require("version compatibility rejects unknown", not version_compatible("11.0.0", ""))
+    require("version compatibility helper works", version_compatible("11.6.2", "11.6.2"))
+    require("version compatibility rejects unknown", not version_compatible("11.6.2", ""))
 
     require("README documents no silent updates", "Auto-update must not be silent" in readme)
     require("API plan documents recovery round trip", "Recovery Round Trip" in api_plan)

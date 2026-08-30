@@ -35,8 +35,8 @@ def main() -> None:
 
     from app import main as app_main
 
-    if app_main.VERSION != "11.0.0":
-        raise AssertionError(f"expected version 11.0.0, got {app_main.VERSION}")
+    if app_main.VERSION != "11.6.2":
+        raise AssertionError(f"expected version 11.6.2, got {app_main.VERSION}")
 
     routes = [route for route in app_main.app.routes if getattr(route, "path", "")]
     by_key = {route_key(route): route for route in routes}
@@ -70,7 +70,7 @@ def main() -> None:
         raise AssertionError(f"mixed Response-union routes still have response models: {response_model_failures}")
 
     health = app_main.health()
-    if not isinstance(health, dict) or health.get("version") != "11.0.0":
+    if not isinstance(health, dict) or health.get("version") != "11.6.2":
         raise AssertionError(f"health did not return expected JSON-compatible payload: {health}")
 
     print(json.dumps({
