@@ -74,6 +74,8 @@ Use Firecrawl Crawl only when it materially improves acquisition and only with e
 - cancellation
 - no unrestricted whole-domain crawl
 
+The implemented bounded crawl path starts an async `/v2/crawl` job, polls `/v2/crawl/{id}`, normalizes completed pages into `NormalizedChapter`, rejects out-of-scope results, and calls the crawl cancel endpoint when a Desktop stop/cancel signal is raised before completion.
+
 Structured extraction may request fields such as `novel_title`, `chapter_title`, `chapter_number`, `chapter_body`, `next_chapter_url`, and `previous_chapter_url`, but deterministic parsing remains preferred when it is reliable.
 
 ## Apify
@@ -127,11 +129,16 @@ Jobs persist safe provider attempt traces:
 - provider
 - reason selected
 - status
+- capability flags
+- cloud policy decision
+- elapsed time
+- safe result counts
+- fallback decision
 - failure category
 - retryability
 - timestamp
 
-Never persist API keys, authorization headers, cookies, or full provider request bodies.
+Never persist API keys, authorization headers, cookies, chapter text, or full provider request bodies.
 
 ## Live Smoke Tests
 
