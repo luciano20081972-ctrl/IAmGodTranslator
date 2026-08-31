@@ -4,10 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>IAmGodTranslator</title>
-  <meta name="theme-color" content="#0a36c9">
+  <meta name="theme-color" content="#101014">
+  <meta name="color-scheme" content="dark light">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/static/icons/dark-hour-icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/styles.css?v=11.6.2-v11.6.1-cache-refresh-20260831">
+  <link rel="stylesheet" href="/static/styles.css?v=11.6.2-v11.6.1-zero-wait-20260831">
 </head>
 <body>
   <div class="shell">
@@ -37,7 +38,12 @@
     <aside id="notificationCenter" class="notification-center" hidden></aside>
 
     <main id="app" class="app-main" aria-live="polite">
-      <section class="loading-card">Loading reader...</section>
+      <section class="startup-reader-shell" aria-label="Opening reader">
+        <p class="eyebrow">Continue Reading</p>
+        <h1>I Am God</h1>
+        <p>Opening your library...</p>
+        <a class="button primary" href="#/library">Open Library</a>
+      </section>
     </main>
 
     <nav id="mobileBottomNav" class="mobile-bottom-nav" aria-label="Mobile primary navigation"></nav>
@@ -58,6 +64,6 @@
   </script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="/static/vendor/minisearch/minisearch-7.2.0.min.js?v=7.2.0"></script>
-  <script src="/static/app.js?v=11.6.2-v11.6.1-cache-refresh-20260831"></script>
+  <script src="/static/app.js?v=11.6.2-v11.6.1-zero-wait-20260831"></script>
 </body>
 </html>

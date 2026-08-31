@@ -49,7 +49,7 @@ function createServer() {
           updated_at: "2026-08-30T00:00:00Z",
           is_archived: false,
         }],
-      });
+      }, 1200);
     }
     if (url.pathname === "/api/novels/i-am-god") {
       return json(response, {
@@ -118,9 +118,15 @@ async function run() {
 
   const start = Date.now();
   await page.goto(`${baseUrl}/#/home`, {waitUntil: "domcontentloaded"});
-  await page.getByText(longTitle).first().waitFor({timeout: 1800});
+  await page.getByText("Library is syncing").first().waitFor({timeout: 500});
+  const homeShellMs = Date.now() - start;
+  const startupMetrics = await page.evaluate(() => window.__IAGT_STARTUP_METRICS || []);
+  const firstHomeMetric = startupMetrics.find((item) => item.name === "home-first-render");
+  if (homeShellMs > 500 || !firstHomeMetric || firstHomeMetric.atMs > 500) {
+    fail("Home waited for slow startup requests before first useful render", {homeShellMs, startupMetrics});
+  }
+  await page.getByText(longTitle).first().waitFor({timeout: 2500});
   const homeUsefulMs = Date.now() - start;
-  if (homeUsefulMs > 1800) fail("Home waited for slow auth bootstrap", {homeUsefulMs});
 
   const coverBox = await page.locator(".continue-cover").first().boundingBox();
   const titleBox = await page.locator(".continue-card h1").first().boundingBox();
@@ -174,6 +180,7 @@ async function run() {
   const accountRequests = requests.filter((item) => item === "/api/account/me").length;
   const result = {
     ok: consoleErrors.length === 0,
+    home_shell_ms_with_slow_auth_and_catalog: homeShellMs,
     home_useful_ms_with_30s_auth_config: homeUsefulMs,
     library_useful_ms_from_public_cache: libraryUsefulMs,
     duplicate_account_requests: accountRequests,

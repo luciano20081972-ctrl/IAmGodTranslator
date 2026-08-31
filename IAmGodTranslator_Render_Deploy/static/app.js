@@ -15,7 +15,8 @@ const PUBLIC_CACHE_TTL_MS = 10 * 60 * 1000;
 const PUBLIC_CACHE_PREFIX = "gt-public-cache:";
 const APP_BRAND = loadBrandConfig();
 const APP_VERSION = "11.6.2";
-const APP_BUILD_MARKER = "v11.6.1-cache-refresh-20260831";
+const APP_BUILD_MARKER = "v11.6.1-zero-wait-20260831";
+const STARTUP_STARTED_AT = performance.now();
 let activeRouteKey = window.location.hash || "#/home";
 let connectionInterrupted = false;
 let readerScrollHandler = null;
@@ -23,6 +24,7 @@ let readerChromeHandler = null;
 let readerAbortController = null;
 let lastReaderScrollY = 0;
 let activityIndicatorRequest = 0;
+let homeRenderRequest = 0;
 let commandPaletteOpenFromHistory = false;
 let commandPaletteClosingFromPop = false;
 let commandTouchStartY = 0;
@@ -628,6 +630,13 @@ async function refreshAccount() {
   return accountRefreshPromise;
 }
 
+function markStartupEvent(name, detail = {}) {
+  const entry = {name, atMs: Math.round(performance.now() - STARTUP_STARTED_AT), ...detail};
+  window.__IAGT_STARTUP_METRICS = [...(window.__IAGT_STARTUP_METRICS || []), entry].slice(-24);
+  try { performance.mark(`iagt:${name}`); } catch {}
+  return entry;
+}
+
 async function refreshAccountNow() {
   try {
     const payload = await api("/api/account/me");
@@ -722,40 +731,75 @@ function ensureCurrentNovel() {
 }
 
 async function openHome() {
-  setLoading("Opening home...");
-  try {
-    const novels = await loadNovels();
-    const personal = await loadPersonalHome(true);
-    const operations = await loadHomeOperations();
-    const activeNovels = novels.filter((novel) => !novel.is_archived);
-    const continueItem = normalizedContinueReading(personal?.continue_reading || latestLocalReading());
-    const spotlight = activeNovels[0] || novels[0] || null;
-    const recentRead = dedupeRecentReading(personal?.history?.length ? personal.history : state.recent.chapters || []).slice(0, 5);
-    const shelfNovels = orderHomeNovels(activeNovels).slice(0, 6);
-    const savedChapters = state.account ? (personal?.bookmarks || []) : localBookmarks();
-    app.innerHTML = `
-      <section class="home-hero reading-home-hero">
-        ${renderContinueReading(continueItem, spotlight)}
-      </section>
-      <section class="home-section">
-        <div class="section-heading">
-          <div><p class="eyebrow">Library</p><h2>Available novels</h2></div>
-          <a class="button" href="#/library">Open Library</a>
-        </div>
-        <div class="home-library-shelf">${shelfNovels.map(renderHomeNovelTile).join("") || renderHomeEmptyLibrary()}</div>
-      </section>
-      <section class="home-grid home-primary-grid">
-        ${renderRecentlyRead(recentRead)}
-        ${savedChapters.length ? renderHomeBookmarks(savedChapters) : ""}
-      </section>
-      ${state.account ? `<section class="home-grid home-secondary-grid">${renderHomeFavorites(personal?.favorites || [])}</section>` : ""}
-      ${renderReaderDiscovery(spotlight)}
-      ${canTranslate() || state.admin ? `<details class="home-secondary"><summary>Operations</summary><div class="home-grid">${renderHomeOperations(operations)}</div></details>` : ""}`;
-    bindCopyLinks(app);
-    document.querySelectorAll("[data-home-search]").forEach((button) => button.addEventListener("click", openCommandPalette));
-    restoreScrollPosition();
-  } catch (error) {
-    setError(error.message);
+  const requestId = ++homeRenderRequest;
+  const cachedNovels = state.novels.length ? state.novels : (readPublicCache("/api/novels")?.novels || []);
+  if (cachedNovels.length && !state.novels.length) {
+    state.novels = cachedNovels;
+    ensureCurrentNovel();
+  }
+  renderHomeView({novels: state.novels, personal: state.personal, operations: null, pendingNovels: !state.novels.length});
+  markStartupEvent("home-first-render", {cachedNovels: state.novels.length});
+  refreshHomeViewInBackground(requestId);
+}
+
+function renderHomeView({novels = state.novels, personal = state.personal, operations = null, pendingNovels = false} = {}) {
+  const activeNovels = (novels || []).filter((novel) => !novel.is_archived);
+  const continueItem = normalizedContinueReading(personal?.continue_reading || latestLocalReading());
+  const spotlight = activeNovels[0] || (novels || [])[0] || null;
+  const recentRead = dedupeRecentReading(personal?.history?.length ? personal.history : state.recent.chapters || []).slice(0, 5);
+  const shelfNovels = orderHomeNovels(activeNovels).slice(0, 6);
+  const savedChapters = state.account ? (personal?.bookmarks || []) : localBookmarks();
+  const operationsReady = operations && (canTranslate() || state.admin);
+  app.innerHTML = `
+    <section class="home-hero reading-home-hero">
+      ${renderContinueReading(continueItem, spotlight)}
+    </section>
+    <section class="home-section">
+      <div class="section-heading">
+        <div><p class="eyebrow">Library</p><h2>${pendingNovels ? "Opening your library" : "Available novels"}</h2></div>
+        <a class="button" href="#/library">Open Library</a>
+      </div>
+      <div class="home-library-shelf">${shelfNovels.map(renderHomeNovelTile).join("") || renderHomeEmptyLibrary(pendingNovels)}</div>
+    </section>
+    <section class="home-grid home-primary-grid">
+      ${renderRecentlyRead(recentRead)}
+      ${savedChapters.length ? renderHomeBookmarks(savedChapters) : ""}
+    </section>
+    ${state.account ? `<section class="home-grid home-secondary-grid">${renderHomeFavorites(personal?.favorites || [])}</section>` : ""}
+    ${renderReaderDiscovery(spotlight)}
+    ${operationsReady ? `<details class="home-secondary"><summary>Operations</summary><div class="home-grid">${renderHomeOperations(operations)}</div></details>` : ""}`;
+  bindCopyLinks(app);
+  document.querySelectorAll("[data-home-search]").forEach((button) => button.addEventListener("click", openCommandPalette));
+  restoreScrollPosition();
+}
+
+function refreshHomeViewInBackground(requestId) {
+  const stillHome = () => requestId === homeRenderRequest && activeRouteName() === "home";
+  loadNovels()
+    .then((novels) => {
+      if (!stillHome()) return;
+      renderHomeView({novels, personal: state.personal, operations: null});
+      markStartupEvent("home-novels-ready", {novels: novels.length});
+    })
+    .catch((error) => {
+      if (!stillHome() || state.novels.length) return;
+      renderHomeView({novels: [], personal: state.personal, operations: null, pendingNovels: false});
+      toast(error.message || "Library refresh failed.");
+    });
+  loadPersonalHome(true)
+    .then((personal) => {
+      if (!stillHome()) return;
+      renderHomeView({novels: state.novels, personal, operations: null, pendingNovels: !state.novels.length});
+      markStartupEvent("home-personal-ready", {signedIn: Boolean(state.account)});
+    })
+    .catch(() => {});
+  if (canTranslate() || state.admin) {
+    loadHomeOperations()
+      .then((operations) => {
+        if (!stillHome()) return;
+        renderHomeView({novels: state.novels, personal: state.personal, operations, pendingNovels: !state.novels.length});
+      })
+      .catch(() => {});
   }
 }
 
@@ -790,7 +834,8 @@ function renderHomeNovelTile(novel) {
   </article>`;
 }
 
-function renderHomeEmptyLibrary() {
+function renderHomeEmptyLibrary(pending = false) {
+  if (pending) return `<section class="empty-state home-empty home-loading-shell"><h2>Library is syncing</h2><p>You can continue reading from recent chapters while the catalog refreshes.</p><a class="button" href="#/library">Open Library</a></section>`;
   return `<section class="empty-state home-empty"><h2>No novels available yet</h2><p>Imported novels will appear here with covers, progress, and reading actions.</p><a class="button" href="#/library">Open Library</a></section>`;
 }
 
