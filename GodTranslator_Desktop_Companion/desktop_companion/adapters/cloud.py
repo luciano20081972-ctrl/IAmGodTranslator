@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+import time
 from pathlib import Path
 from threading import Event
 from typing import Callable
@@ -61,17 +63,26 @@ class CloudChapterAdapter:
                 continue
             url = chapter_url(template, chapter)
             log(f"Downloading Chapter {chapter}: {url}")
-            try:
-                page = provider.fetch_page(AcquisitionRequest(source_url=url, chapter_number=chapter), cancel=stop_event)
-                body = page.content.strip()
-                if not body:
-                    raise AcquisitionError("empty_content", "Provider returned empty chapter content", retryable=False)
-                path.write_text(f"{page.title or f'Chapter {chapter}'}\n\n{body}\n", encoding="utf-8")
-                success += 1
-                log(f"Saved Chapter {chapter}: {path.name} via {page.provider}")
-            except AcquisitionError as exc:
-                failed += 1
-                log(f"Failed Chapter {chapter}: {exc.category}")
+            request = AcquisitionRequest(source_url=url, chapter_number=chapter)
+            for attempt in range(max(1, int(options.get("retry_count", 0)) + 1)):
+                try:
+                    page = provider.fetch_page(request, cancel=stop_event)
+                    body = page.content.strip()
+                    if not body:
+                        raise AcquisitionError("empty_content", "Provider returned empty chapter content", provider=provider.name, retryable=False)
+                    path.write_text(f"{page.title or f'Chapter {chapter}'}\n\n{body}\n", encoding="utf-8")
+                    success += 1
+                    log(f"Saved Chapter {chapter}: {path.name} via {page.provider}")
+                    break
+                except AcquisitionError as exc:
+                    if stop_event.is_set() or not exc.retryable or attempt >= int(options.get("retry_count", 0)):
+                        failed += 1
+                        log(f"Failed Chapter {chapter}: {exc.category}")
+                        break
+                    delay_seconds = retry_delay_seconds(exc, attempt, float(options.get("delay", 0) or 0))
+                    log(f"Retry Chapter {chapter}: {exc.category} after {delay_seconds:.2f}s")
+                    if delay_seconds > 0:
+                        time.sleep(delay_seconds)
             progress(index, len(chapters), success, failed, skipped, f"Chapter {chapter}")
         return {"success": success, "failed": failed, "skipped": skipped}
 
@@ -92,3 +103,13 @@ class DirectHttpAdapter(CloudChapterAdapter):
     name = "direct_http"
     display_name = "Direct HTTP"
     provider_type = DirectHttpProvider
+
+
+def retry_delay_seconds(exc: AcquisitionError, attempt: int, base_delay: float) -> float:
+    if exc.retry_after_seconds is not None:
+        return max(0.0, min(float(exc.retry_after_seconds), 60.0))
+    if base_delay <= 0:
+        return 0.0
+    bounded = min(base_delay * (2 ** attempt), 30.0)
+    jitter = random.uniform(0, min(0.25, bounded / 4))
+    return round(bounded + jitter, 3)

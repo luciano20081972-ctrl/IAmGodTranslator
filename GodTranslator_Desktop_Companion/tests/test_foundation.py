@@ -25,6 +25,7 @@ from desktop_companion.jobs import JobManager
 from desktop_companion.models import WebsiteConnectionProfile
 from desktop_companion.models import default_website_url, normalize_website_base_url
 from desktop_companion.adapters import adapter_descriptors, adapter_names
+from desktop_companion.adapters.cloud import CloudChapterAdapter, retry_delay_seconds
 from desktop_companion.packs import build_auto_packs, build_pack, validate_pack
 from desktop_companion.packs import chapter_number_from_file
 from desktop_companion.paths import app_paths
@@ -166,6 +167,54 @@ class FakeFirecrawlAdapter(FixtureDownloaderAdapter):
             log(f"Saved Chapter {chapter}: {chapter:04d}.txt via firecrawl")
             progress(index, len(options["chapters"]), success, 0, 0, f"Chapter {chapter}")
         return {"success": success, "failed": 0, "skipped": 0}
+
+
+class RetryableThenSuccessProvider:
+    name = "firecrawl"
+
+    def __init__(self):
+        self.calls = 0
+
+    def fetch_page(self, request, cancel=None):
+        self.calls += 1
+        if self.calls == 1:
+            raise AcquisitionError("timeout", "temporary timeout", provider=self.name)
+        return type(
+            "Page",
+            (),
+            {
+                "title": "Chapter 1",
+                "content": "Recovered provider chapter body with enough words for validation after retry.",
+                "provider": self.name,
+            },
+        )()
+
+
+class PermanentFailureProvider:
+    name = "firecrawl"
+
+    def __init__(self):
+        self.calls = 0
+
+    def fetch_page(self, request, cancel=None):
+        self.calls += 1
+        raise AcquisitionError("authentication_failed", "bad key", provider=self.name, retryable=False)
+
+
+class RetryableCloudAdapter(CloudChapterAdapter):
+    name = "retryable_cloud"
+    provider_instance = RetryableThenSuccessProvider()
+
+    def provider(self):
+        return self.provider_instance
+
+
+class PermanentFailureCloudAdapter(CloudChapterAdapter):
+    name = "permanent_failure_cloud"
+    provider_instance = PermanentFailureProvider()
+
+    def provider(self):
+        return self.provider_instance
 
 
 def wait_for_job(store: CompanionStore, job_id: str, statuses: set[str]) -> None:
@@ -385,6 +434,55 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
             self.assertTrue(saved.provider_attempts[0]["capabilities"]["requires_external_credit"])
             self.assertEqual(saved.provider_attempts[-1]["status"], "completed")
             self.assertEqual(saved.provider_attempts[-1]["result"]["success"], 1)
+
+    def test_cloud_adapter_retries_retryable_failures_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            RetryableCloudAdapter.provider_instance = RetryableThenSuccessProvider()
+            output = Path(temp)
+            logs: list[str] = []
+            result = RetryableCloudAdapter().download(
+                {
+                    "novel_url": "https://example.invalid/chapter-{chapter}",
+                    "chapter_url_template": "https://example.invalid/chapter-{chapter}",
+                    "chapters": [1],
+                    "output_dir": output,
+                    "delay": 0,
+                    "retry_count": 2,
+                    "skip_existing": False,
+                },
+                threading.Event(),
+                logs.append,
+                lambda *args: None,
+            )
+            self.assertEqual(result, {"success": 1, "failed": 0, "skipped": 0})
+            self.assertIn("Retry Chapter 1: timeout", "\n".join(logs))
+            self.assertEqual(RetryableCloudAdapter.provider_instance.calls, 2)
+
+    def test_cloud_adapter_does_not_retry_permanent_provider_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            PermanentFailureCloudAdapter.provider_instance = PermanentFailureProvider()
+            logs: list[str] = []
+            result = PermanentFailureCloudAdapter().download(
+                {
+                    "novel_url": "https://example.invalid/chapter-{chapter}",
+                    "chapter_url_template": "https://example.invalid/chapter-{chapter}",
+                    "chapters": [1],
+                    "output_dir": Path(temp),
+                    "delay": 0,
+                    "retry_count": 2,
+                    "skip_existing": False,
+                },
+                threading.Event(),
+                logs.append,
+                lambda *args: None,
+            )
+            self.assertEqual(result, {"success": 0, "failed": 1, "skipped": 0})
+            self.assertNotIn("Retry Chapter 1", "\n".join(logs))
+            self.assertEqual(PermanentFailureCloudAdapter.provider_instance.calls, 1)
+
+    def test_retry_delay_prefers_retry_after_header(self) -> None:
+        exc = AcquisitionError("rate_limited", "rate limited", provider="firecrawl", retry_after_seconds=12)
+        self.assertEqual(retry_delay_seconds(exc, attempt=3, base_delay=2), 12)
 
     def test_resume_retry_restart_dispatch_real_executor_and_remove_keeps_output(self) -> None:
         with tempfile.TemporaryDirectory() as temp, patch.dict("desktop_companion.jobs.ADAPTERS", {"fixture": SlowFixtureDownloaderAdapter}):
