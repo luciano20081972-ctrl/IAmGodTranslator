@@ -1,8 +1,8 @@
-const GT_CACHE_VERSION = "iagt-app-shell-11.6.2";
+const GT_CACHE_VERSION = "iagt-app-shell-11.6.2-v11.6.1-cache-refresh-20260831";
 const APP_SHELL = [
   "/",
-  "/static/styles.css?v=11.6.2",
-  "/static/app.js?v=11.6.2",
+  "/static/styles.css?v=11.6.2-v11.6.1-cache-refresh-20260831",
+  "/static/app.js?v=11.6.2-v11.6.1-cache-refresh-20260831",
   "/static/vendor/minisearch/minisearch-7.2.0.min.js?v=7.2.0",
   "/manifest.webmanifest",
   "/static/icons/dark-hour-icon.svg",
@@ -49,6 +49,14 @@ self.addEventListener("fetch", (event) => {
   }
 
   if (APP_SHELL.includes(url.pathname + url.search) || APP_SHELL.includes(url.pathname)) {
-    event.respondWith(caches.match(request).then((cached) => cached || fetch(request)));
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          const copy = response.clone();
+          caches.open(GT_CACHE_VERSION).then((cache) => cache.put(request, copy));
+          return response;
+        })
+        .catch(() => caches.match(request) || Response.error())
+    );
   }
 });

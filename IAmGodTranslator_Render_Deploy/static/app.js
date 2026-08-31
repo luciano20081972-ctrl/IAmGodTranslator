@@ -15,6 +15,7 @@ const PUBLIC_CACHE_TTL_MS = 10 * 60 * 1000;
 const PUBLIC_CACHE_PREFIX = "gt-public-cache:";
 const APP_BRAND = loadBrandConfig();
 const APP_VERSION = "11.6.2";
+const APP_BUILD_MARKER = "v11.6.1-cache-refresh-20260831";
 let activeRouteKey = window.location.hash || "#/home";
 let connectionInterrupted = false;
 let readerScrollHandler = null;

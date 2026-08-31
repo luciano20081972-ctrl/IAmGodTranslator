@@ -39,6 +39,7 @@ from app.recovery import parse_uploads, recovery_request, recovery_diagnostic, r
 
 VERSION = "11.6.2"
 DESKTOP_API_VERSION = "11.6.2"
+BUILD_MARKER = os.getenv("IAGT_BUILD_MARKER") or "v11.6.1-cache-refresh-20260831"
 ROOT = Path(__file__).resolve().parents[1]
 ADMIN_PASSWORD_SECRET_FILE = "/run/secrets/admin_password"
 ADMIN_SESSION_SECRET_FILE = "/run/secrets/admin_session_secret"
@@ -304,8 +305,21 @@ def health() -> dict[str, object]:
     try:
         reachable = database.ping()
     except Exception as exc:
-        return {"ok": False, "version": VERSION, "database": "unreachable", "schema": database.config.schema, "error": exc.__class__.__name__}
-    return {"ok": True, "version": VERSION, "database": "reachable" if reachable else "unreachable", "schema": database.config.schema}
+        return {
+            "ok": False,
+            "version": VERSION,
+            "build_marker": BUILD_MARKER,
+            "database": "unreachable",
+            "schema": database.config.schema,
+            "error": exc.__class__.__name__,
+        }
+    return {
+        "ok": True,
+        "version": VERSION,
+        "build_marker": BUILD_MARKER,
+        "database": "reachable" if reachable else "unreachable",
+        "schema": database.config.schema,
+    }
 
 
 @app.get("/api/desktop/health")
