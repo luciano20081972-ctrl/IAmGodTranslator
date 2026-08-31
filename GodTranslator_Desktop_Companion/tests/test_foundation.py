@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import time
 import unittest
 import zipfile
@@ -129,10 +130,22 @@ class FakeJsonClient:
     def __init__(self, payload):
         self.payload = payload
         self.calls = []
+        self.get_payloads = []
+        self.delete_calls = []
 
     def post_json(self, url, headers, payload, timeout):
         self.calls.append({"url": url, "headers": headers, "payload": payload, "timeout": timeout})
         return self.payload
+
+    def get_json(self, url, headers, timeout):
+        self.calls.append({"url": url, "headers": headers, "method": "GET", "timeout": timeout})
+        if self.get_payloads:
+            return self.get_payloads.pop(0)
+        return {}
+
+    def delete_json(self, url, headers, timeout):
+        self.delete_calls.append({"url": url, "headers": headers, "timeout": timeout})
+        return {"success": True}
 
 
 class FakeFirecrawlAdapter(FixtureDownloaderAdapter):
@@ -233,6 +246,53 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
         self.assertTrue(client.calls[0]["url"].endswith("/v2/map"))
         self.assertEqual(client.calls[0]["payload"]["limit"], 10)
 
+    def test_firecrawl_bounded_crawl_requires_scope_limits(self) -> None:
+        with self.assertRaises(AcquisitionError) as ctx:
+            FirecrawlProvider(api_key="test", client=FakeJsonClient({"id": "crawl-1"})).bounded_crawl(
+                AcquisitionRequest("https://fiction.example/novel/", max_pages=10)
+            )
+        self.assertEqual(ctx.exception.category, "blocked_or_restricted")
+
+    def test_firecrawl_bounded_crawl_normalizes_only_scoped_pages(self) -> None:
+        client = FakeJsonClient({"id": "crawl-1"})
+        client.get_payloads = [{
+            "status": "completed",
+            "data": [
+                {"markdown": "Chapter 1\n\nFirst body", "metadata": {"title": "Chapter 1", "sourceURL": "https://fiction.example/novel/chapter-1"}},
+                {"markdown": "Chapter 2\n\nSecond body", "metadata": {"title": "Chapter 2", "sourceURL": "https://fiction.example/novel/chapter-2"}},
+                {"markdown": "Chapter 3\n\nWrong scope", "metadata": {"title": "Chapter 3", "sourceURL": "https://fiction.example/blog/chapter-3"}},
+            ],
+        }]
+        request = AcquisitionRequest(
+            "https://fiction.example/novel/",
+            max_pages=10,
+            allowed_domains=["fiction.example"],
+            path_prefixes=["/novel/"],
+        )
+        chapters = FirecrawlProvider(api_key="test", client=client).bounded_crawl(request, poll_interval=0, max_polls=1)
+        self.assertEqual([item.chapter_number for item in chapters], [1.0, 2.0])
+        self.assertEqual(chapters[0].provider, "firecrawl")
+        self.assertTrue(client.calls[0]["url"].endswith("/v2/crawl"))
+        self.assertEqual(client.calls[0]["payload"]["includePaths"], ["/novel/"])
+        self.assertFalse(client.calls[0]["payload"]["allowExternalLinks"])
+        self.assertTrue(client.calls[1]["url"].endswith("/v2/crawl/crawl-1"))
+
+    def test_firecrawl_bounded_crawl_cancels_remote_job(self) -> None:
+        client = FakeJsonClient({"id": "crawl-1"})
+        cancel = threading.Event()
+        cancel.set()
+        request = AcquisitionRequest(
+            "https://fiction.example/novel/",
+            max_pages=5,
+            allowed_domains=["fiction.example"],
+            path_prefixes=["/novel/"],
+        )
+        with self.assertRaises(AcquisitionError) as ctx:
+            FirecrawlProvider(api_key="test", client=client).bounded_crawl(request, cancel=cancel, poll_interval=0, max_polls=1)
+        self.assertEqual(ctx.exception.category, "canceled")
+        self.assertEqual(len(client.delete_calls), 1)
+        self.assertTrue(client.delete_calls[0]["url"].endswith("/v2/crawl/crawl-1"))
+
     def test_provider_scope_blocks_private_network_targets(self) -> None:
         with self.assertRaises(AcquisitionError) as ctx:
             FirecrawlProvider(api_key="test", client=FakeJsonClient({})).fetch_page(AcquisitionRequest("http://127.0.0.1:8000/admin"))
@@ -261,6 +321,9 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
             provider.fetch_page(AcquisitionRequest("https://example.invalid/chapter-1", 1))
         self.assertEqual(ctx.exception.provider, "browser")
         self.assertIn("source adapter browser mode", str(ctx.exception))
+        with self.assertRaises(AcquisitionError) as ctx:
+            provider.discover_chapters(AcquisitionRequest("https://example.invalid/chapter-1", 1))
+        self.assertEqual(ctx.exception.provider, "browser")
 
     def test_auto_provider_policy_prefers_free_local_paths(self) -> None:
         policy = ProviderPolicy(allow_cloud_providers=False, prefer_free_local=True)

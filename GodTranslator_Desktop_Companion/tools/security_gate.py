@@ -29,6 +29,8 @@ def is_scannable(path: Path) -> bool:
 
 def is_allowed_fixture_secret(path: Path, category: str, match: str) -> bool:
     rel = str(path.relative_to(ROOT)).replace("\\", "/")
+    if rel == "GodTranslator_Desktop_Companion/tools/security_gate.py" and category == "database_url":
+        return match.startswith("postgresql://postgres@127.0.0.1:") or match.startswith("postgresql://unused")
     if category == "database_url" and match.startswith("postgresql://postgres@127.0.0.1:"):
         return rel.startswith(".github/workflows/") or rel.startswith("IAmGodTranslator_Render_Deploy/tools/")
     if category == "database_url" and match.startswith("postgresql://unused"):

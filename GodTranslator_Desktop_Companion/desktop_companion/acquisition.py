@@ -144,12 +144,38 @@ class AcquisitionProvider(Protocol):
 
 
 class UrlLibJsonClient:
+    def get_json(self, url: str, headers: dict[str, str], timeout: float) -> dict[str, Any]:
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            category = http_failure_category(exc.code)
+            raise AcquisitionError(category, f"Provider returned HTTP {exc.code}", status_code=exc.code) from exc
+        except TimeoutError as exc:
+            raise AcquisitionError("timeout", "Provider request timed out") from exc
+        except OSError as exc:
+            raise AcquisitionError("network", exc.__class__.__name__) from exc
+
     def post_json(self, url: str, headers: dict[str, str], payload: dict[str, Any], timeout: float) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(url, data=body, headers=headers, method="POST")
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            category = http_failure_category(exc.code)
+            raise AcquisitionError(category, f"Provider returned HTTP {exc.code}", status_code=exc.code) from exc
+        except TimeoutError as exc:
+            raise AcquisitionError("timeout", "Provider request timed out") from exc
+        except OSError as exc:
+            raise AcquisitionError("network", exc.__class__.__name__) from exc
+
+    def delete_json(self, url: str, headers: dict[str, str], timeout: float) -> dict[str, Any]:
+        request = urllib.request.Request(url, headers=headers, method="DELETE")
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8") or "{}")
         except urllib.error.HTTPError as exc:
             category = http_failure_category(exc.code)
             raise AcquisitionError(category, f"Provider returned HTTP {exc.code}", status_code=exc.code) from exc
@@ -264,6 +290,66 @@ class FirecrawlProvider:
                 continue
             chapters.append(NormalizedChapter.from_page(AcquiredPage(request.source_url, scoped[0], self.name, title=title, text="", discovered_links=[], warnings=[]), chapter_hint=hint))
         return dedupe_chapters(chapters)[: request.max_pages]
+
+    def bounded_crawl(self, request: AcquisitionRequest, cancel: Any | None = None, poll_interval: float = 0.5, max_polls: int = 20) -> list["NormalizedChapter"]:
+        if not self.api_key:
+            raise AcquisitionError("configuration_missing", "FIRECRAWL_API_KEY is not configured", provider=self.name, retryable=False)
+        validate_public_source_url(request.source_url, request.allowed_domains, request.path_prefixes)
+        if not request.allowed_domains or not request.path_prefixes or request.max_pages < 1:
+            raise AcquisitionError("blocked_or_restricted", "Firecrawl crawl requires explicit domain, path, and page limits", provider=self.name, retryable=False)
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        start = self.client.post_json(
+            f"{self.base_url}/v2/crawl",
+            headers,
+            {
+                "url": request.source_url,
+                "includePaths": request.path_prefixes,
+                "limit": request.max_pages,
+                "crawlEntireDomain": False,
+                "allowExternalLinks": False,
+                "allowSubdomains": False,
+                "ignoreQueryParameters": True,
+                "scrapeOptions": {"formats": ["markdown", "html"], "onlyMainContent": True, "timeout": int(request.timeout_seconds * 1000)},
+            },
+            request.timeout_seconds,
+        )
+        crawl_id = str(start.get("id") or "")
+        if not crawl_id:
+            raise AcquisitionError("invalid_response", "Firecrawl crawl did not return a job id", provider=self.name, retryable=False)
+        for _ in range(max_polls):
+            if cancel is not None and cancel.is_set():
+                self.cancel_crawl(crawl_id, request.timeout_seconds)
+                raise AcquisitionError("canceled", "Firecrawl crawl cancelled", provider=self.name, retryable=False)
+            status = self.client.get_json(f"{self.base_url}/v2/crawl/{crawl_id}", headers, request.timeout_seconds)
+            if status.get("status") == "failed":
+                raise AcquisitionError("crawl_failed", "Firecrawl crawl failed", provider=self.name)
+            if status.get("status") == "completed":
+                pages = status.get("data") if isinstance(status.get("data"), list) else []
+                chapters = []
+                for page_data in pages:
+                    if not isinstance(page_data, dict):
+                        continue
+                    metadata = page_data.get("metadata", {}) if isinstance(page_data.get("metadata"), dict) else {}
+                    final_url = str(metadata.get("sourceURL") or page_data.get("url") or request.source_url)
+                    if not filter_scoped_links([final_url], request):
+                        continue
+                    page = AcquiredPage(
+                        source_url=request.source_url,
+                        canonical_url=final_url,
+                        provider=self.name,
+                        title=str(metadata.get("title") or page_data.get("title") or ""),
+                        text=str(page_data.get("markdown") or page_data.get("text") or ""),
+                        html=str(page_data.get("html") or ""),
+                        provider_request_id=crawl_id,
+                        raw_metadata=safe_metadata(metadata),
+                    )
+                    chapters.append(NormalizedChapter.from_page(page))
+                return dedupe_chapters(chapters)[: request.max_pages]
+            time.sleep(poll_interval)
+        raise AcquisitionError("timeout", "Firecrawl crawl did not complete before timeout", provider=self.name)
+
+    def cancel_crawl(self, crawl_id: str, timeout_seconds: float = 30.0) -> dict[str, Any]:
+        return self.client.delete_json(f"{self.base_url}/v2/crawl/{crawl_id}", {"Authorization": f"Bearer {self.api_key}"}, timeout_seconds)
 
 
 class ApifyProvider:
@@ -402,6 +488,15 @@ class BrowserProvider:
         raise AcquisitionError(
             "unsupported_source",
             "BrowserProvider is exposed through the existing source adapter browser mode, not standalone generic scraping.",
+            provider=self.name,
+            retryable=False,
+            suggested_action="Use Auto or a source-specific adapter with browser mode enabled.",
+        )
+
+    def discover_chapters(self, request: AcquisitionRequest, cancel: Any | None = None) -> list["NormalizedChapter"]:
+        raise AcquisitionError(
+            "unsupported_source",
+            "BrowserProvider chapter discovery is exposed through the existing source adapter browser mode.",
             provider=self.name,
             retryable=False,
             suggested_action="Use Auto or a source-specific adapter with browser mode enabled.",
