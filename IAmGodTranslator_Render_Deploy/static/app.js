@@ -26,6 +26,7 @@ let commandPaletteOpenFromHistory = false;
 let commandPaletteClosingFromPop = false;
 let commandTouchStartY = 0;
 let paragraphTouchTimer = null;
+let accountRefreshPromise = null;
 const notificationSessionStartedAt = Date.now();
 const cacheRequestMap = new Map();
 const readerRequestMap = new Map();
@@ -619,6 +620,14 @@ async function loadAuth() {
 }
 
 async function refreshAccount() {
+  if (accountRefreshPromise) return accountRefreshPromise;
+  accountRefreshPromise = refreshAccountNow().finally(() => {
+    accountRefreshPromise = null;
+  });
+  return accountRefreshPromise;
+}
+
+async function refreshAccountNow() {
   try {
     const payload = await api("/api/account/me");
     state.account = payload.authenticated ? payload.user : null;
