@@ -10,6 +10,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 import desktop_companion
+from desktop_companion.acquisition import AcquisitionError, AcquisitionRequest, ApifyProvider, FirecrawlProvider
 from desktop_companion.jobs import JobManager
 from desktop_companion.models import WebsiteConnectionProfile
 from desktop_companion.models import default_website_url, normalize_website_base_url
@@ -115,6 +116,36 @@ class FailOnceDownloaderAdapter(FixtureDownloaderAdapter):
         return {"success": success, "failed": failed, "skipped": skipped}
 
 
+class FakeJsonClient:
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = []
+
+    def post_json(self, url, headers, payload, timeout):
+        self.calls.append({"url": url, "headers": headers, "payload": payload, "timeout": timeout})
+        return self.payload
+
+
+class FakeFirecrawlAdapter(FixtureDownloaderAdapter):
+    name = "firecrawl"
+    display_name = "Firecrawl"
+    supports_http = False
+    supports_playwright = False
+
+    def download(self, options, stop_event, log, progress):
+        output_dir = Path(options["output_dir"])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        success = 0
+        log("Provider selected: firecrawl")
+        for index, chapter in enumerate(options["chapters"], start=1):
+            body = f"Chapter {chapter}\n\nFirecrawl acquired text"
+            (output_dir / f"{chapter:04d}.txt").write_text(body, encoding="utf-8")
+            success += 1
+            log(f"Saved Chapter {chapter}: {chapter:04d}.txt via firecrawl")
+            progress(index, len(options["chapters"]), success, 0, 0, f"Chapter {chapter}")
+        return {"success": success, "failed": 0, "skipped": 0}
+
+
 def wait_for_job(store: CompanionStore, job_id: str, statuses: set[str]) -> None:
     deadline = time.time() + 5
     while time.time() < deadline:
@@ -151,6 +182,54 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
             self.assertEqual(store.job(job.id).downloaded_chapters, [1, 2, 3])
             payload = read_json(paths.jobs_file, {})
             self.assertEqual(payload["jobs"][0]["id"], job.id)
+            self.assertEqual(payload["jobs"][0]["acquisition_provider"], "auto")
+
+    def test_firecrawl_provider_normalizes_scrape_response(self) -> None:
+        client = FakeJsonClient({
+            "data": {
+                "markdown": "# Chapter 7\n\nAcquired text",
+                "metadata": {"title": "Chapter 7", "sourceURL": "https://example.invalid/c7"},
+                "links": ["https://example.invalid/c8"],
+            }
+        })
+        page = FirecrawlProvider(api_key="test", client=client).fetch_page(AcquisitionRequest("https://example.invalid/c7", 7))
+        self.assertEqual(page.provider, "firecrawl")
+        self.assertEqual(page.title, "Chapter 7")
+        self.assertIn("Acquired text", page.content)
+        self.assertEqual(client.calls[0]["headers"]["Authorization"], "Bearer test")
+
+    def test_firecrawl_requires_server_side_key(self) -> None:
+        with self.assertRaises(AcquisitionError) as ctx:
+            FirecrawlProvider(api_key="").fetch_page(AcquisitionRequest("https://example.invalid/c1", 1))
+        self.assertEqual(ctx.exception.category, "configuration_missing")
+
+    def test_apify_provider_requires_allowlisted_actor_and_normalizes_dataset(self) -> None:
+        client = FakeJsonClient([{"title": "Chapter 9", "text": "Apify acquired text", "url": "https://example.invalid/c9"}])
+        with patch.dict(os.environ, {"APIFY_ALLOWED_ACTORS": "owner/chapter-reader"}):
+            page = ApifyProvider(api_token="test", actor_id="owner/chapter-reader", client=client).fetch_page(AcquisitionRequest("https://example.invalid/c9", 9))
+        self.assertEqual(page.provider, "apify")
+        self.assertEqual(page.title, "Chapter 9")
+        self.assertIn("Apify acquired text", page.content)
+        self.assertIn("owner~chapter-reader", client.calls[0]["url"])
+
+    def test_apify_rejects_unapproved_actor(self) -> None:
+        with patch.dict(os.environ, {"APIFY_ALLOWED_ACTORS": "owner/approved"}):
+            with self.assertRaises(AcquisitionError) as ctx:
+                ApifyProvider(api_token="test", actor_id="owner/not-approved").fetch_page(AcquisitionRequest("https://example.invalid", 1))
+        self.assertEqual(ctx.exception.category, "unsupported_source")
+
+    def test_cloud_provider_metadata_persists_through_job_manager(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, patch.dict("desktop_companion.jobs.ADAPTERS", {"firecrawl": FakeFirecrawlAdapter}):
+            paths = app_paths(Path(temp))
+            store = CompanionStore(paths)
+            manager = JobManager(store, paths)
+            job = manager.create_job("Cloud Novel", "https://example.invalid/{chapter}", [1], source_adapter="firecrawl", acquisition_provider="firecrawl")
+            manager.start(job.id)
+            wait_for_job(store, job.id, {"completed"})
+            saved = store.job(job.id)
+            self.assertEqual(saved.resolved_provider, "firecrawl")
+            self.assertEqual(saved.downloaded_chapters, [1])
+            self.assertTrue((Path(saved.output_dir) / "0001.txt").exists())
 
     def test_resume_retry_restart_dispatch_real_executor_and_remove_keeps_output(self) -> None:
         with tempfile.TemporaryDirectory() as temp, patch.dict("desktop_companion.jobs.ADAPTERS", {"fixture": SlowFixtureDownloaderAdapter}):

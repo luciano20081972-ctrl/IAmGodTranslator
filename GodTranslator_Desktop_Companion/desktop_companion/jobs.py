@@ -52,6 +52,7 @@ class JobManager:
         auto_upload: bool = False,
         delay_seconds: float = 3.0,
         retry_count: int = 2,
+        acquisition_provider: str = "auto",
     ) -> DownloadJob:
         if source_adapter not in ADAPTERS:
             raise ValueError(f"Unsupported source adapter: {source_adapter}")
@@ -65,6 +66,8 @@ class JobManager:
             output_dir=str(content_dir),
             novel_root_dir=str(root_dir),
             chapters=sorted({int(chapter) for chapter in chapters}),
+            acquisition_provider=acquisition_provider,
+            resolved_provider=self._resolve_provider(source_adapter, acquisition_provider, browser_mode),
             website_url=website_url,
             novel_id=novel_id or safe_folder_name(novel_title).lower().replace(" ", "-"),
             target_mode=resolved_mode,
@@ -238,6 +241,7 @@ class JobManager:
             auto_upload=job.auto_upload,
             delay_seconds=job.delay_seconds,
             retry_count=job.retry_count,
+            acquisition_provider=job.acquisition_provider,
         )
 
     def delete_job(self, job_id: str) -> None:
@@ -285,6 +289,13 @@ class JobManager:
         started = time.perf_counter()
         try:
             adapter = ADAPTERS[job.source_adapter]()
+            job.resolved_provider = self._resolve_provider(job.source_adapter, job.acquisition_provider, job.browser_mode)
+            job.provider_attempts = job.provider_attempts + [{
+                "provider": job.resolved_provider,
+                "status": "started",
+                "at": utc_now(),
+            }]
+            self.store.upsert_job(job)
             output_dir = Path(job.output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
             options = adapter.build_options(
@@ -316,6 +327,14 @@ class JobManager:
         def log(message: str) -> None:
             current = self.require_job(job_id)
             self._apply_log_message(current, message)
+            provider = parse_provider(message)
+            if provider:
+                current.resolved_provider = provider
+                current.provider_attempts = current.provider_attempts + [{
+                    "provider": provider,
+                    "status": "selected",
+                    "at": utc_now(),
+                }]
             self.store.upsert_job(current)
             self.store.append_log(f"{job_id} {message}")
 
@@ -406,6 +425,12 @@ class JobManager:
                 failed.worker_state = "Failed"
                 failed.last_activity = str(exc)
                 failed.errors["job"] = str(exc)
+                failed.provider_attempts = failed.provider_attempts + [{
+                    "provider": failed.resolved_provider or self._resolve_provider(failed.source_adapter, failed.acquisition_provider, failed.browser_mode),
+                    "status": "failed",
+                    "category": exc.__class__.__name__,
+                    "at": utc_now(),
+                }]
                 self._append_live_log(failed, f"Job failed: {exc}")
             failed.browser_state = "Closed"
             failed.finished_at = None if failed.status == "paused" else utc_now()
@@ -503,6 +528,14 @@ class JobManager:
         if recovered:
             self.store.save_jobs(recovered)
 
+    def _resolve_provider(self, source_adapter: str, requested: str, browser_mode: bool) -> str:
+        requested = (requested or "auto").lower()
+        if requested != "auto":
+            return requested
+        if source_adapter in {"firecrawl", "apify"}:
+            return source_adapter
+        return "browser" if browser_mode else "direct_http"
+
     def _append_live_log(self, job: DownloadJob, message: str) -> None:
         job.live_log = (job.live_log + [f"{utc_now()} {message}"])[-LOG_LIMIT:]
 
@@ -596,3 +629,8 @@ def parse_current_chapter(value: str) -> int | None:
 def parse_url(value: str) -> str:
     match = URL_RE.search(value or "")
     return match.group(0).rstrip(").,") if match else ""
+
+
+def parse_provider(value: str) -> str:
+    match = re.search(r"\bProvider selected:\s*([a-z0-9_-]+)", value or "", re.IGNORECASE)
+    return match.group(1).lower() if match else ""

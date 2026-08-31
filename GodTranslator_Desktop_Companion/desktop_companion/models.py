@@ -74,6 +74,9 @@ class DownloadJob:
     source_url: str
     output_dir: str
     chapters: list[int]
+    acquisition_provider: str = "auto"
+    resolved_provider: str = ""
+    provider_attempts: list[dict[str, Any]] = field(default_factory=list)
     novel_root_dir: str = ""
     website_url: str = ""
     novel_id: str = ""
@@ -154,6 +157,9 @@ class DownloadJob:
             source_url=str(payload.get("source_url") or ""),
             output_dir=str(payload.get("output_dir") or ""),
             chapters=[int(chapter) for chapter in payload.get("chapters", [])],
+            acquisition_provider=str(payload.get("acquisition_provider") or "auto"),
+            resolved_provider=str(payload.get("resolved_provider") or ""),
+            provider_attempts=[dict(item) for item in payload.get("provider_attempts", []) if isinstance(item, dict)],
             novel_root_dir=str(payload.get("novel_root_dir") or ""),
             website_url=str(payload.get("website_url") or ""),
             novel_id=str(payload.get("novel_id") or ""),

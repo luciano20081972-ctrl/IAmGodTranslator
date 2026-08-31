@@ -143,15 +143,18 @@ class DesktopCompanionApp:
         self.new_adapter = self.ctk.CTkOptionMenu(form, values=[item.name for item in adapter_descriptors()])
         self.new_adapter.set("novelfire")
         self.new_adapter.grid(row=4, column=0, sticky="ew", padx=8, pady=8)
+        self.new_provider = self.ctk.CTkOptionMenu(form, values=["Auto", "Direct", "Browser", "Firecrawl", "Apify"])
+        self.new_provider.set("Auto")
+        self.new_provider.grid(row=4, column=1, sticky="ew", padx=8, pady=8)
         self.new_auto_upload = self.ctk.CTkCheckBox(form, text="Send to GodTranslator after download")
-        self.new_auto_upload.grid(row=4, column=1, sticky="w", padx=8, pady=8)
+        self.new_auto_upload.grid(row=5, column=0, sticky="w", padx=8, pady=8)
         self.mode_switch = self.ctk.CTkSegmentedButton(form, values=["Simple", "Advanced"])
         self.mode_switch.set("Simple")
         self.mode_switch.grid(row=3, column=1, sticky="ew", padx=8, pady=8)
-        self.ctk.CTkButton(form, text="Detect Source", command=self.detect_source_from_form).grid(row=5, column=0, sticky="ew", padx=8, pady=12)
-        self.ctk.CTkButton(form, text="Download Chapters", command=self.create_download_job_from_form).grid(row=5, column=1, sticky="ew", padx=8, pady=12)
-        self.ctk.CTkButton(form, text="Send Latest Pack to GodTranslator", command=self.queue_latest_pack_upload).grid(row=6, column=0, sticky="ew", padx=8, pady=12)
-        self.ctk.CTkButton(form, text="Open Imported Novel", command=self.open_current_novel_on_website).grid(row=6, column=1, sticky="ew", padx=8, pady=12)
+        self.ctk.CTkButton(form, text="Detect Source", command=self.detect_source_from_form).grid(row=5, column=1, sticky="ew", padx=8, pady=12)
+        self.ctk.CTkButton(form, text="Download Chapters", command=self.create_download_job_from_form).grid(row=6, column=0, sticky="ew", padx=8, pady=12)
+        self.ctk.CTkButton(form, text="Send Latest Pack to GodTranslator", command=self.queue_latest_pack_upload).grid(row=6, column=1, sticky="ew", padx=8, pady=12)
+        self.ctk.CTkButton(form, text="Open Imported Novel", command=self.open_current_novel_on_website).grid(row=7, column=0, sticky="ew", padx=8, pady=12)
 
     def show_recovery_requests(self) -> None:
         self._clear("Recovery", "Open a GodTranslator Recovery Request JSON, download missing chapters, and build a recovery pack.")
@@ -258,7 +261,8 @@ class DesktopCompanionApp:
                 f"Last downloaded chapter: {job.last_downloaded_chapter or '-'} | Remaining chapters: {job.remaining} | "
                 f"Downloaded chapters: {len(job.downloaded_chapters) or job.completed} | Failed chapters: {len(job.failed_chapters) or job.failed} | "
                 f"Retries: {job.retry_events} | Elapsed: {format_seconds(job.elapsed_seconds)} | "
-                f"Average: {job.download_speed_cpm:.1f} chapters/minute | ETA: {format_seconds(job.estimated_remaining_seconds)}"
+                f"Average: {job.download_speed_cpm:.1f} chapters/minute | ETA: {format_seconds(job.estimated_remaining_seconds)} | "
+                f"Provider: {job.resolved_provider or job.acquisition_provider}"
             )
             self.ctk.CTkLabel(card, text=details, anchor="w", wraplength=900, justify="left").pack(fill="x", padx=10, pady=2)
             state_line = (
@@ -321,15 +325,18 @@ class DesktopCompanionApp:
         try:
             chapters = parse_chapter_range(self.new_range.get())
             profile = self.sync.profile()
+            acquisition_provider = provider_value(self.new_provider.get())
+            source_adapter = acquisition_provider if acquisition_provider in {"firecrawl", "apify"} else self.new_adapter.get()
             job = self.manager.create_job(
                 novel_title=self.new_title.get() or "Untitled Novel",
                 source_url=self.new_url.get(),
                 chapters=chapters,
                 output_dir=Path(self.new_folder.get()),
-                source_adapter=self.new_adapter.get(),
+                source_adapter=source_adapter,
                 website_url=profile.base_url,
                 auto_upload=bool(self.new_auto_upload.get()),
                 browser_mode=True,
+                acquisition_provider=acquisition_provider,
             )
             self.store.append_log(f"Created job {job.id}")
             self.manager.start(job.id)
@@ -613,6 +620,17 @@ def parse_chapter_range(value: str) -> list[int]:
     if not chapters:
         raise ValueError("Enter at least one chapter.")
     return sorted(chapters)
+
+
+def provider_value(label: str) -> str:
+    mapping = {
+        "auto": "auto",
+        "direct": "direct_http",
+        "browser": "browser",
+        "firecrawl": "firecrawl",
+        "apify": "apify",
+    }
+    return mapping.get((label or "auto").strip().lower(), "auto")
 
 
 def open_folder(path: Path) -> None:
