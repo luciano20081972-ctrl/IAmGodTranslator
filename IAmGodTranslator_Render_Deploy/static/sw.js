@@ -1,8 +1,8 @@
-const GT_CACHE_VERSION = "iagt-app-shell-11.6.2-v11.6.1-zero-wait-20260831";
+const GT_CACHE_VERSION = "iagt-app-shell-11.6.2-v11.6.1-mobile-home-20260831";
 const APP_SHELL = [
   "/",
-  "/static/styles.css?v=11.6.2-v11.6.1-zero-wait-20260831",
-  "/static/app.js?v=11.6.2-v11.6.1-zero-wait-20260831",
+  "/static/styles.css?v=11.6.2-v11.6.1-mobile-home-20260831",
+  "/static/app.js?v=11.6.2-v11.6.1-mobile-home-20260831",
   "/static/vendor/minisearch/minisearch-7.2.0.min.js?v=7.2.0",
   "/manifest.webmanifest",
   "/static/icons/dark-hour-icon.svg",

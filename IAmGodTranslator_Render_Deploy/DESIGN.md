@@ -21,4 +21,5 @@ The Home route must render useful reader content immediately from local memory, 
 - Avoid dashboard-first Home composition for guest and reader flows.
 - Use the Dark Hour palette and existing tokens before adding new visual primitives.
 - Preserve visible focus states, 44px mobile touch targets, readable disabled states, and safe-area padding.
+- On mobile Home, hero actions must occupy their own row below cover/title text. Long titles own their full text region and must never intersect Search, CTA, cover, or bottom navigation controls.
 - Do not add new branding strings outside the existing brand configuration unless the static startup shell needs a temporary no-JavaScript fallback.

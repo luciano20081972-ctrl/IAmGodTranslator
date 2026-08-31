@@ -39,7 +39,7 @@ from app.recovery import parse_uploads, recovery_request, recovery_diagnostic, r
 
 VERSION = "11.6.2"
 DESKTOP_API_VERSION = "11.6.2"
-BUILD_MARKER = os.getenv("IAGT_BUILD_MARKER") or "v11.6.1-zero-wait-20260831"
+BUILD_MARKER = os.getenv("IAGT_BUILD_MARKER") or "v11.6.1-mobile-home-20260831"
 ROOT = Path(__file__).resolve().parents[1]
 ADMIN_PASSWORD_SECRET_FILE = "/run/secrets/admin_password"
 ADMIN_SESSION_SECRET_FILE = "/run/secrets/admin_session_secret"

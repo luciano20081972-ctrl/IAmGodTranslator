@@ -3230,7 +3230,7 @@ body:not([data-route="reader"]) .shell {
   box-shadow: none;
 }
 
-.continue-card > div:not(.continue-cover) {
+.continue-card > div:not(.continue-cover):not(.actions) {
   min-width: 0;
 }
 
@@ -4329,6 +4329,7 @@ body[data-reader-tone="sepia"] .reader-text {
   .continue-card > a.button.primary,
   .continue-card .actions {
     grid-column: 1 / -1;
+    grid-row: 2;
     width: 100%;
   }
 
@@ -5264,7 +5265,7 @@ body[data-route="notifications"] .global-search-trigger span {
     align-self: start;
   }
 
-  .continue-card > div:not(.continue-cover) {
+  .continue-card > div:not(.continue-cover):not(.actions) {
     grid-column: 2;
     grid-row: 1;
     min-width: 0;
@@ -5283,6 +5284,7 @@ body[data-route="notifications"] .global-search-trigger span {
   .continue-card > a.button.primary,
   .continue-card .actions {
     grid-column: 1 / -1;
+    grid-row: 2;
     justify-self: stretch;
     width: 100%;
   }
