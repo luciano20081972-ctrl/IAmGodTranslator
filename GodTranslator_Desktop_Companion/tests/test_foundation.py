@@ -31,7 +31,7 @@ from desktop_companion.paths import app_paths
 from desktop_companion.recovery import load_recovery_request
 from desktop_companion.storage import CompanionStore, read_json
 from desktop_companion.sync import SyncManager
-from desktop_companion.ui_app import NAV_ITEMS
+from desktop_companion.ui_app import NAV_ITEMS, provider_value
 from desktop_companion.website_api import WebsiteClient
 
 
@@ -182,6 +182,12 @@ def wait_for_job(store: CompanionStore, job_id: str, statuses: set[str]) -> None
 class DesktopCompanionFoundationTests(unittest.TestCase):
     def test_application_import(self) -> None:
         self.assertEqual(desktop_companion.APP_NAME, "GodTranslator Desktop Companion")
+
+    def test_direct_http_provider_option_is_real_adapter(self) -> None:
+        self.assertIn("direct_http", adapter_names())
+        direct = next(item for item in adapter_descriptors() if item.name == "direct_http")
+        self.assertEqual(direct.status, "active")
+        self.assertEqual(provider_value("Direct"), "direct_http")
 
     def test_recovery_request_parsing(self) -> None:
         request = load_recovery_request(FIXTURES / "recovery_request.json")

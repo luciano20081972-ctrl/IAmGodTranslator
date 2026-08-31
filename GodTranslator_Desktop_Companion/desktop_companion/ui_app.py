@@ -341,7 +341,7 @@ class DesktopCompanionApp:
             chapters = parse_chapter_range(self.new_range.get())
             profile = self.sync.profile()
             acquisition_provider = provider_value(self.new_provider.get())
-            source_adapter = acquisition_provider if acquisition_provider in {"firecrawl", "apify"} else self.new_adapter.get()
+            source_adapter = acquisition_provider if acquisition_provider in {"direct_http", "firecrawl", "apify"} else self.new_adapter.get()
             job = self.manager.create_job(
                 novel_title=self.new_title.get() or "Untitled Novel",
                 source_url=self.new_url.get(),

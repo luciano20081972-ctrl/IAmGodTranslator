@@ -4,7 +4,7 @@ from pathlib import Path
 from threading import Event
 from typing import Callable
 
-from ..acquisition import AcquisitionError, AcquisitionRequest, ApifyProvider, FirecrawlProvider, chapter_url
+from ..acquisition import AcquisitionError, AcquisitionRequest, ApifyProvider, DirectHttpProvider, FirecrawlProvider, chapter_url
 
 
 class CloudChapterAdapter:
@@ -86,3 +86,9 @@ class ApifyAdapter(CloudChapterAdapter):
     name = "apify"
     display_name = "Apify"
     provider_type = ApifyProvider
+
+
+class DirectHttpAdapter(CloudChapterAdapter):
+    name = "direct_http"
+    display_name = "Direct HTTP"
+    provider_type = DirectHttpProvider
