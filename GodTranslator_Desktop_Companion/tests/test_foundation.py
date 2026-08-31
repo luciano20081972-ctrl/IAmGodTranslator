@@ -352,6 +352,10 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
             self.assertEqual(saved.resolved_provider, "firecrawl")
             self.assertEqual(saved.downloaded_chapters, [1])
             self.assertTrue((Path(saved.output_dir) / "0001.txt").exists())
+            self.assertEqual(saved.provider_attempts[0]["status"], "started")
+            self.assertTrue(saved.provider_attempts[0]["capabilities"]["requires_external_credit"])
+            self.assertEqual(saved.provider_attempts[-1]["status"], "completed")
+            self.assertEqual(saved.provider_attempts[-1]["result"]["success"], 1)
 
     def test_resume_retry_restart_dispatch_real_executor_and_remove_keeps_output(self) -> None:
         with tempfile.TemporaryDirectory() as temp, patch.dict("desktop_companion.jobs.ADAPTERS", {"fixture": SlowFixtureDownloaderAdapter}):
@@ -381,6 +385,8 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
             self.assertEqual(saved.worker_state, "Failed")
             self.assertIn("adapter setup failed", saved.errors["job"])
             self.assertIn("Job failed: adapter setup failed", "\n".join(saved.live_log))
+            self.assertEqual(saved.provider_attempts[-1]["status"], "failed")
+            self.assertEqual(saved.provider_attempts[-1]["fallback_decision"], "no fallback during adapter setup")
 
     def test_download_manager_persists_real_adapter_events_and_output_layout(self) -> None:
         with tempfile.TemporaryDirectory() as temp, patch.dict("desktop_companion.jobs.ADAPTERS", {"fixture": FixtureDownloaderAdapter}):

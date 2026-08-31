@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .adapters import ADAPTERS
-from .acquisition import ProviderPolicy, SourceAcquisitionProfile, choose_provider
+from .acquisition import AcquisitionError, PROVIDERS, ProviderPolicy, SourceAcquisitionProfile, choose_provider
 from .models import DownloadJob, new_id, utc_now
 from .packs import build_pack
 from .paths import AppPaths
@@ -288,15 +288,20 @@ class JobManager:
     def _run_job(self, job_id: str, control: JobControl) -> None:
         job = self.require_job(job_id)
         started = time.perf_counter()
+        provider_started = started
         try:
+            decision = self._provider_decision(job.source_adapter, job.acquisition_provider, job.browser_mode)
             adapter = ADAPTERS[job.source_adapter]()
-            job.resolved_provider = self._resolve_provider(job.source_adapter, job.acquisition_provider, job.browser_mode)
-            job.provider_attempts = job.provider_attempts + [{
-                "provider": job.resolved_provider,
-                "status": "started",
-                "reason": self._provider_decision_reason(job.source_adapter, job.acquisition_provider, job.browser_mode),
-                "at": utc_now(),
-            }]
+            job.resolved_provider = decision.provider
+            job.provider_attempts = job.provider_attempts + [
+                self._provider_attempt(
+                    provider=decision.provider,
+                    status="started",
+                    reason=decision.reason,
+                    cloud_allowed=decision.cloud_allowed,
+                    fallback_decision="selected",
+                )
+            ]
             self.store.upsert_job(job)
             output_dir = Path(job.output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -313,6 +318,7 @@ class JobManager:
             )
         except Exception as exc:
             failed = self.require_job(job_id)
+            decision = self._provider_decision(failed.source_adapter, failed.acquisition_provider, failed.browser_mode)
             failed.status = "failed"
             failed.worker_state = "Failed"
             failed.browser_state = "Closed"
@@ -320,6 +326,17 @@ class JobManager:
             failed.finished_at = utc_now()
             failed.last_activity = str(exc)
             failed.errors["job"] = str(exc)
+            failed.provider_attempts = failed.provider_attempts + [
+                self._provider_attempt(
+                    provider=failed.resolved_provider or decision.provider,
+                    status="failed",
+                    reason=decision.reason,
+                    elapsed_seconds=round(time.perf_counter() - provider_started, 2),
+                    error=exc,
+                    cloud_allowed=decision.cloud_allowed,
+                    fallback_decision="no fallback during adapter setup",
+                )
+            ]
             self._append_live_log(failed, f"Job failed: {exc}")
             self.store.upsert_job(failed)
             self._controls.pop(job_id, None)
@@ -336,6 +353,7 @@ class JobManager:
                     "provider": provider,
                     "status": "selected",
                     "at": utc_now(),
+                    "capabilities": self._provider_capabilities(provider),
                 }]
             self.store.upsert_job(current)
             self.store.append_log(f"{job_id} {message}")
@@ -387,6 +405,19 @@ class JobManager:
                 finished.browser_state = "Closed"
                 finished.finished_at = utc_now()
                 finished.last_activity = "Completed with failures" if finished.failed else "Completed"
+                finished.provider_attempts = finished.provider_attempts + [
+                    self._provider_attempt(
+                        provider=finished.resolved_provider,
+                        status="failed" if finished.failed else "completed",
+                        elapsed_seconds=round(time.perf_counter() - provider_started, 2),
+                        result={
+                            "success": finished.completed,
+                            "failed": finished.failed,
+                            "skipped": finished.skipped,
+                        },
+                        fallback_decision="retry failed chapters only" if finished.failed else "none",
+                    )
+                ]
                 self._append_live_log(finished, finished.last_activity)
             if finished.status == "completed" and finished.auto_build_packs:
                 try:
@@ -427,12 +458,15 @@ class JobManager:
                 failed.worker_state = "Failed"
                 failed.last_activity = str(exc)
                 failed.errors["job"] = str(exc)
-                failed.provider_attempts = failed.provider_attempts + [{
-                    "provider": failed.resolved_provider or self._resolve_provider(failed.source_adapter, failed.acquisition_provider, failed.browser_mode),
-                    "status": "failed",
-                    "category": exc.__class__.__name__,
-                    "at": utc_now(),
-                }]
+                failed.provider_attempts = failed.provider_attempts + [
+                    self._provider_attempt(
+                        provider=failed.resolved_provider or self._resolve_provider(failed.source_adapter, failed.acquisition_provider, failed.browser_mode),
+                        status="failed",
+                        elapsed_seconds=round(time.perf_counter() - provider_started, 2),
+                        error=exc,
+                        fallback_decision="manual retry required",
+                    )
+                ]
                 self._append_live_log(failed, f"Job failed: {exc}")
             failed.browser_state = "Closed"
             failed.finished_at = None if failed.status == "paused" else utc_now()
@@ -531,23 +565,67 @@ class JobManager:
             self.store.save_jobs(recovered)
 
     def _resolve_provider(self, source_adapter: str, requested: str, browser_mode: bool) -> str:
-        decision = choose_provider(
-            source_adapter,
-            requested,
-            browser_mode=browser_mode,
-            policy=self._provider_policy(),
-            profile=self._source_profile(source_adapter),
-        )
-        return decision.provider
+        return self._provider_decision(source_adapter, requested, browser_mode).provider
 
-    def _provider_decision_reason(self, source_adapter: str, requested: str, browser_mode: bool) -> str:
+    def _provider_decision(self, source_adapter: str, requested: str, browser_mode: bool):
         return choose_provider(
             source_adapter,
             requested,
             browser_mode=browser_mode,
             policy=self._provider_policy(),
             profile=self._source_profile(source_adapter),
-        ).reason
+        )
+
+    def _provider_decision_reason(self, source_adapter: str, requested: str, browser_mode: bool) -> str:
+        return self._provider_decision(source_adapter, requested, browser_mode).reason
+
+    def _provider_capabilities(self, provider: str) -> dict[str, bool]:
+        provider_class = PROVIDERS.get(provider)
+        capabilities = getattr(provider_class, "capabilities", None)
+        if capabilities is None:
+            return {}
+        return {key: bool(value) for key, value in capabilities.__dict__.items()}
+
+    def _provider_attempt(
+        self,
+        *,
+        provider: str,
+        status: str,
+        reason: str = "",
+        elapsed_seconds: float | None = None,
+        result: dict[str, int] | None = None,
+        error: Exception | None = None,
+        cloud_allowed: bool | None = None,
+        fallback_decision: str = "",
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "provider": provider,
+            "status": status,
+            "at": utc_now(),
+            "capabilities": self._provider_capabilities(provider),
+        }
+        if reason:
+            payload["reason"] = reason
+        if elapsed_seconds is not None:
+            payload["elapsed_seconds"] = elapsed_seconds
+        if result is not None:
+            payload["result"] = result
+        if cloud_allowed is not None:
+            payload["cloud_allowed"] = cloud_allowed
+        if fallback_decision:
+            payload["fallback_decision"] = fallback_decision
+        if error is not None:
+            if isinstance(error, AcquisitionError):
+                payload["error"] = error.safe_payload()
+            else:
+                payload["error"] = {
+                    "category": error.__class__.__name__,
+                    "provider": provider,
+                    "safe_message": str(error),
+                    "retryable": False,
+                    "suggested_action": "Review adapter configuration or retry manually.",
+                }
+        return payload
 
     def _provider_policy(self) -> ProviderPolicy:
         settings = self.store.settings()
