@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .adapters import ADAPTERS
+from .acquisition import ProviderPolicy, SourceAcquisitionProfile, choose_provider
 from .models import DownloadJob, new_id, utc_now
 from .packs import build_pack
 from .paths import AppPaths
@@ -293,6 +294,7 @@ class JobManager:
             job.provider_attempts = job.provider_attempts + [{
                 "provider": job.resolved_provider,
                 "status": "started",
+                "reason": self._provider_decision_reason(job.source_adapter, job.acquisition_provider, job.browser_mode),
                 "at": utc_now(),
             }]
             self.store.upsert_job(job)
@@ -529,12 +531,38 @@ class JobManager:
             self.store.save_jobs(recovered)
 
     def _resolve_provider(self, source_adapter: str, requested: str, browser_mode: bool) -> str:
-        requested = (requested or "auto").lower()
-        if requested != "auto":
-            return requested
-        if source_adapter in {"firecrawl", "apify"}:
-            return source_adapter
-        return "browser" if browser_mode else "direct_http"
+        decision = choose_provider(
+            source_adapter,
+            requested,
+            browser_mode=browser_mode,
+            policy=self._provider_policy(),
+            profile=self._source_profile(source_adapter),
+        )
+        return decision.provider
+
+    def _provider_decision_reason(self, source_adapter: str, requested: str, browser_mode: bool) -> str:
+        return choose_provider(
+            source_adapter,
+            requested,
+            browser_mode=browser_mode,
+            policy=self._provider_policy(),
+            profile=self._source_profile(source_adapter),
+        ).reason
+
+    def _provider_policy(self) -> ProviderPolicy:
+        settings = self.store.settings()
+        return ProviderPolicy(
+            allow_cloud_providers=bool(settings.get("allow_cloud_providers", False)),
+            allow_firecrawl_auto=bool(settings.get("allow_firecrawl_auto", False)),
+            allow_apify_auto=bool(settings.get("allow_apify_auto", False)),
+            prefer_free_local=bool(settings.get("prefer_free_local", True)),
+            cloud_fallback_only=bool(settings.get("cloud_fallback_only", True)),
+        )
+
+    def _source_profile(self, source_adapter: str) -> SourceAcquisitionProfile:
+        if source_adapter == "novelfire":
+            return SourceAcquisitionProfile(preferred_provider="browser", requires_js=True)
+        return SourceAcquisitionProfile()
 
     def _append_live_log(self, job: DownloadJob, message: str) -> None:
         job.live_log = (job.live_log + [f"{utc_now()} {message}"])[-LOG_LIMIT:]

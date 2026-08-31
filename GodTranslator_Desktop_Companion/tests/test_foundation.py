@@ -10,7 +10,16 @@ from unittest.mock import patch
 from pathlib import Path
 
 import desktop_companion
-from desktop_companion.acquisition import AcquisitionError, AcquisitionRequest, ApifyProvider, FirecrawlProvider
+from desktop_companion.acquisition import (
+    AcquisitionError,
+    AcquisitionRequest,
+    ApifyProvider,
+    BrowserProvider,
+    FirecrawlProvider,
+    ProviderPolicy,
+    SourceAcquisitionProfile,
+    choose_provider,
+)
 from desktop_companion.jobs import JobManager
 from desktop_companion.models import WebsiteConnectionProfile
 from desktop_companion.models import default_website_url, normalize_website_base_url
@@ -203,6 +212,32 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
             FirecrawlProvider(api_key="").fetch_page(AcquisitionRequest("https://example.invalid/c1", 1))
         self.assertEqual(ctx.exception.category, "configuration_missing")
 
+    def test_firecrawl_map_discovers_scoped_chapters_without_crawling_whole_domain(self) -> None:
+        client = FakeJsonClient({
+            "success": True,
+            "links": [
+                {"url": "https://fiction.example/novel/chapter-1", "title": "Chapter 1"},
+                {"url": "https://fiction.example/novel/chapter-2", "title": "Chapter 2"},
+                {"url": "https://fiction.example/blog/unrelated", "title": "Blog"},
+                {"url": "https://other.example/novel/chapter-3", "title": "Chapter 3"},
+            ],
+        })
+        request = AcquisitionRequest(
+            "https://fiction.example/novel/",
+            max_pages=10,
+            allowed_domains=["fiction.example"],
+            path_prefixes=["/novel/"],
+        )
+        chapters = FirecrawlProvider(api_key="test", client=client).discover_chapters(request)
+        self.assertEqual([item.chapter_number for item in chapters], [1.0, 2.0])
+        self.assertTrue(client.calls[0]["url"].endswith("/v2/map"))
+        self.assertEqual(client.calls[0]["payload"]["limit"], 10)
+
+    def test_provider_scope_blocks_private_network_targets(self) -> None:
+        with self.assertRaises(AcquisitionError) as ctx:
+            FirecrawlProvider(api_key="test", client=FakeJsonClient({})).fetch_page(AcquisitionRequest("http://127.0.0.1:8000/admin"))
+        self.assertEqual(ctx.exception.category, "blocked_or_restricted")
+
     def test_apify_provider_requires_allowlisted_actor_and_normalizes_dataset(self) -> None:
         client = FakeJsonClient([{"title": "Chapter 9", "text": "Apify acquired text", "url": "https://example.invalid/c9"}])
         with patch.dict(os.environ, {"APIFY_ALLOWED_ACTORS": "owner/chapter-reader"}):
@@ -217,6 +252,30 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
             with self.assertRaises(AcquisitionError) as ctx:
                 ApifyProvider(api_token="test", actor_id="owner/not-approved").fetch_page(AcquisitionRequest("https://example.invalid", 1))
         self.assertEqual(ctx.exception.category, "unsupported_source")
+
+    def test_browser_provider_is_declared_as_real_local_provider(self) -> None:
+        provider = BrowserProvider()
+        self.assertTrue(provider.capabilities.requires_local_browser)
+        self.assertTrue(provider.capabilities.supports_js_rendering)
+        with self.assertRaises(AcquisitionError) as ctx:
+            provider.fetch_page(AcquisitionRequest("https://example.invalid/chapter-1", 1))
+        self.assertEqual(ctx.exception.provider, "browser")
+        self.assertIn("source adapter browser mode", str(ctx.exception))
+
+    def test_auto_provider_policy_prefers_free_local_paths(self) -> None:
+        policy = ProviderPolicy(allow_cloud_providers=False, prefer_free_local=True)
+        decision = choose_provider("novelfire", "auto", browser_mode=True, policy=policy)
+        self.assertEqual(decision.provider, "browser")
+        self.assertIn("source-specific", decision.reason)
+        decision = choose_provider("generic", "auto", browser_mode=False, policy=policy)
+        self.assertEqual(decision.provider, "direct_http")
+
+    def test_auto_provider_honors_source_profile_without_spending_cloud_by_default(self) -> None:
+        profile = SourceAcquisitionProfile(preferred_provider="firecrawl", requires_js=True)
+        blocked = choose_provider("generic", "auto", browser_mode=True, policy=ProviderPolicy(allow_cloud_providers=False), profile=profile)
+        self.assertEqual(blocked.provider, "browser")
+        allowed = choose_provider("generic", "auto", browser_mode=True, policy=ProviderPolicy(allow_cloud_providers=True, allow_firecrawl_auto=True), profile=profile)
+        self.assertEqual(allowed.provider, "firecrawl")
 
     def test_cloud_provider_metadata_persists_through_job_manager(self) -> None:
         with tempfile.TemporaryDirectory() as temp, patch.dict("desktop_companion.jobs.ADAPTERS", {"firecrawl": FakeFirecrawlAdapter}):

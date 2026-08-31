@@ -68,6 +68,11 @@ class CompanionStore:
                 "downloads_folder": str(self.paths.downloads_dir),
                 "default_adapter": "novelfire",
                 "default_website_url": default_website_url(),
+                "allow_cloud_providers": False,
+                "allow_firecrawl_auto": False,
+                "allow_apify_auto": False,
+                "prefer_free_local": True,
+                "cloud_fallback_only": True,
                 "created_at": utc_now(),
             }
             write_json(self.paths.settings_file, payload)

@@ -220,7 +220,22 @@ class DesktopCompanionApp:
     def show_settings(self) -> None:
         self._clear("Settings", "Local settings stay under %LOCALAPPDATA%\\GodTranslatorDesktop.")
         settings = self.store.settings()
-        self._plain_text(f"Local data:\n{self.paths.root}\n\nDownloads folder:\n{settings.get('downloads_folder')}\n\nMode:\n{settings.get('mode')}\n\nWebsite:\n{settings.get('default_website_url')}")
+        policy = [
+            f"Allow cloud providers: {bool(settings.get('allow_cloud_providers', False))}",
+            f"Allow Firecrawl in Auto: {bool(settings.get('allow_firecrawl_auto', False))}",
+            f"Allow Apify in Auto: {bool(settings.get('allow_apify_auto', False))}",
+            f"Prefer free local acquisition: {bool(settings.get('prefer_free_local', True))}",
+            f"Cloud fallback only: {bool(settings.get('cloud_fallback_only', True))}",
+        ]
+        self._plain_text(
+            "Local data:\n"
+            f"{self.paths.root}\n\n"
+            f"Downloads folder:\n{settings.get('downloads_folder')}\n\n"
+            f"Mode:\n{settings.get('mode')}\n\n"
+            f"Website:\n{settings.get('default_website_url')}\n\n"
+            "Acquisition policy:\n"
+            + "\n".join(policy)
+        )
 
     def show_logs(self) -> None:
         self._clear("Advanced Logs", "Local activity log.")
