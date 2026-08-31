@@ -215,7 +215,7 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
     def test_firecrawl_provider_normalizes_scrape_response(self) -> None:
         client = FakeJsonClient({
             "data": {
-                "markdown": "# Chapter 7\n\nAcquired text",
+                "markdown": "# Chapter 7\n\n" + ("Acquired chapter text with enough body for validation. " * 3),
                 "metadata": {"title": "Chapter 7", "sourceURL": "https://example.invalid/c7"},
                 "links": ["https://example.invalid/c8"],
             }
@@ -223,7 +223,7 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
         page = FirecrawlProvider(api_key="test", client=client).fetch_page(AcquisitionRequest("https://example.invalid/c7", 7))
         self.assertEqual(page.provider, "firecrawl")
         self.assertEqual(page.title, "Chapter 7")
-        self.assertIn("Acquired text", page.content)
+        self.assertIn("Acquired chapter text", page.content)
         self.assertEqual(client.calls[0]["headers"]["Authorization"], "Bearer test")
 
     def test_firecrawl_requires_server_side_key(self) -> None:
@@ -264,9 +264,9 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
         client.get_payloads = [{
             "status": "completed",
             "data": [
-                {"markdown": "Chapter 1\n\nFirst body", "metadata": {"title": "Chapter 1", "sourceURL": "https://fiction.example/novel/chapter-1"}},
-                {"markdown": "Chapter 2\n\nSecond body", "metadata": {"title": "Chapter 2", "sourceURL": "https://fiction.example/novel/chapter-2"}},
-                {"markdown": "Chapter 3\n\nWrong scope", "metadata": {"title": "Chapter 3", "sourceURL": "https://fiction.example/blog/chapter-3"}},
+                {"markdown": "Chapter 1\n\n" + ("First body with enough chapter words for validation. " * 3), "metadata": {"title": "Chapter 1", "sourceURL": "https://fiction.example/novel/chapter-1"}},
+                {"markdown": "Chapter 2\n\n" + ("Second body with enough chapter words for validation. " * 3), "metadata": {"title": "Chapter 2", "sourceURL": "https://fiction.example/novel/chapter-2"}},
+                {"markdown": "Chapter 3\n\n" + ("Wrong scope with enough chapter words for validation. " * 3), "metadata": {"title": "Chapter 3", "sourceURL": "https://fiction.example/blog/chapter-3"}},
             ],
         }]
         request = AcquisitionRequest(
@@ -305,13 +305,36 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
         self.assertEqual(ctx.exception.category, "blocked_or_restricted")
 
     def test_apify_provider_requires_allowlisted_actor_and_normalizes_dataset(self) -> None:
-        client = FakeJsonClient([{"title": "Chapter 9", "text": "Apify acquired text", "url": "https://example.invalid/c9"}])
+        client = FakeJsonClient({"data": {"id": "run-1", "defaultDatasetId": "dataset-1"}})
+        client.get_payloads = [
+            {"data": {"id": "run-1", "status": "SUCCEEDED", "defaultDatasetId": "dataset-1", "usage": {"totalUsd": 0.01}}},
+            [{"title": "Chapter 9", "text": "Apify acquired text with enough chapter body for validation.", "url": "https://example.invalid/c9"}],
+        ]
         with patch.dict(os.environ, {"APIFY_ALLOWED_ACTORS": "owner/chapter-reader"}):
             page = ApifyProvider(api_token="test", actor_id="owner/chapter-reader", client=client).fetch_page(AcquisitionRequest("https://example.invalid/c9", 9))
         self.assertEqual(page.provider, "apify")
         self.assertEqual(page.title, "Chapter 9")
         self.assertIn("Apify acquired text", page.content)
         self.assertIn("owner~chapter-reader", client.calls[0]["url"])
+        self.assertTrue(client.calls[1]["url"].endswith("/actor-runs/run-1"))
+        self.assertTrue(client.calls[2]["url"].endswith("/datasets/dataset-1/items?limit=1"))
+
+    def test_apify_provider_aborts_running_actor_on_cancel(self) -> None:
+        cancel = threading.Event()
+
+        class CancelAfterStartClient(FakeJsonClient):
+            def post_json(self, url, headers, payload, timeout):
+                result = super().post_json(url, headers, payload, timeout)
+                if url.endswith("/actors/owner~chapter-reader/runs"):
+                    cancel.set()
+                return result
+
+        client = CancelAfterStartClient({"data": {"id": "run-1", "defaultDatasetId": "dataset-1"}})
+        with patch.dict(os.environ, {"APIFY_ALLOWED_ACTORS": "owner/chapter-reader"}):
+            with self.assertRaises(AcquisitionError) as ctx:
+                ApifyProvider(api_token="test", actor_id="owner/chapter-reader", client=client).fetch_page(AcquisitionRequest("https://example.invalid/c9", 9), cancel=cancel)
+        self.assertEqual(ctx.exception.category, "canceled")
+        self.assertTrue(client.calls[-1]["url"].endswith("/actor-runs/run-1/abort"))
 
     def test_apify_rejects_unapproved_actor(self) -> None:
         with patch.dict(os.environ, {"APIFY_ALLOWED_ACTORS": "owner/approved"}):

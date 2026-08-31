@@ -7,6 +7,8 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from email.utils import parsedate_to_datetime
+from datetime import UTC, datetime
 from typing import Any, Protocol
 from urllib.parse import urljoin, urlsplit
 from hashlib import sha256
@@ -38,6 +40,7 @@ class AcquisitionError(RuntimeError):
         retryable: bool | None = None,
         status_code: int | None = None,
         suggested_action: str = "",
+        retry_after_seconds: float | None = None,
     ) -> None:
         super().__init__(message)
         self.category = category
@@ -45,6 +48,7 @@ class AcquisitionError(RuntimeError):
         self.retryable = category in RETRYABLE_FAILURES if retryable is None else retryable
         self.status_code = status_code
         self.suggested_action = suggested_action
+        self.retry_after_seconds = retry_after_seconds
 
     def safe_payload(self) -> dict[str, Any]:
         return {
@@ -54,6 +58,7 @@ class AcquisitionError(RuntimeError):
             "retryable": self.retryable,
             "status_code": self.status_code,
             "suggested_action": self.suggested_action,
+            "retry_after_seconds": self.retry_after_seconds,
         }
 
 
@@ -144,14 +149,14 @@ class AcquisitionProvider(Protocol):
 
 
 class UrlLibJsonClient:
-    def get_json(self, url: str, headers: dict[str, str], timeout: float) -> dict[str, Any]:
+    def get_json(self, url: str, headers: dict[str, str], timeout: float) -> Any:
         request = urllib.request.Request(url, headers=headers, method="GET")
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             category = http_failure_category(exc.code)
-            raise AcquisitionError(category, f"Provider returned HTTP {exc.code}", status_code=exc.code) from exc
+            raise AcquisitionError(category, f"Provider returned HTTP {exc.code}", status_code=exc.code, retry_after_seconds=retry_after_seconds(exc)) from exc
         except TimeoutError as exc:
             raise AcquisitionError("timeout", "Provider request timed out") from exc
         except OSError as exc:
@@ -165,7 +170,7 @@ class UrlLibJsonClient:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             category = http_failure_category(exc.code)
-            raise AcquisitionError(category, f"Provider returned HTTP {exc.code}", status_code=exc.code) from exc
+            raise AcquisitionError(category, f"Provider returned HTTP {exc.code}", status_code=exc.code, retry_after_seconds=retry_after_seconds(exc)) from exc
         except TimeoutError as exc:
             raise AcquisitionError("timeout", "Provider request timed out") from exc
         except OSError as exc:
@@ -178,7 +183,7 @@ class UrlLibJsonClient:
                 return json.loads(response.read().decode("utf-8") or "{}")
         except urllib.error.HTTPError as exc:
             category = http_failure_category(exc.code)
-            raise AcquisitionError(category, f"Provider returned HTTP {exc.code}", status_code=exc.code) from exc
+            raise AcquisitionError(category, f"Provider returned HTTP {exc.code}", status_code=exc.code, retry_after_seconds=retry_after_seconds(exc)) from exc
         except TimeoutError as exc:
             raise AcquisitionError("timeout", "Provider request timed out") from exc
         except OSError as exc:
@@ -245,6 +250,7 @@ class FirecrawlProvider:
         links = normalize_links(data.get("links", []), request.source_url)
         if not (text or html):
             raise AcquisitionError("empty_content", "Firecrawl returned no chapter content", provider=self.name, retryable=False)
+        validate_chapter_quality(text or html_to_text(html), title, provider=self.name)
         return AcquiredPage(
             source_url=request.source_url,
             canonical_url=canonical,
@@ -343,6 +349,7 @@ class FirecrawlProvider:
                         provider_request_id=crawl_id,
                         raw_metadata=safe_metadata(metadata),
                     )
+                    validate_chapter_quality(page.content, page.title, provider=self.name)
                     chapters.append(NormalizedChapter.from_page(page))
                 return dedupe_chapters(chapters)[: request.max_pages]
             time.sleep(poll_interval)
@@ -381,6 +388,76 @@ class ApifyProvider:
         self.client = client or UrlLibJsonClient()
 
     def fetch_page(self, request: AcquisitionRequest, cancel: Any | None = None) -> AcquiredPage:
+        started = time.perf_counter()
+        item, run = self.run_actor_for_items(request, cancel=cancel, max_polls=1)
+        text = str(item.get("markdown") or item.get("text") or item.get("content") or "")
+        html = str(item.get("html") or "")
+        title = str(item.get("title") or "")
+        canonical = str(item.get("canonicalUrl") or item.get("url") or request.source_url)
+        if not (text or html):
+            raise AcquisitionError("empty_content", "Apify Actor returned no chapter content", provider=self.name, retryable=False)
+        validate_chapter_quality(text or html_to_text(html), title, provider=self.name)
+        return AcquiredPage(
+            source_url=request.source_url,
+            canonical_url=canonical,
+            provider=self.name,
+            title=title,
+            text=text,
+            html=html,
+            elapsed_seconds=round(time.perf_counter() - started, 3),
+            provider_request_id=str(run.get("id") or item.get("runId") or item.get("id") or ""),
+            raw_metadata=safe_metadata(item),
+            provider_usage=safe_metadata(run.get("usage") if isinstance(run.get("usage"), dict) else {}),
+        )
+
+    def run_actor_for_items(
+        self,
+        request: AcquisitionRequest,
+        cancel: Any | None = None,
+        poll_interval: float = 0.5,
+        max_polls: int = 20,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        if not self.api_token:
+            raise AcquisitionError("configuration_missing", "APIFY_API_TOKEN is not configured", provider=self.name, retryable=False)
+        if not is_allowed_apify_actor(self.actor_id):
+            raise AcquisitionError("unsupported_source", "Apify Actor is not allowlisted", provider=self.name, retryable=False)
+        validate_public_source_url(request.source_url, request.allowed_domains, request.path_prefixes)
+        if cancel is not None and cancel.is_set():
+            raise AcquisitionError("canceled", "Acquisition cancelled", provider=self.name, retryable=False)
+        actor_path = self.actor_id.replace("/", "~")
+        headers = {"Authorization": f"Bearer {self.api_token}", "Content-Type": "application/json"}
+        start = self.client.post_json(
+            f"{self.base_url}/actors/{actor_path}/runs",
+            headers,
+            {"startUrls": [{"url": request.source_url}], "maxPages": request.max_pages},
+            request.timeout_seconds,
+        )
+        run = start.get("data") if isinstance(start.get("data"), dict) else start
+        run_id = str(run.get("id") or "")
+        if not run_id:
+            raise AcquisitionError("invalid_response", "Apify Actor run did not return a run id", provider=self.name, retryable=False)
+        for _ in range(max_polls):
+            if cancel is not None and cancel.is_set():
+                self.abort_run(run_id, request.timeout_seconds)
+                raise AcquisitionError("canceled", "Apify Actor run cancelled", provider=self.name, retryable=False)
+            status_payload = self.client.get_json(f"{self.base_url}/actor-runs/{run_id}", headers, request.timeout_seconds)
+            status_run = status_payload.get("data") if isinstance(status_payload, dict) and isinstance(status_payload.get("data"), dict) else status_payload
+            if isinstance(status_run, dict) and status_run.get("status") in {"FAILED", "TIMED-OUT", "ABORTED"}:
+                raise AcquisitionError("actor_failed", f"Apify Actor ended with {status_run.get('status')}", provider=self.name)
+            if isinstance(status_run, dict) and status_run.get("status") == "SUCCEEDED":
+                dataset_id = str(status_run.get("defaultDatasetId") or run.get("defaultDatasetId") or "")
+                if not dataset_id:
+                    raise AcquisitionError("invalid_response", "Apify Actor run did not expose a default dataset", provider=self.name, retryable=False)
+                items = self.client.get_json(f"{self.base_url}/datasets/{dataset_id}/items?limit={max(1, request.max_pages)}", headers, request.timeout_seconds)
+                rows = items if isinstance(items, list) else items.get("items", []) if isinstance(items, dict) else []
+                item = next((entry for entry in rows if isinstance(entry, dict)), {})
+                if not item:
+                    raise AcquisitionError("empty_content", "Apify Actor dataset returned no usable items", provider=self.name, retryable=False)
+                return item, status_run
+            time.sleep(poll_interval)
+        raise AcquisitionError("timeout", "Apify Actor run did not complete before timeout", provider=self.name)
+
+    def fetch_page_sync(self, request: AcquisitionRequest, cancel: Any | None = None) -> AcquiredPage:
         if not self.api_token:
             raise AcquisitionError("configuration_missing", "APIFY_API_TOKEN is not configured", provider=self.name, retryable=False)
         if not is_allowed_apify_actor(self.actor_id):
@@ -404,6 +481,7 @@ class ApifyProvider:
         canonical = str(item.get("canonicalUrl") or item.get("url") or request.source_url)
         if not (text or html):
             raise AcquisitionError("empty_content", "Apify Actor returned no chapter content", provider=self.name, retryable=False)
+        validate_chapter_quality(text or html_to_text(html), title, provider=self.name)
         return AcquiredPage(
             source_url=request.source_url,
             canonical_url=canonical,
@@ -415,6 +493,9 @@ class ApifyProvider:
             provider_request_id=str(item.get("runId") or item.get("id") or ""),
             raw_metadata=safe_metadata(item),
         )
+
+    def abort_run(self, run_id: str, timeout_seconds: float = 30.0) -> dict[str, Any]:
+        return self.client.post_json(f"{self.base_url}/actor-runs/{run_id}/abort", {"Authorization": f"Bearer {self.api_token}"}, {}, timeout_seconds)
 
     def discover_chapters(self, request: AcquisitionRequest, cancel: Any | None = None) -> list["NormalizedChapter"]:
         page = self.fetch_page(request, cancel)
@@ -442,17 +523,23 @@ class DirectHttpProvider:
 
     def fetch_page(self, request: AcquisitionRequest, cancel: Any | None = None) -> AcquiredPage:
         validate_public_source_url(request.source_url, request.allowed_domains, request.path_prefixes)
+        if cancel is not None and cancel.is_set():
+            raise AcquisitionError("canceled", "Acquisition cancelled", provider=self.name, retryable=False)
         started = time.perf_counter()
         try:
             with urllib.request.urlopen(request.source_url, timeout=request.timeout_seconds) as response:
                 html = response.read().decode("utf-8", errors="replace")
                 canonical = response.url or request.source_url
+        except urllib.error.HTTPError as exc:
+            category = http_failure_category(exc.code)
+            raise AcquisitionError(category, f"Direct HTTP returned HTTP {exc.code}", provider=self.name, status_code=exc.code, retry_after_seconds=retry_after_seconds(exc)) from exc
         except TimeoutError as exc:
-            raise AcquisitionError("timeout", "Direct HTTP request timed out") from exc
+            raise AcquisitionError("timeout", "Direct HTTP request timed out", provider=self.name) from exc
         except OSError as exc:
-            raise AcquisitionError("network", exc.__class__.__name__) from exc
+            raise AcquisitionError("network", exc.__class__.__name__, provider=self.name) from exc
         if not html_to_text(html):
-            raise AcquisitionError("empty_content", "Direct HTTP returned no readable content", retryable=False)
+            raise AcquisitionError("empty_content", "Direct HTTP returned no readable content", provider=self.name, retryable=False)
+        validate_chapter_quality(html_to_text(html), "", provider=self.name)
         return AcquiredPage(request.source_url, canonical, self.name, html=html, elapsed_seconds=round(time.perf_counter() - started, 3))
 
     def discover_chapters(self, request: AcquisitionRequest, cancel: Any | None = None) -> list["NormalizedChapter"]:
@@ -601,6 +688,20 @@ def http_failure_category(status: int) -> str:
     return "unsupported_source"
 
 
+def retry_after_seconds(exc: urllib.error.HTTPError) -> float | None:
+    raw = exc.headers.get("Retry-After") if exc.headers else None
+    if not raw:
+        return None
+    text = str(raw).strip()
+    if text.isdigit():
+        return float(text)
+    try:
+        parsed = parsedate_to_datetime(text)
+        return max(0.0, (parsed - datetime.now(UTC)).total_seconds())
+    except Exception:
+        return None
+
+
 def validate_public_source_url(url: str, allowed_domains: list[str] | None = None, path_prefixes: list[str] | None = None) -> None:
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -660,6 +761,28 @@ def chapter_json_schema() -> dict[str, Any]:
 def safe_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     blocked = {"authorization", "cookie", "set-cookie", "api_key", "token", "password", "secret"}
     return {str(k): v for k, v in metadata.items() if str(k).lower() not in blocked}
+
+
+def validate_chapter_quality(body: str, title: str = "", provider: str = "") -> None:
+    text = re.sub(r"\s+", " ", html_to_text(body) if "<" in body and ">" in body else body).strip()
+    lowered = f"{title} {text[:500]}".lower()
+    if len(text) < 40:
+        raise AcquisitionError("empty_content", "Provider returned too little readable chapter content", provider=provider, retryable=False)
+    blocked_phrases = (
+        "sign in to continue",
+        "login to continue",
+        "access denied",
+        "enable cookies",
+        "captcha",
+        "cloudflare ray id",
+        "page not found",
+        "404 not found",
+    )
+    if any(phrase in lowered for phrase in blocked_phrases):
+        raise AcquisitionError("blocked_or_restricted", "Provider returned an access or error page instead of chapter content", provider=provider, retryable=False)
+    words = re.findall(r"\w+", text)
+    if len(words) < 8:
+        raise AcquisitionError("parse_failed", "Provider returned navigation or template text, not chapter content", provider=provider, retryable=False)
 
 
 def chapter_hint(value: str) -> float | None:
