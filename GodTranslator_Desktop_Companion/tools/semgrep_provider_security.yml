@@ -1,0 +1,31 @@
+rules:
+  - id: iagt-python-subprocess-shell-true
+    languages:
+      - python
+    severity: WARNING
+    message: Avoid shell=True in provider/downloader code; it expands command injection surface.
+    patterns:
+      - pattern: subprocess.$FUNC(..., shell=True, ...)
+
+  - id: iagt-python-unsafe-yaml-load
+    languages:
+      - python
+    severity: ERROR
+    message: Use yaml.safe_load for untrusted local/imported configuration.
+    pattern: yaml.load(...)
+
+  - id: iagt-python-unsafe-pickle-load
+    languages:
+      - python
+    severity: ERROR
+    message: Do not deserialize pickle data from downloader/import/provider inputs.
+    pattern-either:
+      - pattern: pickle.load(...)
+      - pattern: pickle.loads(...)
+
+  - id: iagt-js-secret-localstorage
+    languages:
+      - javascript
+    severity: ERROR
+    message: Do not store provider/API credentials in browser localStorage.
+    pattern-regex: '\b(?:window\.)?localStorage\.setItem\(\s*["''`][^"''`]*(?:api|token|secret|authorization|cookie|credential|password)[^"''`]*["''`]\s*,'
