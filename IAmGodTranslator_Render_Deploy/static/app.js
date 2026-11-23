@@ -4948,5 +4948,4 @@ async function bootstrapSessionState() {
   await refreshSession();
   const current = window.location.hash || "#/home";
   if (["#/home", "#/library", "#/settings", "#/settings/account"].includes(current)) route();
-  updateActivityIndicator();
 }

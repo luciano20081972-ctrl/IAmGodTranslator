@@ -62,8 +62,8 @@ def main() -> None:
     require("function fallbackSearchDocs" in adapter, "Fallback substring search is available")
     require("warnMiniSearchUnavailable" in adapter, "Missing MiniSearch has a debug-only diagnostic path")
     require("searchLibraryNovels(filteredNovels" in app_js, "Library filters are applied before MiniSearch ranking")
-    require("limit=${CHAPTER_SEARCH_INDEX_LIMIT}&offset=0&view=" in app_js, "Chapter metadata is loaded once per view for client-side ranking")
-    require("state.chapters = searched.chapters.slice" in app_js, "Chapter search results are paginated after ranking")
+    require('params.set("search", state.chapterSearch.trim())' in app_js, "Chapter search is sent to the server")
+    require("offset: String(state.chapterOffset)" in app_js and "limit: String(state.pageSize)" in app_js, "Chapter search retains server pagination")
     require("chapterSearchStatusText" in app_js and "librarySearchStatus" in app_js, "Search result counts are exposed through live status text")
     require("clearLibrarySearch" in app_js and "clearChapterSearch" in app_js, "Library and chapter searches provide clear controls")
 
