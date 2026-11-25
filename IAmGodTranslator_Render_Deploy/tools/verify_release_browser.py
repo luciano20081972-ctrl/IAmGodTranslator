@@ -24,6 +24,19 @@ def main() -> int:
     os.environ["AUTH_ENABLED"] = "false"
     from app.main import app
 
+    pwa = sys.argv[1:] == ["--pwa"]
+    if pwa:
+        from fastapi.responses import Response
+        from profile_v11_6_seeded import seed_database as seed_reader
+        from app import main as website
+
+        seed_reader(website, novel_count=1, large_chapters=24)
+
+        @app.get("/fixture-prior-sw.js")
+        def prior_worker():
+            return Response("self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));",
+                            media_type="application/javascript")
+
     config = uvicorn.Config(app, lifespan="on", log_level="warning")
     server = uvicorn.Server(config)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
@@ -38,6 +51,14 @@ def main() -> int:
             if not server.started:
                 raise RuntimeError("browser fixture server failed to start")
             env = dict(os.environ, GT_RC1_BASE_URL=f"http://127.0.0.1:{port}")
+            if pwa:
+                for script in ("browser_v11_6_pwa_smoke.py", "browser_v11_6_reader_cache_smoke.py"):
+                    command = [sys.executable, f"tools/{script}", "--base-url", env["GT_RC1_BASE_URL"]]
+                    print(f"Fixture command {command!r}", file=sys.stderr, flush=True)
+                    result = subprocess.run(command, env=env, check=False)
+                    if result.returncode:
+                        return result.returncode
+                return 0
             command = [env["GT_VERIFY_NODE"], "tools/qa_v11_rc1_browser_smoke.js"]
             # Log the resolved loopback URL and nested command used for the evidence.
             print(f"Browser fixture URL {env['GT_RC1_BASE_URL']}. Command {command!r}", file=sys.stderr, flush=True)

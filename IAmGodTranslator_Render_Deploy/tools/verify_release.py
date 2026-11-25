@@ -61,6 +61,12 @@ REGRESSION = FAST + (
     website_check("backup-manifest", "qa_backup_manifest_hotfix"),
     website_check("desktop-integration", "qa_v10_6_desktop_integration", unittest=True),
     website_check("reader-search", "qa_v11_4_minisearch"),
+    Check("service-worker", WEBSITE, "node", ("--test", "tools/qa_service_worker.test.js"),
+          ("static/sw.js", "tools/qa_service_worker.test.js")),
+    Check("pwa-browser", WEBSITE, "python", ("tools/verify_release_browser.py", "--pwa"),
+          ("tools/verify_release_browser.py", "tools/browser_v11_6_pwa_smoke.py",
+           "tools/browser_v11_6_reader_cache_smoke.py", "tools/profile_v11_6_seeded.py",
+           "tools/qa_v11_rc1_real_app_smoke.py")),
     website_check("reader-performance", "qa_v11_6_cycle4_reader_performance"),
     Check(
         BROWSER, WEBSITE, "python", ("tools/verify_release_browser.py",),
@@ -234,7 +240,7 @@ def check_records(args: argparse.Namespace, snapshot: Path, runtime: Path, outpu
         command = [args.python if check.tool == "python" else args.node, *check.args]
         cwd = snapshot / check.cwd
         record.update(command=command, cwd=str(cwd), environment=env)
-        if check.id == BROWSER:
+        if check.id in {BROWSER, "pwa-browser"}:
             details, reason = browser_tools(snapshot, work, args, env)
             manifest["dependencies"]["browser"] = details
             if reason:
