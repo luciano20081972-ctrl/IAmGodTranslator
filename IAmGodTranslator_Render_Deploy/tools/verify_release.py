@@ -53,10 +53,18 @@ FAST = (
         ("tests/test_foundation.py",), True,
     ),
 )
-REGRESSION = FAST + (
+SOURCE = (
+    website_check("source-syntax", "qa_release_source"),
     website_check("frontend-build", "frontend_build"),
     website_check("frontend-build-controls", "test_frontend_build", unittest=True),
     website_check("resource-registry", "validate_resource_registry"),
+    Check("service-worker", WEBSITE, "node", ("--test", "tools/qa_service_worker.test.js"),
+          ("static/sw.js", "tools/qa_service_worker.test.js")),
+    Check("release-verifier-controls", WEBSITE, "python",
+          ("-m", "unittest", "discover", "-s", "tools", "-p", "test_verify_release.py", "-v"),
+          ("tools/test_verify_release.py",), True),
+)
+REGRESSION = FAST + SOURCE + (
     website_check("translation-scheduler", "qa_v10_3_translation_scheduler"),
     website_check("translation-performance", "qa_v10_4_translation_performance"),
     website_check("translation-selector", "qa_v10_6_translation_selector"),
@@ -64,20 +72,29 @@ REGRESSION = FAST + (
     website_check("backup-manifest", "qa_backup_manifest_hotfix"),
     website_check("desktop-integration", "qa_v10_6_desktop_integration", unittest=True),
     website_check("reader-search", "qa_v11_4_minisearch"),
-    Check("service-worker", WEBSITE, "node", ("--test", "tools/qa_service_worker.test.js"),
-          ("static/sw.js", "tools/qa_service_worker.test.js")),
     Check("pwa-browser", WEBSITE, "python", ("tools/verify_release_browser.py", "--pwa"),
           ("tools/verify_release_browser.py", "tools/browser_v11_6_pwa_smoke.py",
            "tools/browser_v11_6_reader_cache_smoke.py", "tools/profile_v11_6_seeded.py",
            "tools/qa_v11_rc1_real_app_smoke.py")),
     website_check("reader-performance", "qa_v11_6_cycle4_reader_performance"),
+    website_check("v11-navigation", "qa_v11_phase1_navigation_home_settings"),
+    website_check("v11-reader", "qa_v11_phase2_reader_experience"),
+    website_check("v11-library", "qa_v11_phase3_library_novel_dashboard"),
+    website_check("v11-translation", "qa_v11_phase4_translation_workspace"),
+    website_check("v11-import", "qa_v11_phase5_content_import_editions_recovery"),
+    website_check("v11-desktop", "qa_v11_phase6_desktop_sync"),
+    website_check("v11-backups", "qa_v11_phase7_backups_operations"),
+    website_check("v11-mobile", "qa_v11_phase8_mobile_accessibility_polish"),
+    website_check("v11-reference", "qa_v11_1_reference_first_reader_polish"),
     Check(
         BROWSER, WEBSITE, "python", ("tools/verify_release_browser.py",),
         ("tools/verify_release_browser.py", "tools/qa_v11_rc1_real_app_smoke.py",
          "tools/qa_v11_rc1_browser_smoke.js"),
     ),
 )
-PROFILES = {"fast": FAST, "regression": REGRESSION}
+POSTGRES = (website_check("postgres-auth", "qa_v11_rc2_postgres_auth"),)
+PROFILES = {"fast": FAST, "source": SOURCE, "regression": REGRESSION, "postgres": POSTGRES}
+BUILD_ID = re.compile(r"[0-9a-f]{64}")
 STATUSES = {"PASS", "FAIL", "SKIPPED", "UNVERIFIED"}
 EXIT = {"PASS": 0, "FAIL": 1, "UNVERIFIED": 2}
 
@@ -240,9 +257,13 @@ def check_records(args: argparse.Namespace, snapshot: Path, runtime: Path, outpu
             continue
         work = runtime / check.id
         env = fixture_environment(work, args.python, args.node)
+        if check.id == "postgres-auth":
+            env.update(DATABASE_URL="postgresql://postgres@127.0.0.1:5432/godtranslator_rc2", APP_ENV="ci")
         command = [args.python if check.tool == "python" else args.node, *check.args]
         cwd = snapshot / check.cwd
         record.update(command=command, cwd=str(cwd), environment=env)
+        if check.id == "source-syntax":
+            command.append(args.node)
         if check.id in {BROWSER, "pwa-browser"}:
             details, reason = browser_tools(snapshot, work, args, env)
             manifest["dependencies"]["browser"] = details
@@ -333,6 +354,7 @@ def run(args: argparse.Namespace) -> int:
     manifest = {
         "schema_version": 1,
         "source": source,
+        "frontend": {"expected_build_id": args.expect_build_id, "build_id": None},
         "profile": args.profile,
         "selection": [check.id for check in selection],
         "started_utc": utc_now(),
@@ -355,6 +377,12 @@ def run(args: argparse.Namespace) -> int:
                 export_source(root, source, snapshot)
             except (OSError, tarfile.TarError, subprocess.CalledProcessError, ValueError) as exc:
                 preflight.append(f"source export failed: {exc}")
+        if not preflight:
+            identity = snapshot / WEBSITE / "config/frontend_build_id"
+            if identity.is_file():
+                manifest["frontend"]["build_id"] = identity.read_text(encoding="ascii", errors="replace").strip()
+            if args.expect_build_id and manifest["frontend"]["build_id"] != args.expect_build_id:
+                preflight.append("frontend build ID mismatch")
         if not preflight:
             work = runtime / "dependencies"
             env = fixture_environment(work, args.python, args.node)
@@ -411,6 +439,11 @@ def validate_evidence(names: list[str], read, expected_sha: str | None) -> dict:
     if expected_tree and (not SHA.fullmatch(expected_tree) or
                           (expected_tree != source["tree_sha"] and "source tree mismatch" not in manifest["preflight_errors"])):
         raise ValueError("invalid expected source tree or unreported tree mismatch")
+    frontend = manifest.get("frontend", {})
+    expected_build = frontend.get("expected_build_id")
+    if expected_build and (not BUILD_ID.fullmatch(expected_build) or
+                           (frontend.get("build_id") != expected_build and not manifest["preflight_errors"])):
+        raise ValueError("unreported frontend identity mismatch")
     screenshots = manifest["browser_attachments"]
     if len(screenshots) != len(set(screenshots)) or set(screenshots) - set(SCREENSHOTS):
         raise ValueError("unexpected browser evidence")
@@ -448,12 +481,19 @@ def full_sha(value: str) -> str:
     return value
 
 
+def build_id(value: str) -> str:
+    if not BUILD_ID.fullmatch(value):
+        raise argparse.ArgumentTypeError("supply the 64-character lowercase frontend build ID")
+    return value
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subcommands = parser.add_subparsers(dest="action", required=True)
     run_parser = subcommands.add_parser("run")
     run_parser.add_argument("--profile", choices=PROFILES, default="fast")
     run_parser.add_argument("--expect-sha", required=True, type=full_sha)
+    run_parser.add_argument("--expect-build-id", type=build_id)
     run_parser.add_argument("--output", required=True, type=Path)
     run_parser.add_argument("--expect-tree", type=full_sha, help="expected content of the committed or staged snapshot")
     run_parser.add_argument("--staged", action="store_true")
@@ -464,6 +504,9 @@ def main() -> int:
     check_parser.add_argument("path", type=Path)
     check_parser.add_argument("--expect-sha", type=full_sha)
     check_parser.add_argument("--expect-tree", type=full_sha)
+    check_parser.add_argument("--expect-build-id", type=build_id)
+    check_parser.add_argument("--expect-profile", choices=PROFILES)
+    check_parser.add_argument("--require-pass", action="store_true", help="reject valid evidence of a failed or incomplete run")
     args = parser.parse_args()
     try:
         if args.action == "run":
@@ -473,6 +516,12 @@ def main() -> int:
         evidence = check_evidence(args.path, args.expect_sha)
         if args.expect_tree and evidence["source"]["tree_sha"] != args.expect_tree:
             raise ValueError("evidence source tree mismatch")
+        if args.expect_build_id and evidence.get("frontend", {}).get("build_id") != args.expect_build_id:
+            raise ValueError("evidence frontend build ID mismatch")
+        if args.expect_profile and evidence["profile"] != args.expect_profile:
+            raise ValueError("evidence profile mismatch")
+        if args.require_pass and evidence["status"] != "PASS":
+            raise ValueError(f"required profile ended {evidence['status']}")
         print(f"Evidence intact. Recorded result: {evidence['status']}")
         return 0
     except (OSError, ValueError, TypeError, KeyError, BadZipFile, subprocess.SubprocessError) as exc:

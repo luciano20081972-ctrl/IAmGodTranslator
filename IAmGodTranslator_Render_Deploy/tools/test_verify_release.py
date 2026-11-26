@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from zipfile import ZipFile
+
+
+from verify_release import BROWSER, PROFILES, check_records, outcome
 
 
 RUNNER = "IAmGodTranslator_Render_Deploy/tools/verify_release.py"
@@ -114,6 +119,44 @@ print("synthetic staged startup passed")
         result = self.cli("check-evidence", str(archive), "--expect-sha", self.head)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Recorded result: FAIL", result.stdout)
+        gate = self.cli("check-evidence", str(archive), "--expect-profile", "fast", "--require-pass")
+        self.assertEqual(gate.returncode, 1)
+        self.assertIn("required profile ended FAIL", gate.stderr)
+
+    def test_fast_profile_cannot_satisfy_regression(self) -> None:
+        self.verify()
+        gate = self.cli("check-evidence", str(self.output), "--expect-profile", "regression", "--require-pass")
+        self.assertEqual(gate.returncode, 1)
+        self.assertIn("profile mismatch", gate.stderr)
+
+    def test_frontend_build_id_mismatch(self) -> None:
+        self.write("IAmGodTranslator_Render_Deploy/config/frontend_build_id", "a" * 64)
+        self.commit()
+        manifest = self.verify(1, None, None, "--expect-build-id", "b" * 64)
+        self.assertEqual(manifest["preflight_errors"], ["frontend build ID mismatch"])
+
+    def test_missing_node_leaves_required_check_unverified(self) -> None:
+        manifest = self.verify(2, None, None, "--node", str(self.directory / "missing-node"))
+        self.assertEqual(manifest["checks"][1]["status"], "UNVERIFIED")
+        gate = self.cli("check-evidence", str(self.output), "--require-pass")
+        self.assertEqual(gate.returncode, 1)
+        self.assertIn("required profile ended UNVERIFIED", gate.stderr)
+
+    def test_browser_command_failure_propagates_and_preserves_diagnostics(self) -> None:
+        check = next(c for c in PROFILES["regression"] if c.id == BROWSER)
+        for path in check.files:
+            self.write(f"{check.cwd}/{path}", "# synthetic required input")
+        self.write(f"{check.cwd}/{check.args[0]}", 'import sys\nprint("browser assertion failed", file=sys.stderr)\nsys.exit(27)\n')
+        self.write("modules/playwright/package.json", '{"name":"playwright","version":"1.0.0","main":"index.js"}')
+        self.write("modules/playwright/index.js", 'module.exports.chromium = {executablePath: () => "/usr/bin/true"};')
+        self.output.mkdir()
+        manifest = {"dependencies": {}, "preflight_errors": [], "browser_attachments": []}
+        args = argparse.Namespace(python=sys.executable, node=shutil.which("node"), node_modules=self.repo / "modules", chromium=None)
+        manifest["checks"] = check_records(args, self.repo, self.directory, self.output, (check,),
+                                           manifest["preflight_errors"], manifest)
+        self.assertEqual(outcome(manifest), "FAIL")
+        self.assertEqual(manifest["checks"][0]["exit_code"], 27)
+        self.assertIn("browser assertion failed", (self.output / "browser-smoke.stderr").read_text())
 
     def test_missing_required_script_rejects_the_run(self) -> None:
         (self.repo / STARTUP).unlink()

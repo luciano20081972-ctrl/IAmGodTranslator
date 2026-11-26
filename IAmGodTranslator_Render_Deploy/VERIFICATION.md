@@ -59,3 +59,34 @@ To review a future SDK change, fetch the exact registry metadata and tarball, ve
 - Desktop requirements specify ranges for customtkinter, requests, beautifulsoup4, and Playwright. The Playwright browser and the Node tooling used by QA also have independent versions.
 - Render pins Python 3.12.7 and installs from the website requirements. Both Python lists lack transitive locks and artifact hashes, so a later install can select different versions or platform wheels. The A1 manifest records what each run installed. Weekly Dependabot checks cover both lists.
 - A2.3 follow-up: generate and validate platform-specific Python locks with hashes, record toolchain and browser versions in CI, and connect source/tree and frontend identity verification to release gates. This package makes no Python dependency upgrades.
+
+## A2 release gate on GitHub Actions
+
+`A2 Release Gates` runs on pull requests targeting main, the v11 release and candidate branches, and the `codex/iagt-v12-*` development branches. It verifies the event's merge commit on pull requests. Manual dispatch requires the selected ref's full commit, tree and frontend build ID. GitHub makes manual dispatch available once the workflow exists on the default branch. Review changes to the workflow, verifier, test roster, and locks under branch protection.
+
+The three required profiles cover source integrity, application and browser regression, and the PostgreSQL migration and authorization matrix. The source profile compiles Python and checks JavaScript, generated assets, the vendored resource registry, and worker security. Regression runs those checks plus the website, desktop, legacy v11 fixtures, Chromium, PWA and offline Reader. The PostgreSQL profile is for a disposable PostgreSQL 16 server with database `godtranslator_rc2` bound at `127.0.0.1:5432`. CI creates that service from the pinned image. The historical RC workflow retains its original triggers and checks.
+
+GitHub Actions uses read-only repository access with checkout credentials removed. All tests use repository fixtures and temporary local state. Each profile uploads only its verifier ZIP. It contains the exact roster, source and build identities, commands, exit codes, raw streams, diagnostics and SHA-256 manifest. Evidence integrity and a passing profile result are both required. Failed or incomplete profiles block the aggregate `A2 required release gate`. Where rulesets are available, require that check on the long-lived release branches. Setup failures that precede evidence creation remain in the Actions job log.
+
+From the repository root, after creating the locked environment and installing Playwright, the same wrapper can run locally:
+
+```bash
+bash .github/qualification/run.sh regression "$expected_sha" "$expected_tree" "$expected_build_id" \
+  /tmp/iagt-a2-regression --chromium "$chromium" --node-modules "$playwright_modules"
+```
+
+Use a fresh output directory. Add `--staged` for pre-commit qualification and pass the staged tree. Use `source` or `postgres` for their separate profiles. CI passes the checked-out commit's expected tree and build ID. To verify an archive independently with the producing revision, run:
+
+```bash
+python IAmGodTranslator_Render_Deploy/tools/verify_release.py check-evidence /tmp/iagt-a2-regression.zip \
+  --expect-profile regression --expect-sha "$expected_sha" --expect-tree "$expected_tree" \
+  --expect-build-id "$expected_build_id" --require-pass
+```
+
+### Qualification toolchain and dependency rollback
+
+The lock under `.github/qualification/` records the versions from A2.2 qualification and PyPI SHA-256 wheel hashes. It covers the website and desktop transitives on CPython 3.12, Linux x86-64. Install into a fresh venv with `pip install --require-hashes --only-binary :all: -r .github/qualification/python-linux-x86_64-cp312.lock`. Then run `.github/qualification/check_dependencies.py` with that interpreter. It compares the installed distribution set exactly, runs `pip check`, and verifies both requirement files without accessing the package index. The deployment and desktop installation requirements keep their existing platform ranges. Other platforms need their own wheel review.
+
+The browser harness uses the npm lock under `.github/qualification/browser/`. Install with `npm ci --ignore-scripts --no-audit --no-fund` in an isolated directory, then invoke that exact Playwright CLI to install Chromium. The wheel and npm locks authenticate the selected package artifacts by digest. The workflow pins action commits and the official PostgreSQL image digest. GitHub's OS package repositories and hosted image still control system libraries.
+
+When refreshing these pins, review upstream PyPI wheel and npm metadata, package licenses and bundled notices, action release commits and licenses, and the Docker Official Image license inventory. The actions are MIT-licensed, Playwright is Apache-2.0, and PostgreSQL uses the PostgreSQL License with its base-image components under separate upstream licenses. The qualification evidence records wheel names, PyPI origin, SHA-256, and published wheel license metadata. Preserve upstream license and notice files when redistributing any artifacts. Updates and rollback should restore a matching workflow, runner roster, locks and trusted browser/database pins together. Retain the verifier revision and evidence from each qualification for independent review.
