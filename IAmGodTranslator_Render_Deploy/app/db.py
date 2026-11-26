@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -417,6 +418,7 @@ class Database:
             chapter_number INTEGER NOT NULL,
             source TEXT NOT NULL DEFAULT 'ai',
             scroll_percent {numeric_type} NOT NULL DEFAULT 0,
+            locator_json TEXT,
             updated_at {ts_type} NOT NULL,
             PRIMARY KEY (user_id, novel_id)
         );
@@ -567,6 +569,11 @@ class Database:
             for column, definition in columns.items():
                 if column not in existing:
                     conn.execute(f"ALTER TABLE {self.table(table)} ADD COLUMN {column} {definition}")
+        progress = self.table("reading_progress")
+        if self.config.backend == "postgres":
+            conn.execute(f"ALTER TABLE {progress} ADD COLUMN IF NOT EXISTS locator_json TEXT")
+        elif "locator_json" not in self.columns(conn, "reading_progress"):
+            conn.execute(f"ALTER TABLE {progress} ADD COLUMN locator_json TEXT")
         self._migrate_ai_text_to_english_editions(conn)
 
     def _ensure_postgres_timestamp_helpers(self, conn: Any) -> None:
@@ -2860,23 +2867,29 @@ class Database:
             )
         return self.user_preferences(user_id)
 
-    def save_reading_progress(self, user_id: str, novel_id: str, chapter_number: int, source: str, scroll_percent: float = 0) -> dict[str, Any]:
+    def save_reading_progress(
+        self, user_id: str, novel_id: str, chapter_number: int, source: str,
+        scroll_percent: float = 0, locator: Any = None,
+    ) -> dict[str, Any]:
         source = "english" if source == "ai" else source
         source = source if source in {"english", "reference", "original"} else "english"
         scroll = max(0.0, min(100.0, float(scroll_percent or 0)))
+        locator = validated_reading_locator(locator, novel_id, chapter_number, source, scroll)
+        locator_json = json.dumps(locator, separators=(",", ":")) if locator is not None else None
         now = utc_now()
         with self.connect() as conn:
             conn.execute(
                 f"""
-                INSERT INTO {self.table('reading_progress')} (user_id, novel_id, chapter_number, source, scroll_percent, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO {self.table('reading_progress')} (user_id, novel_id, chapter_number, source, scroll_percent, locator_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id, novel_id) DO UPDATE SET
                     chapter_number = excluded.chapter_number,
                     source = excluded.source,
                     scroll_percent = excluded.scroll_percent,
+                    locator_json = excluded.locator_json,
                     updated_at = excluded.updated_at
                 """,
-                (user_id, novel_id, int(chapter_number), source, scroll, now),
+                (user_id, novel_id, int(chapter_number), source, scroll, locator_json, now),
             )
             conn.execute(
                 f"""
@@ -4048,9 +4061,35 @@ def platform_backup_order_clause(table_name: str) -> str:
     return "ORDER BY " + ", ".join(safe_columns)
 
 
+def validated_reading_locator(
+    value: Any, novel_id: str, chapter_number: int, source: str, scroll_percent: float,
+) -> dict[str, Any] | None:
+    fields = {"version", "novel_id", "chapter_number", "source", "content_hash",
+              "paragraph_index", "paragraph_offset", "progression"}
+    if not isinstance(value, dict) or value.keys() != fields:
+        return None
+    if type(value["version"]) is not int or value["version"] != 1:
+        return None
+    if (value["novel_id"] != novel_id or type(value["chapter_number"]) is not int
+            or value["chapter_number"] != chapter_number or value["source"] != source):
+        return None
+    if not isinstance(value["content_hash"], str) or not re.fullmatch(r"[0-9a-f]{64}", value["content_hash"]):
+        return None
+    if type(value["paragraph_index"]) is not int or not 0 <= value["paragraph_index"] <= 1_000_000:
+        return None
+    for name in ("paragraph_offset", "progression"):
+        number = value[name]
+        if type(number) not in (float, int) or not 0 <= number <= 1:
+            return None
+    # An older server can update the percentage while leaving this column untouched.
+    if value["paragraph_offset"] == 1 or not math.isclose(value["progression"] * 100, scroll_percent, abs_tol=1e-6):
+        return None
+    return value
+
+
 def personal_progress_row(row: Any) -> dict[str, Any]:
     chapter_number = int(row["chapter_number"])
-    return {
+    result = {
         "novel_id": row["novel_id"],
         "novel_title": row["novel_title"],
         "cover_url": row["cover_url"],
@@ -4060,6 +4099,18 @@ def personal_progress_row(row: Any) -> dict[str, Any]:
         "scroll_percent": float(row["scroll_percent"] or 0),
         "updated_at": row["updated_at"],
     }
+
+    if row["locator_json"]:
+        try:
+            value = json.loads(row["locator_json"])
+        except (ValueError, RecursionError):
+            value = None
+        locator = validated_reading_locator(
+            value, result["novel_id"], chapter_number, result["source"], result["scroll_percent"],
+        )
+        if locator is not None:
+            result["locator"] = locator
+    return result
 
 
 def personal_history_row(row: Any) -> dict[str, Any]:

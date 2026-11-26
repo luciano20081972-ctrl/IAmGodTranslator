@@ -77,6 +77,10 @@ REGRESSION = FAST + SOURCE + (
            "tools/browser_v11_6_reader_cache_smoke.py", "tools/profile_v11_6_seeded.py",
            "tools/qa_v11_rc1_real_app_smoke.py")),
     website_check("reader-performance", "qa_v11_6_cycle4_reader_performance"),
+    website_check("locator-storage", "qa_reading_locator", unittest=True),
+    Check("locator-browser", WEBSITE, "python", ("tools/verify_release_browser.py", "--locators"),
+          ("tools/verify_release_browser.py", "tools/browser_reading_locators.py", "tools/profile_v11_6_seeded.py",
+           "tools/qa_v11_rc1_real_app_smoke.py", "tools/qa_v11_rc2_postgres_auth.py")),
     website_check("v11-navigation", "qa_v11_phase1_navigation_home_settings"),
     website_check("v11-reader", "qa_v11_phase2_reader_experience"),
     website_check("v11-library", "qa_v11_phase3_library_novel_dashboard"),
@@ -92,7 +96,10 @@ REGRESSION = FAST + SOURCE + (
          "tools/qa_v11_rc1_browser_smoke.js"),
     ),
 )
-POSTGRES = (website_check("postgres-auth", "qa_v11_rc2_postgres_auth"),)
+POSTGRES = (
+    Check("postgres-auth", WEBSITE, "python", ("tools/qa_v11_rc2_postgres_auth.py",),
+          ("tools/qa_v11_rc2_postgres_auth.py", "tools/qa_reading_locator.py")),
+)
 PROFILES = {"fast": FAST, "source": SOURCE, "regression": REGRESSION, "postgres": POSTGRES}
 BUILD_ID = re.compile(r"[0-9a-f]{64}")
 STATUSES = {"PASS", "FAIL", "SKIPPED", "UNVERIFIED"}
@@ -264,7 +271,7 @@ def check_records(args: argparse.Namespace, snapshot: Path, runtime: Path, outpu
         record.update(command=command, cwd=str(cwd), environment=env)
         if check.id == "source-syntax":
             command.append(args.node)
-        if check.id in {BROWSER, "pwa-browser"}:
+        if check.id in {BROWSER, "pwa-browser", "locator-browser"}:
             details, reason = browser_tools(snapshot, work, args, env)
             manifest["dependencies"]["browser"] = details
             if reason:

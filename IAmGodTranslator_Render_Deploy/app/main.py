@@ -441,22 +441,47 @@ def account_home(request: Request) -> dict[str, object]:
     user = require_user(request)
     return {
         "ok": True,
-        "continue_reading": database.reading_progress(user.user_id),
+        "continue_reading": visible_reading_progress(request, user, database.reading_progress(user.user_id)),
         "history": database.reading_history(user.user_id, limit=10),
         "bookmarks": database.bookmarks(user.user_id),
         "favorites": database.favorites(user.user_id),
     }
 
 
+def visible_reading_progress(
+    request: Request, user: RequestUser, progress: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if progress and progress["source"] == "reference" and not can_access_reference_progress(request, user):
+        return {key: value for key, value in progress.items() if key != "locator"}
+    return progress
+
+
+def can_access_reference_progress(request: Request, user: RequestUser) -> bool:
+    return user.role in {"translator", "admin"} or valid_admin_cookie(request)
+
+
+@app.get("/api/account/progress")
+def account_reading_progress(request: Request, novel_id: str = Query(..., min_length=1)) -> dict[str, object]:
+    user = require_user(request)
+    progress = visible_reading_progress(request, user, database.reading_progress(user.user_id, novel_id))
+    return {"ok": True, "account_id": user.user_id, "progress": progress}
+
+
 @app.put("/api/account/progress")
 def save_reading_progress(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, object]:
     user = require_user(request)
+    if "expected_account_id" in payload and payload["expected_account_id"] != user.user_id:
+        raise HTTPException(status_code=409, detail="reading_progress_account_changed")
+    source = str(payload.get("source") or "ai")
+    if source == "reference" and not can_access_reference_progress(request, user):
+        raise HTTPException(status_code=401, detail="translator_required")
     progress = database.save_reading_progress(
         user.user_id,
         str(payload.get("novel_id") or ""),
         int(payload.get("chapter_number") or 0),
-        str(payload.get("source") or "ai"),
+        source,
         float(payload.get("scroll_percent") or 0),
+        payload.get("locator"),
     )
     return {"ok": True, "progress": progress}
 
