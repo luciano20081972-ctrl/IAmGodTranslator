@@ -1,7 +1,30 @@
 {
   "schema_version": 1,
-  "last_reviewed": "2026-08-08",
+  "last_reviewed": "2026-11-25",
   "resources": [
+    {
+      "name": "@supabase/supabase-js",
+      "category": "browser account client",
+      "source": "https://github.com/supabase/supabase-js",
+      "version_or_revision": "2.119.2",
+      "license": "MIT",
+      "status": "ADOPTED",
+      "usage": "Existing browser account and session integration.",
+      "runtime_or_dev": "runtime",
+      "vendored_path": "static/vendor/supabase/supabase-2.119.2.js",
+      "license_path": "static/vendor/supabase/LICENSE",
+      "license_checksum": "sha256:334dd6820e2eaeab2064e7c59001b810566728a28a41a7c1dbf69bbee17d0936",
+      "checksum": "sha256:8816af04d9915dbba1882d6f84f0b402dc40268063a63d9c66d24f52f371c263",
+      "tarball": "https://registry.npmjs.org/@supabase/supabase-js/-/supabase-js-2.119.2.tgz",
+      "tarball_integrity": "sha512-4HvF4G2DwdqjmwPBpz9RHnXWfdK0wSkw4yBhxe64CdeF8gdxsTF9WZuHFuNWtQnHllq71ZDyAghr4Q8nC0m/NA==",
+      "archive_member": "package/dist/umd/supabase.js",
+      "network_required": true,
+      "user_data_shared": true,
+      "fallback": "Guest reading works when the client is unavailable.",
+      "rollback": "Restore the complete previously qualified shell revision and its worker together.",
+      "last_reviewed": "2026-11-25",
+      "notes": "Script loads from the app origin. Configured sign-in communicates with the existing Supabase project. No new browser service or CDN destination."
+    },
     {
       "name": "MiniSearch",
       "category": "client metadata search",

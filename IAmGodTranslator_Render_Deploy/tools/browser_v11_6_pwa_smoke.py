@@ -31,11 +31,8 @@ def run(base_url: str) -> dict[str, Any]:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True, executable_path=os.getenv("GT_VERIFY_CHROMIUM"))
         context = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True)
-        if os.getenv("GT_VERIFY_CHROMIUM"):
-            context.route("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2",
-                          lambda route: route.fulfill(content_type="application/javascript", body=""))
         page = context.new_page()
-        page.on("console", lambda msg: errors.append(msg.text) if msg.type == "error" else None)
+        page.on("console", lambda msg: errors.append(f"{msg.text} ({msg.location.get('url', '')})") if msg.type == "error" else None)
         page.on("request", lambda request: requests.append(request.url))
         page.on(
             "response",
@@ -50,7 +47,13 @@ def run(base_url: str) -> dict[str, Any]:
         )
 
         if os.getenv("GT_VERIFY_SCREENSHOTS"):
-            page.goto(f"{base_url}/manifest.webmanifest")
+            # Bootstrap the previous worker from an inert same-origin document.
+            # Opening the bare JSON manifest makes Chromium request /favicon.ico.
+            setup_url = f"{base_url}/fixture-prior-setup"
+            page.route(setup_url, lambda route: route.fulfill(
+                content_type="text/html", body='<link rel="icon" href="data:,">',
+            ))
+            page.goto(setup_url)
             page.evaluate("""async () => {
                 await navigator.serviceWorker.register('/fixture-prior-sw.js');
                 await navigator.serviceWorker.ready;

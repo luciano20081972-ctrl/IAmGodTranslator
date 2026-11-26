@@ -76,6 +76,38 @@ async function checkTranslatorActivity(context, errors) {
   }
 }
 
+async function checkSdkFailure(context, sdkUrl, mode) {
+  const page = await context.newPage();
+  const diagnostics = [];
+  const unexpected = [];
+  let attempts = 0;
+  page.on("pageerror", (error) => unexpected.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() !== "error") return;
+    const text = message.text();
+    if (message.location().url === sdkUrl || text.includes(sdkUrl)) diagnostics.push(text);
+    else unexpected.push(text);
+  });
+  try {
+    await page.route(sdkUrl, (route) => {
+      attempts++;
+      return mode === "unavailable" ? route.abort("failed") : route.fulfill({
+        contentType: "application/javascript", body: "window.unapprovedSdkExecuted = true;",
+      });
+    });
+    await checkGuestStartup(page);
+    await waitForRoute(page, ".home-hero h1", mode);
+    requireCheck("SDK failure observed", attempts === 1 && diagnostics.length > 0);
+    requireCheck("SDK unavailable and unexpected bytes never executed", await page.evaluate(
+      () => typeof window.supabase === "undefined" && !window.unapprovedSdkExecuted,
+    ));
+    requireCheck("guest continued without application errors: " + unexpected.join(", "), !unexpected.length);
+    return {mode, diagnostics};
+  } finally {
+    await page.close();
+  }
+}
+
 async function run() {
   const results = [];
   const selectedViewports = fixtureEvidence && process.env.GT_VERIFY_DESKTOP_ONLY === "1"
@@ -95,11 +127,6 @@ async function run() {
         await context.route("**/*", (route) => {
           const url = new URL(route.request().url());
           if (url.origin === new URL(baseUrl).origin) return route.continue();
-          // Guest fixtures do not use Supabase. Fulfill its script locally so this
-          // run has no external CDN traffic and no expected console error.
-          if (url.href === "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2") {
-            return route.fulfill({contentType: "application/javascript", body: ""});
-          }
           return route.abort();
         });
       }
@@ -146,10 +173,23 @@ async function run() {
       await assertNoOverflow(page, `settings ${viewport.name}`);
 
       const translatorActivity = Boolean(fixtureEvidence && viewport.width === 1366);
-      if (translatorActivity) await checkTranslatorActivity(context, errors);
+      const sdkFailures = [];
+      if (translatorActivity) {
+        const health = await page.request.get(`${baseUrl}/api/health`);
+        const expectedBuild = require("node:fs").readFileSync(path.join(__dirname, "../config/frontend_build_id"), "utf8").trim();
+        requireCheck("served build matches the verified shell", health.ok() && (await health.json()).frontend_build_id === expectedBuild);
+        requireCheck("verified SDK exposes createClient", await page.evaluate(
+          () => typeof window.supabase?.createClient === "function",
+        ));
+        const sdkUrl = await page.locator('script[src^="/static/vendor/supabase/"]').evaluate((tag) => tag.src);
+        for (const mode of ["unavailable", "integrity-mismatch"]) {
+          sdkFailures.push(await checkSdkFailure(context, sdkUrl, mode));
+        }
+        await checkTranslatorActivity(context, errors);
+      }
       requireCheck(`no console errors on ${viewport.name}: ${errors.join("; ")}`, errors.length === 0);
       results.push({viewport: viewport.name, measuredViewport, consoleErrors: errors,
-        guestStartup: Boolean(fixtureEvidence), translatorActivity,
+        guestStartup: Boolean(fixtureEvidence), translatorActivity, sdkFailures,
         home: true, library: true, novel: true, reader: true, settings: true, noOverflow: true, namedControls: true});
       await context.close();
     } finally {

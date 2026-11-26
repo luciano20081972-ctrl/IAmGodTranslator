@@ -54,6 +54,9 @@ FAST = (
     ),
 )
 REGRESSION = FAST + (
+    website_check("frontend-build", "frontend_build"),
+    website_check("frontend-build-controls", "test_frontend_build", unittest=True),
+    website_check("resource-registry", "validate_resource_registry"),
     website_check("translation-scheduler", "qa_v10_3_translation_scheduler"),
     website_check("translation-performance", "qa_v10_4_translation_performance"),
     website_check("translation-selector", "qa_v10_6_translation_selector"),
@@ -319,6 +322,9 @@ def run(args: argparse.Namespace) -> int:
     preflight = []
     if source["head_sha"] != source["expected_sha"]:
         preflight.append("source SHA mismatch")
+    if args.expect_tree and source["tree_sha"] != args.expect_tree:
+        preflight.append("source tree mismatch")
+    source["expected_tree"] = args.expect_tree
     packages = sorted(
         {f"{distribution.metadata['Name']}=={distribution.version}"
          for distribution in importlib.metadata.distributions() if distribution.metadata["Name"]},
@@ -401,6 +407,10 @@ def validate_evidence(names: list[str], read, expected_sha: str | None) -> dict:
         raise ValueError("evidence source SHA mismatch")
     if source["head_sha"] != source["expected_sha"] and not manifest["preflight_errors"]:
         raise ValueError("run failed to detect a source SHA mismatch")
+    expected_tree = source.get("expected_tree")
+    if expected_tree and (not SHA.fullmatch(expected_tree) or
+                          (expected_tree != source["tree_sha"] and "source tree mismatch" not in manifest["preflight_errors"])):
+        raise ValueError("invalid expected source tree or unreported tree mismatch")
     screenshots = manifest["browser_attachments"]
     if len(screenshots) != len(set(screenshots)) or set(screenshots) - set(SCREENSHOTS):
         raise ValueError("unexpected browser evidence")
@@ -445,6 +455,7 @@ def main() -> int:
     run_parser.add_argument("--profile", choices=PROFILES, default="fast")
     run_parser.add_argument("--expect-sha", required=True, type=full_sha)
     run_parser.add_argument("--output", required=True, type=Path)
+    run_parser.add_argument("--expect-tree", type=full_sha, help="expected content of the committed or staged snapshot")
     run_parser.add_argument("--staged", action="store_true")
     run_parser.add_argument("--node", default=shutil.which("node") or "/usr/bin/node")
     run_parser.add_argument("--node-modules", type=Path)
@@ -452,6 +463,7 @@ def main() -> int:
     check_parser = subcommands.add_parser("check-evidence")
     check_parser.add_argument("path", type=Path)
     check_parser.add_argument("--expect-sha", type=full_sha)
+    check_parser.add_argument("--expect-tree", type=full_sha)
     args = parser.parse_args()
     try:
         if args.action == "run":
@@ -459,6 +471,8 @@ def main() -> int:
                 raise ValueError("the verifier requires a POSIX host")
             return run(args)
         evidence = check_evidence(args.path, args.expect_sha)
+        if args.expect_tree and evidence["source"]["tree_sha"] != args.expect_tree:
+            raise ValueError("evidence source tree mismatch")
         print(f"Evidence intact. Recorded result: {evidence['status']}")
         return 0
     except (OSError, ValueError, TypeError, KeyError, BadZipFile, subprocess.SubprocessError) as exc:
