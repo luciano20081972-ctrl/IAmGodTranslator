@@ -4,7 +4,7 @@ import json
 import os
 from urllib.parse import urlsplit
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
 
 from qa_v11_rc2_postgres_auth import TEST_USERS, auth_headers
 
@@ -108,12 +108,83 @@ def check_guest(browser, base_url, results):
         wait_for_anchor(page, ANCHOR)
         assert not progress_requests, "guest reader contacted the account progress API"
 
+        expected_paragraphs = page.locator(PARAGRAPHS).all_text_contents()
+        cached = page.evaluate("""async novel => {
+            const db = await openReaderPersistentDb();
+            return await new Promise((resolve, reject) => {
+                const request = db.transaction("chapters").objectStore("chapters")
+                    .get(`guest:${novel}:1:english`);
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+        }""", NOVEL)
+        assert cached["namespace"] == "guest" and cached["source"] == "english"
+        assert cached["payload"]["content_hash"] == saved["locator"]["content_hash"]
+        assert cached["payload"]["text"]
+
         context.set_offline(True)
         offline = context.new_page()
         offline.on("pageerror", lambda error: results["page_errors"].append(str(error)))
+        successful_api = []
+        offline.on("response", lambda response: successful_api.append(response.url)
+                   if urlsplit(response.url).path.startswith("/api/") and response.ok else None)
         open_chapter(offline, base_url)
         wait_for_anchor(offline, ANCHOR)
-        assert offline.get_by_text("Offline copy", exact=True).is_visible()
+        assert offline.locator(PARAGRAPHS).all_text_contents() == expected_paragraphs
+        assert offline.evaluate("activeReaderPosition.payload.text") == cached["payload"]["text"]
+        # Chromium offline emulation can block requests while navigator.onLine
+        # remains true in a new tab. Verify reachability independently of that hint.
+        probe_blocked = offline.evaluate("""async () => {
+            try {
+                await fetch("/api/health?offline-locator-probe=1", {cache: "no-store"});
+                return false;
+            } catch { return true; }
+        }""")
+        assert probe_blocked, "offline fixture allowed a network fetch"
+        diagnostics = offline.evaluate("""() => ({
+            online: navigator.onLine,
+            indicator: document.querySelector(".reader-cache-note")?.textContent,
+            cacheState: activeReaderPosition.payload.cache_state
+        })""")
+        expected_indicator = "Opened from local cache" if diagnostics["online"] else "Offline copy"
+        assert diagnostics["indicator"] == expected_indicator
+        assert offline.get_by_text(expected_indicator, exact=True).is_visible()
+        assert not successful_api, successful_api
+        results["offline_diagnostics"] = {
+            **diagnostics, "network_probe_blocked": probe_blocked,
+            "successful_api_responses": successful_api, "cached_content_matches": True,
+        }
+
+        # Remove only this fixture's guest chapter. A copy in another account's
+        # namespace must not satisfy the same offline restoration check.
+        offline.evaluate("""async novel => {
+            const db = await openReaderPersistentDb();
+            await new Promise((resolve, reject) => {
+                const tx = db.transaction("chapters", "readwrite");
+                const store = tx.objectStore("chapters");
+                const key = `guest:${novel}:1:english`;
+                const request = store.get(key);
+                request.onsuccess = () => {
+                    const record = request.result;
+                    store.put({...record, namespace: "user:other",
+                        key: `user:other:${novel}:1:english`});
+                    store.delete(key);
+                };
+                tx.oncomplete = resolve;
+                tx.onerror = () => reject(tx.error);
+            });
+        }""", NOVEL)
+        missing = context.new_page()
+        missing.on("pageerror", lambda error: results["page_errors"].append(str(error)))
+        missing.goto(chapter_url(base_url), wait_until="domcontentloaded")
+        try:
+            missing.locator(PARAGRAPHS).first.wait_for(timeout=7000)
+        except PlaywrightTimeoutError:
+            assert missing.locator(PARAGRAPHS).count() == 0
+        else:
+            raise AssertionError("offline Reader restored a deleted or other-account chapter")
+        assert missing.evaluate("novel => readPersistentChapter(novel, 1, 'english')", NOVEL) is None
+        results["offline_missing_cache_control"] = "PASS"
 
     results["guest"] = {
         "paragraph_index": ANCHOR, "reload": "PASS", "font_size": "PASS", "line_spacing": "PASS",
