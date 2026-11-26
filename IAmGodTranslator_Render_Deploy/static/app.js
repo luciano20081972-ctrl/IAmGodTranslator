@@ -19,8 +19,11 @@ const STARTUP_STARTED_AT = performance.now();
 let activeRouteKey = window.location.hash || "#/home";
 let connectionInterrupted = false;
 let readerScrollHandler = null;
+let activeReaderPosition = null;
+const readerAccountProgressRequests = new Map();
 let readerChromeHandler = null;
 let readerAbortController = null;
+let readerOpenRequest = 0;
 let lastReaderScrollY = 0;
 let activityIndicatorRequest = 0;
 let homeRenderRequest = 0;
@@ -637,6 +640,8 @@ function markStartupEvent(name, detail = {}) {
 }
 
 async function refreshAccountNow() {
+  const previousAccount = readerCacheNamespace();
+  const previousRole = state.account?.role;
   try {
     const payload = await api("/api/account/me");
     state.account = payload.authenticated ? payload.user : null;
@@ -648,6 +653,19 @@ async function refreshAccountNow() {
     }
   } catch {
     state.account = null;
+  }
+  const accountChanged = previousAccount !== readerCacheNamespace();
+  const roleChanged = previousRole !== state.account?.role;
+  if (accountChanged || roleChanged) readerAccountProgressRequests.clear();
+  const position = activeReaderPosition;
+  if ((accountChanged || roleChanged) && position?.article.isConnected &&
+      ["reference", "original"].includes(position.source)) {
+    activeReaderPosition = null;
+    setLoading("Opening reader...");
+    await refreshSession();
+    if (position.route === window.location.hash && !activeReaderPosition) route();
+  } else if (accountChanged) {
+    restoreReaderAccountPosition();
   }
 }
 
@@ -1675,6 +1693,9 @@ function displayChapterTitle(chapter, source = state.source) {
 }
 
 async function openReader(novelId, chapterNumber, requestedSource) {
+  const routeKey = window.location.hash;
+  const request = ++readerOpenRequest;
+  const account = readerCacheNamespace();
   setLoading("Opening reader...");
   try {
     state.currentNovelId = novelId;
@@ -1685,10 +1706,16 @@ async function openReader(novelId, chapterNumber, requestedSource) {
     localStorage.setItem("gt-reader-source", source);
     state.lastReaderHref = `#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}`;
     const payload = await fetchReaderChapter(novelId, chapterNumber, source, {foreground: true});
+    if (window.location.hash !== routeKey || request !== readerOpenRequest) return;
+    if (["reference", "original"].includes(source)) {
+      if (account !== readerCacheNamespace()) await refreshSession();
+      if (window.location.hash !== routeKey || request !== readerOpenRequest) return;
+      if (account !== readerCacheNamespace() || !canViewReference()) return route();
+    }
     renderReader(novelId, chapterNumber, source, payload);
     prefetchNeighborChapters(novelId, chapterNumber, source, payload?.neighbors);
   } catch (error) {
-    if (error.name === "AbortError") return;
+    if (error.name === "AbortError" || window.location.hash !== routeKey || request !== readerOpenRequest) return;
     setError(error.message);
   }
 }
@@ -1704,7 +1731,9 @@ function renderReader(novelId, chapterNumber, source, payload) {
   const chapterLabel = `Chapter ${chapterNumber}`;
   const detailedTitle = String(payload?.title || "").trim();
   const showTitleDetail = detailedTitle && detailedTitle.toLowerCase() !== chapterLabel.toLowerCase();
-  const savedPercent = Number(localStorage.getItem(readerScrollKey(novelId, chapterNumber, source)) || 0);
+  const savedPercent = savedReaderPosition({
+    novelId, chapterNumber, source, namespace: readerCacheNamespace(), userId: state.account?.user_id,
+  }).scroll_percent;
   const restoreNote = Number.isFinite(savedPercent) && savedPercent >= 8 ? `<p class="reader-restore-note">Continue where you stopped · ${Math.round(savedPercent)}%</p>` : "";
   const cacheNote = payload?.cache_state === "offline"
     ? `<p class="reader-cache-note">Offline copy</p>`
@@ -1743,6 +1772,7 @@ function renderReader(novelId, chapterNumber, source, payload) {
     localStorage.setItem("gt-reader-font", String(state.fontSize));
     localStorage.setItem("gt-preferences", JSON.stringify(state.preferences));
     document.documentElement.style.setProperty("--reader-font", `${state.fontSize}px`);
+    restoreReaderLayout();
     const label = document.querySelector("#readerMenuFontSizeValue");
     if (label) label.textContent = `${state.fontSize}px`;
     saveRemotePreferencesQuiet();
@@ -1766,15 +1796,15 @@ function renderReader(novelId, chapterNumber, source, payload) {
   bindParagraphInteractions(novelId, chapterNumber, source);
   document.querySelector("#menuBackToTop")?.addEventListener("click", () => window.scrollTo({top: 0, behavior: state.preferences.reduceMotion ? "auto" : "smooth"}));
   bindCopyLinks(app);
-  bindReaderProgress(novelId, chapterNumber, source);
+  bindReaderProgress(novelId, chapterNumber, source, payload);
   bindReaderChrome();
   bindFocusReaderSurface();
-  restoreReaderScroll(novelId, chapterNumber, source);
   updateBackToTop();
   updateReaderProgressUi();
 }
 
 function toggleFocusReading(novelId, chapterNumber, source, payload, force = null) {
+  saveActiveReaderPosition();
   state.zen = force === null ? !state.zen : Boolean(force);
   renderReader(novelId, chapterNumber, source, payload);
   if (state.zen) revealFocusExit();
@@ -1920,6 +1950,7 @@ function readerMetrics(payload, chapterNumber) {
 function searchReaderText(event) {
   const query = event.target.value.trim();
   const count = highlightReaderParagraphs(query);
+  if (!query) restoreReaderLayout();
   const target = document.querySelector("#readerSearchCount");
   if (target) target.textContent = query ? `${count} ${count === 1 ? "match" : "matches"}` : "No search active";
 }
@@ -2175,18 +2206,25 @@ function toggleLocalBookmark(novelId, chapterNumber) {
 }
 
 async function flushReaderProgress() {
-  if (!state.account) return;
   if (!readerProgressSync.pending || readerProgressSync.inflight) return;
   const payload = readerProgressSync.pending;
   readerProgressSync.pending = null;
+  if (payload.expected_account_id !== state.account?.user_id) return;
   readerProgressSync.inflight = true;
+  readerProgressSync.lastFlushAt = Date.now();
   try {
-    await api("/api/account/progress", {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
-    state.personal = null;
-    readerProgressSync.lastFlushAt = Date.now();
-  } catch {
-    readerProgressSync.pending = readerProgressSync.pending || payload;
-    // Reading should never be interrupted by private progress sync failure.
+    const response = await api("/api/account/progress", {
+      method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload), keepalive: true,
+    });
+    if (payload.expected_account_id === state.account?.user_id) {
+      readerAccountProgressRequests.set(JSON.stringify([payload.expected_account_id, payload.novel_id]), Promise.resolve(response.progress));
+      state.personal = null;
+    }
+  } catch (error) {
+    if (payload.expected_account_id === state.account?.user_id && (error.network || error.status >= 500)) {
+      readerProgressSync.pending = readerProgressSync.pending || payload;
+    }
+    // Local progress remains available when account sync fails.
   } finally {
     readerProgressSync.inflight = false;
     if (readerProgressSync.pending) scheduleReaderProgressFlush();
@@ -2201,13 +2239,15 @@ function scheduleReaderProgressFlush() {
   readerProgressSync.timer = setTimeout(() => flushReaderProgress(), wait);
 }
 
-function queueReaderProgressSync(novelId, chapterNumber, source, scrollPercent) {
+function queueReaderProgressSync(novelId, chapterNumber, source, scrollPercent, locator) {
   if (!state.account) return;
   readerProgressSync.pending = {
     novel_id: novelId,
     chapter_number: chapterNumber,
     source,
     scroll_percent: scrollPercent,
+    locator,
+    expected_account_id: state.account.user_id,
     client_updated_at: new Date().toISOString(),
   };
   scheduleReaderProgressFlush();
@@ -3756,17 +3796,173 @@ function prefetchNeighborChapters(novelId, chapterNumber, source, neighbors = nu
     .forEach((chapter) => fetchReaderChapter(novelId, chapter, source, {prefetch: true}).catch(() => {}));
 }
 
-function bindReaderProgress(novelId, chapterNumber, source) {
+function readingLocator(position, percent) {
+  if (!/^[0-9a-f]{64}$/.test(position.contentHash)) return null;
+  const paragraphs = position.paragraphs;
+  if (!paragraphs.length) return null;
+  const line = readerReadingLine();
+  if (paragraphs[0].getBoundingClientRect().top > line) return null;
+  let low = 0;
+  let high = paragraphs.length - 1;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (paragraphs[mid].getBoundingClientRect().bottom <= line) low = mid + 1;
+    else high = mid;
+  }
+  const rect = paragraphs[low].getBoundingClientRect();
+  return {
+    version: 1,
+    novel_id: position.novelId,
+    chapter_number: position.chapterNumber,
+    source: position.source,
+    content_hash: position.contentHash,
+    paragraph_index: low,
+    paragraph_offset: Math.max(0, Math.min(0.999, (line - rect.top) / Math.max(1, rect.height))),
+    progression: percent / 100,
+  };
+}
+
+function readerReadingLine() {
+  return Math.min(120, Math.round(window.innerHeight / 4));
+}
+
+function readerPositionKey(position, namespace = position.namespace) {
+  return `gt-reader-position-v1:${namespace}:${position.novelId}:${position.chapterNumber}:${position.source}`;
+}
+
+function readerPositionIsActive(position) {
+  return position && position === activeReaderPosition && position.article.isConnected &&
+    position.route === window.location.hash && position.namespace === readerCacheNamespace();
+}
+
+function savedReaderPosition(position) {
+  const local = readStored(readerPositionKey(position), {});
+  if (Number.isFinite(local.scroll_percent)) return local;
+  // Unscoped percentages from older installations are a device-only fallback.
+  const guest = readStored(readerPositionKey(position, "guest"), {});
+  const value = position.userId && Number.isFinite(guest.scroll_percent)
+    ? 0 : Number(localStorage.getItem(readerScrollKey(position.novelId, position.chapterNumber, position.source)) || 0);
+  return {scroll_percent: Number.isFinite(value) ? value : 0};
+}
+
+function readerAccountProgress(position) {
+  if (!position.userId || navigator.onLine === false) return Promise.resolve(null);
+  const key = JSON.stringify([position.userId, position.novelId]);
+  if (readerAccountProgressRequests.has(key)) return readerAccountProgressRequests.get(key);
+  const request = api(`/api/account/progress?novel_id=${encodeURIComponent(position.novelId)}`)
+    .then((response) => response.account_id === position.userId ? response.progress : null)
+    .catch(() => {
+      if (readerAccountProgressRequests.get(key) === request) readerAccountProgressRequests.delete(key);
+      return null;
+    });
+  readerAccountProgressRequests.set(key, request);
+  return request;
+}
+
+function readerLocatorParagraph(position, record) {
+  const locator = record.locator;
+  if (locator?.version !== 1 || locator.novel_id !== position.novelId ||
+      locator.chapter_number !== position.chapterNumber || locator.source !== position.source ||
+      !position.contentHash || locator.content_hash !== position.contentHash ||
+      !Number.isInteger(locator.paragraph_index) || locator.paragraph_index < 0 ||
+      !Number.isFinite(locator.paragraph_offset) || locator.paragraph_offset < 0 || locator.paragraph_offset >= 1 ||
+      !Number.isFinite(locator.progression) || locator.progression < 0 || locator.progression > 1 ||
+      !Number.isFinite(record.scroll_percent) || Math.abs(locator.progression * 100 - record.scroll_percent) > 1e-6) return null;
+  return position.paragraphs[locator.paragraph_index] || null;
+}
+
+function applyReaderPosition(position, record) {
+  const paragraph = readerLocatorParagraph(position, record);
+  const total = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+  const percent = Number.isFinite(record.scroll_percent) ? Math.max(0, Math.min(100, record.scroll_percent)) : 0;
+  let top = total * percent / 100;
+  if (paragraph) {
+    const rect = paragraph.getBoundingClientRect();
+    top = window.scrollY + rect.top + rect.height * record.locator.paragraph_offset - readerReadingLine();
+  }
+  window.scrollTo({top, behavior: "instant"});
+  position.scrollY = window.scrollY;
+  position.width = window.innerWidth;
+  position.height = window.innerHeight;
+  position.record = {...record, locator: paragraph ? record.locator : readingLocator(position, percent)};
+  updateReaderProgressUi();
+  updateBackToTop();
+}
+
+function restoreReaderScroll(position) {
+  applyReaderPosition(position, savedReaderPosition(position));
+  restoreRemoteReaderPosition(position);
+}
+
+function restoreRemoteReaderPosition(position) {
+  const movement = position.movement;
+  readerAccountProgress(position).then((remote) => {
+    if (!readerPositionIsActive(position) || position.movement !== movement || !remote ||
+        remote.novel_id !== position.novelId || remote.chapter_number !== position.chapterNumber ||
+        (remote.source === "ai" ? "english" : remote.source) !== position.source ||
+        (Date.parse(position.record.updated_at) || 0) >= (Date.parse(remote.updated_at) || 0)) return;
+    applyReaderPosition(position, {
+      scroll_percent: remote.scroll_percent, locator: remote.locator, updated_at: remote.updated_at,
+    });
+    writeStored(readerPositionKey(position), position.record);
+  });
+}
+
+function restoreReaderLayout() {
+  const position = activeReaderPosition;
+  if (readerPositionIsActive(position) && !document.querySelector("#readerTextSearch")?.value) {
+    applyReaderPosition(position, position.record);
+  }
+}
+
+function saveActiveReaderPosition(position = activeReaderPosition) {
+  if (!position || position !== activeReaderPosition) return;
+  clearTimeout(position.timer);
+  if (!position.dirty || position.namespace !== readerCacheNamespace()) return;
+  position.dirty = false;
+  const {novelId, chapterNumber, source, record} = position;
+  writeStored(readerPositionKey(position), record);
+  if (!position.userId) localStorage.setItem(readerScrollKey(novelId, chapterNumber, source), String(record.scroll_percent));
+  rememberRecent("chapters", {novel_id: novelId, chapter_number: chapterNumber, source,
+    label: `Chapter ${chapterNumber}`, href: position.route, scroll_percent: record.scroll_percent, at: record.updated_at});
+  queueReaderProgressSync(novelId, chapterNumber, source, record.scroll_percent, record.locator);
+}
+
+function bindReaderProgress(novelId, chapterNumber, source, payload) {
   if (readerScrollHandler) window.removeEventListener("scroll", readerScrollHandler);
-  readerScrollHandler = debounce(() => {
+  clearTimeout(activeReaderPosition?.timer);
+  const article = document.querySelector(".reader-text");
+  const position = {
+    novelId, chapterNumber, source, payload, article, contentHash: payload.content_hash,
+    route: window.location.hash, namespace: readerCacheNamespace(), userId: state.account?.user_id,
+    paragraphs: [...article.querySelectorAll("[data-paragraph-index]")],
+    dirty: false, movement: 0, timer: null,
+  };
+  activeReaderPosition = position;
+  restoreReaderScroll(position);
+  readerScrollHandler = () => {
+    if (!readerPositionIsActive(position) || position.scrollY === window.scrollY ||
+        document.querySelector("#readerTextSearch")?.value || !position.paragraphs.length) return;
+    if (position.width !== window.innerWidth || position.height !== window.innerHeight) return;
+    if (source === "reference" && !canViewReference()) return;
+    position.scrollY = window.scrollY;
     const percent = readerScrollPercent();
-    localStorage.setItem(readerScrollKey(novelId, chapterNumber, source), String(percent));
-    rememberRecent("chapters", {novel_id: novelId, chapter_number: chapterNumber, source, label: `Chapter ${chapterNumber}`, href: `#/reader/${encodeURIComponent(novelId)}/${chapterNumber}/${source}`, scroll_percent: percent, at: new Date().toISOString()});
-    queueReaderProgressSync(novelId, chapterNumber, source, percent);
+    position.record = {scroll_percent: percent, locator: readingLocator(position, percent), updated_at: new Date().toISOString()};
+    position.movement++;
+    position.dirty = true;
+    clearTimeout(position.timer);
+    position.timer = setTimeout(() => saveActiveReaderPosition(position), 700);
     updateBackToTop();
     updateReaderProgressUi(percent);
-  }, 700);
+  };
   window.addEventListener("scroll", readerScrollHandler, {passive: true});
+}
+
+function restoreReaderAccountPosition() {
+  const position = activeReaderPosition;
+  if (position?.article.isConnected && position.route === window.location.hash && position.namespace !== readerCacheNamespace()) {
+    bindReaderProgress(position.novelId, position.chapterNumber, position.source, position.payload);
+  }
 }
 
 function bindReaderChrome() {
@@ -3805,15 +4001,6 @@ function updateBackToTop() {
 
 function readerScrollKey(novelId, chapterNumber, source) {
   return `gt-reader-scroll:${novelId}:${chapterNumber}:${source}`;
-}
-
-function restoreReaderScroll(novelId, chapterNumber, source) {
-  const saved = Number(localStorage.getItem(readerScrollKey(novelId, chapterNumber, source)) || 0);
-  if (!Number.isFinite(saved) || saved <= 0) return;
-  requestAnimationFrame(() => {
-    const total = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
-    window.scrollTo({top: total * saved / 100, behavior: state.preferences.reduceMotion ? "auto" : "smooth"});
-  });
 }
 
 function chapterStateKey(novelId) {
@@ -4611,6 +4798,7 @@ function applyPreferences() {
   document.documentElement.style.setProperty("--reader-align", pref.textAlign);
   document.body.dataset.readerFont = pref.readerFont;
   document.body.dataset.readerTone = pref.readerTone;
+  restoreReaderLayout();
 }
 
 function bindShellControls() {
@@ -4902,8 +5090,11 @@ function titleCase(value) {
   return String(value || "").replace(/-/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+window.addEventListener("resize", restoreReaderLayout);
 window.addEventListener("hashchange", () => {
   saveScrollPosition();
+  saveActiveReaderPosition();
+  activeReaderPosition = null;
   flushReaderProgress();
   closeParagraphMenu(false);
   activeRouteKey = window.location.hash || "#/home";
@@ -4924,9 +5115,17 @@ window.addEventListener("hashchange", () => {
   route();
 });
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") flushReaderProgress();
+  if (document.visibilityState === "hidden") {
+    saveActiveReaderPosition();
+    flushReaderProgress();
+  } else if (document.visibilityState === "visible" && state.account) {
+    // A reader may have continued on another device while this tab was hidden.
+    readerAccountProgressRequests.clear();
+    if (readerPositionIsActive(activeReaderPosition)) restoreRemoteReaderPosition(activeReaderPosition);
+  }
 });
 window.addEventListener("pagehide", () => {
+  saveActiveReaderPosition();
   flushReaderProgress();
 });
 window.addEventListener("popstate", () => {
@@ -4947,4 +5146,9 @@ async function bootstrapSessionState() {
   await refreshSession();
   const current = window.location.hash || "#/home";
   if (["#/home", "#/library", "#/settings", "#/settings/account"].includes(current)) route();
+  else if (current.startsWith("#/reader/")) {
+    const requested = current.split("/")[4]?.split("?")[0];
+    if (["reference", "original"].includes(requested) && canViewReference() && state.source !== requested) route();
+    else restoreReaderAccountPosition();
+  }
 }

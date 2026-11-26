@@ -650,13 +650,27 @@ def auth_matrix(schema: str) -> dict[str, Any]:
         guest_library = request_json("GET", base_url, "/api/novels/partial-novel/library")
         require("guest library hides reference flags", all("has_reference" not in item for item in guest_library["chapters"]))
         request_json("GET", base_url, "/api/novels/partial-novel/chapters/1/reference", expected=401)
+        progress_path = "/api/account/progress"
+        novel_progress = progress_path + "?novel_id=partial-novel"
+        request_json("GET", base_url, novel_progress, expected=401)
         request_json("POST", base_url, "/api/translation/estimate", json_payload={"novel_id": "partial-novel", "next_count": 1}, expected=401)
         request_json("GET", base_url, "/api/admin/backups/manifest", expected=401)
         results["guest"] = "passed"
 
         account = request_json("GET", base_url, "/api/account/me", headers=normal)
         require("normal authenticated", account.get("authenticated") is True and account["user"]["role"] == "user")
-        request_json("PUT", base_url, "/api/account/progress", headers=normal, json_payload={"novel_id": "partial-novel", "chapter_number": 1, "source": "english", "scroll_percent": 12})
+        legacy = {"novel_id": "partial-novel", "chapter_number": 1, "source": "english", "scroll_percent": 12}
+        request_json("PUT", base_url, progress_path, headers=normal, json_payload=legacy)
+        require("legacy progress read", request_json("GET", base_url, novel_progress, headers=normal)["progress"]["scroll_percent"] == 12)
+        chapter = request_json("GET", base_url, "/api/novels/partial-novel/chapters/1/english", headers=normal)
+        locator = {"version": 1, "novel_id": "partial-novel", "chapter_number": 1, "source": "english",
+                   "content_hash": chapter["content_hash"], "paragraph_index": 0, "paragraph_offset": .2, "progression": .12}
+        progress_write = {**legacy, "expected_account_id": TEST_USERS["normal"][0], "locator": locator}
+        request_json("PUT", base_url, progress_path, headers=translator, json_payload=progress_write, expected=409)
+        request_json("PUT", base_url, progress_path, headers=normal, json_payload=progress_write)
+        require("normal locator persisted", request_json("GET", base_url, novel_progress, headers=normal)["progress"]["locator"] == locator)
+        require("other account cannot read normal locator", request_json("GET", base_url, novel_progress, headers=translator)["progress"] is None)
+        request_json("PUT", base_url, progress_path, headers=normal, json_payload={**legacy, "source": "reference"}, expected=401)
         request_json("PUT", base_url, "/api/account/bookmarks", headers=normal, json_payload={"novel_id": "partial-novel", "chapter_number": 1, "note": "normal"})
         request_json("PUT", base_url, "/api/account/favorites/full-novel", headers=normal, json_payload={"favorite": True})
         request_json("PUT", base_url, "/api/account/preferences", headers=normal, json_payload={"preferences": {"collections": [{"id": "n", "name": "Normal", "novel_ids": ["full-novel", "full-novel"]}]}})
@@ -668,6 +682,11 @@ def auth_matrix(schema: str) -> dict[str, Any]:
         request_json("GET", base_url, "/api/account/me", headers=translator)
         reference = request_json("GET", base_url, "/api/novels/partial-novel/chapters/1/reference", headers=translator)
         require("translator reference access", "Reference partial 1" in reference["text"])
+        reference_locator = {**locator, "source": "reference", "content_hash": reference["content_hash"]}
+        reference_progress = {**legacy, "source": "reference", "locator": reference_locator}
+        request_json("PUT", base_url, progress_path, headers=translator, json_payload=reference_progress)
+        require("authorized Reference locator round trip", request_json("GET", base_url, novel_progress, headers=translator)["progress"]["locator"] == reference_locator)
+        require("normal progress remains scoped to English", request_json("GET", base_url, novel_progress, headers=normal)["progress"]["locator"] == locator)
         estimate = request_json("POST", base_url, "/api/translation/estimate", headers=translator, json_payload={"novel_id": "partial-novel", "selection_mode": "next-untranslated", "next_count": 1, "model": "gpt-4o-mini"})
         require("translator estimate", int(estimate.get("eligible_count") or 0) >= 1)
         job = request_json("POST", base_url, "/api/translation/jobs", headers=translator, json_payload={"novel_id": "partial-novel", "selection_mode": "next-untranslated", "next_count": 1, "model": "gpt-4o-mini"})["job"]
@@ -733,7 +752,13 @@ def auth_matrix(schema: str) -> dict[str, Any]:
         with db.connect() as conn:
             conn.execute(f"UPDATE {db.table('user_profiles')} SET role = 'user' WHERE user_id = ?", (TEST_USERS["translator"][0],))
         request_json("POST", base_url, "/api/translation/estimate", headers=translator, json_payload={"novel_id": "partial-novel", "next_count": 1}, expected=401)
+        request_json("GET", base_url, "/api/novels/partial-novel/chapters/1/reference", headers=translator, expected=401)
+        downgraded = request_json("GET", base_url, novel_progress, headers=translator)["progress"]
+        require("role loss retains percentage without Reference locator", downgraded["scroll_percent"] == 12 and "locator" not in downgraded)
+        downgraded_home = request_json("GET", base_url, "/api/account/home", headers=translator)["continue_reading"]
+        require("Home suppresses inaccessible Reference locator", "locator" not in downgraded_home)
         results["role_change_effective"] = "passed"
+        results["reading_locator_authorization_and_privacy"] = "passed"
 
     with run_app(schema, app_env="production") as base_url:
         request_json("GET", base_url, "/api/admin/db-health", headers=admin, expected=401)
@@ -749,6 +774,7 @@ def main() -> None:
         "empty": f"gt_rc2_empty_{run_id}",
         "v10": f"gt_rc2_v10_{run_id}",
         "edge": f"gt_rc2_edge_{run_id}",
+        "locator": f"gt_rc2_locator_{run_id}",
     }
     results: dict[str, Any] = {
         "postgres_version": version,
@@ -772,6 +798,13 @@ def main() -> None:
         qa_notice("postgres_concurrency start")
         results["postgres_concurrency"] = postgres_concurrency(schemas["edge"])
         qa_notice("postgres_concurrency passed")
+        qa_notice("reading locator migration and rollback start")
+        from qa_reading_locator import assert_upgrade_rollback
+        locator_db = db_for(schemas["locator"])
+        locator_db.initialize()
+        assert_upgrade_rollback(locator_db)
+        results["reading_locator_migration_and_rollback"] = "passed"
+        qa_notice("reading locator migration and rollback passed")
         qa_notice("authorization start")
         results["authorization"] = auth_matrix(schemas["edge"])
         qa_notice("authorization passed")

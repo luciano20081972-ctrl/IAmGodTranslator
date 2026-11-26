@@ -25,12 +25,22 @@ def main() -> int:
     from app.main import app
 
     pwa = sys.argv[1:] == ["--pwa"]
-    if pwa:
-        from fastapi.responses import Response
+    locators = sys.argv[1:] == ["--locators"]
+    if pwa or locators:
         from profile_v11_6_seeded import seed_database as seed_reader
         from app import main as website
 
         seed_reader(website, novel_count=1, large_chapters=24)
+
+    if locators:
+        from qa_v11_rc2_postgres_auth import TEST_AUTH_SECRET, TEST_USERS
+
+        os.environ.update(GT_TEST_AUTH_ENABLED="1", GT_TEST_AUTH_SECRET=TEST_AUTH_SECRET, APP_ENV="ci")
+        for user_id, email, role in TEST_USERS.values():
+            website.database.ensure_user_profile(user_id, email, role, f"{role.title()} fixture")
+
+    if pwa:
+        from fastapi.responses import Response
 
         @app.get("/fixture-prior-sw.js")
         def prior_worker():
@@ -59,6 +69,10 @@ def main() -> int:
                     if result.returncode:
                         return result.returncode
                 return 0
+            if locators:
+                command = [sys.executable, "tools/browser_reading_locators.py", "--base-url", env["GT_RC1_BASE_URL"]]
+                print(f"Fixture command {command!r}", file=sys.stderr, flush=True)
+                return subprocess.run(command, env=env, check=False).returncode
             command = [env["GT_VERIFY_NODE"], "tools/qa_v11_rc1_browser_smoke.js"]
             # Log the resolved loopback URL and nested command used for the evidence.
             print(f"Browser fixture URL {env['GT_RC1_BASE_URL']}. Command {command!r}", file=sys.stderr, flush=True)
