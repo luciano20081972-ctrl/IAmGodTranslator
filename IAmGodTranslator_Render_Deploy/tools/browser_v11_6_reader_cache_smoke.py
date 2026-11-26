@@ -49,9 +49,6 @@ def run(base_url: str) -> dict[str, Any]:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True, executable_path=os.getenv("GT_VERIFY_CHROMIUM"))
         context = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True)
-        if os.getenv("GT_VERIFY_CHROMIUM"):
-            context.route("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2",
-                          lambda route: route.fulfill(content_type="application/javascript", body=""))
         page = context.new_page()
         page.goto(f"{base_url.rstrip('/')}/#/home", wait_until="networkidle")
         page.evaluate(

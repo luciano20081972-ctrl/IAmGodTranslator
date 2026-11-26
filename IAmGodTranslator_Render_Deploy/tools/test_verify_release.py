@@ -123,6 +123,11 @@ print("synthetic staged startup passed")
         self.assertEqual(manifest["checks"][0]["status"], "FAIL")
         self.assertIsNone(manifest["checks"][1]["command"])
 
+    def test_source_tree_mismatch_rejects_the_run(self) -> None:
+        manifest = self.verify(1, None, None, "--expect-tree", "0" * 40)
+        self.assertEqual(manifest["preflight_errors"], ["source tree mismatch"])
+        self.assertIsNone(manifest["checks"][0]["command"])
+
     def test_source_identity_mismatch_rejects_the_run(self) -> None:
         manifest = self.verify(1, "0" * 40)
         self.assertEqual(manifest["source"]["head_sha"], self.head)

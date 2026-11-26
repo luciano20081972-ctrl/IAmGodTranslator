@@ -1,0 +1,10 @@
+templates/index.html text eol=lf
+static/app.js text eol=lf
+static/styles.css text eol=lf
+static/sw.js text eol=lf
+static/icons/dark-hour-icon.svg text eol=lf
+static/vendor/** -text
+config/manifest.webmanifest -text
+config/frontend_build_id text eol=lf
+# Preserve whitespace inside the signed-package UMD artifact.
+static/vendor/supabase/supabase-2.119.2.js -whitespace

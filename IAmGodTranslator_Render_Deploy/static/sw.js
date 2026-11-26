@@ -1,17 +1,20 @@
-const GT_CACHE_VERSION = "iagt-app-shell-11.6.2-a2-1";
+// Generated shell inventory.
+const GT_CACHE_VERSION = "iagt-app-shell-11.6.2-76887a00f5d488fa799cab40d77eda3645cc8b72468e2b1b115999548f787994";
 const APP_SHELL = new Map([
-  ["/", ["text/html"]],
-  ["/static/styles.css?v=11.6.2-v11.6.1-mobile-home-20260831", ["text/css"]],
-  ["/static/app.js?v=11.6.2-v11.6.1-mobile-home-20260831", ["text/javascript", "application/javascript"]],
-  ["/static/vendor/minisearch/minisearch-7.2.0.min.js?v=7.2.0", ["text/javascript", "application/javascript"]],
-  ["/manifest.webmanifest", ["application/json", "application/manifest+json"]],
-  ["/static/icons/dark-hour-icon.svg", ["image/svg+xml"]],
+  ["/static/styles.css?v=11.6.2-ee7335cdc6c3f4eec1338d23807dacf04b51e1b34e8a8ddb9663c21273b8fbb2", [["text/css"], "sha256-7nM1zcbD9O7BM40jgH2s8EtR4bNOio3blmPCEnO4+7I="]],
+  ["/static/vendor/supabase/supabase-2.119.2.js", [["text/javascript", "application/javascript"], "sha256-iBavBNmRXbuhiC1vhPC0AtxAJoBjpj2cZtJPUvNxwmM="]],
+  ["/static/vendor/minisearch/minisearch-7.2.0.min.js?v=7.2.0", [["text/javascript", "application/javascript"], "sha256-igW0J4XbRI8sGeJKaiEHIEyCVWX+T5WqabeWUrryboI="]],
+  ["/static/app.js?v=11.6.2-b3b1428f329a2ba2c6ca537e12051ac97c2b26c2a119e8a533f76df6e58ea5cc", [["text/javascript", "application/javascript"], "sha256-s7FCjzKaK6LGylN+EgUayXwrJsKhGeilM/dt9uWOpcw="]],
+  ["/manifest.webmanifest", [["application/json", "application/manifest+json"], "sha256-TZTBJSvvTWmYQCClMIeQF3kx1KVNI5/czNYZ+JHENqE="]],
+  ["/static/icons/dark-hour-icon.svg", [["image/svg+xml"], "sha256-pNZ4F3BV9xDrmvU+LLspwzyK/gQ3dtQdic+qLWUZeHE="]],
+  ["/", [["text/html"], "sha256-pqhFo5eeRB/AZ7SO5EOqbnGCT8GsVKCyppNNo9Di5Fk="]]
 ]);
+// End shell inventory.
 
-async function fetchShellAsset([path, mediaTypes]) {
+async function fetchShellAsset([path, [mediaTypes, integrity]]) {
   const url = new URL(path, self.location.origin);
   const response = await fetch(url, {
-    credentials: "omit", mode: "same-origin", redirect: "error", cache: "no-store",
+    credentials: "omit", mode: "same-origin", redirect: "error", cache: "no-store", integrity,
   });
   const type = (response.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
   const policy = response.headers.get("Cache-Control") || "";

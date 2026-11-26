@@ -51,12 +51,12 @@ def main() -> int:
     require("service worker endpoint is no-cache", '@app.get("/sw.js")' in main_py and "Service-Worker-Allowed" in main_py, failures)
 
     require("manifest linked from shell", 'rel="manifest"' in index, failures)
-    require("theme color uses Dark Hour shell color", '#101014' in index and '#0a36c9' in main_py, failures)
+    require("theme color uses Dark Hour shell color", '#101014' in index and '#0a36c9' in read(APP_ROOT / 'config/manifest.webmanifest'), failures)
     require("versioned app shell assets referenced", "v=11.6.2" in index and 'APP_VERSION = "11.6.2"' in app_js, failures)
     require("service worker registered safely", "registerServiceWorker" in app_js and "window.isSecureContext" in app_js, failures)
     require("cached GETs dedupe in-flight requests", "cacheRequestMap" in app_js and "cacheRequestMap.has(path)" in app_js, failures)
 
-    require("service worker cache is versioned", 'GT_CACHE_VERSION = "iagt-app-shell-11.6.2-' in sw and "APP_BUILD_MARKER" in app_js, failures)
+    require("service worker cache is versioned", 'GT_CACHE_VERSION = "iagt-app-shell-11.6.2-' in sw and "FRONTEND_BUILD_ID" in main_py, failures)
     require("service worker excludes API cache", 'pathname.startsWith("/api/")' in sw, failures)
     require("service worker excludes auth cache", 'pathname.startsWith("/auth/")' in sw, failures)
     require("service worker handles activation cleanup", "caches.delete" in sw and "clients.claim" in sw, failures)

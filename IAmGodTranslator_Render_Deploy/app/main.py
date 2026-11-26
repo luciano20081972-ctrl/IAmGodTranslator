@@ -39,8 +39,9 @@ from app.recovery import parse_uploads, recovery_request, recovery_diagnostic, r
 
 VERSION = "11.6.2"
 DESKTOP_API_VERSION = "11.6.2"
-BUILD_MARKER = os.getenv("IAGT_BUILD_MARKER") or "v11.6.1-mobile-home-20260831"
 ROOT = Path(__file__).resolve().parents[1]
+FRONTEND_BUILD_ID = (ROOT / "config/frontend_build_id").read_text(encoding="ascii").strip()
+BUILD_MARKER = os.getenv("IAGT_BUILD_MARKER") or FRONTEND_BUILD_ID
 ADMIN_PASSWORD_SECRET_FILE = "/run/secrets/admin_password"
 ADMIN_SESSION_SECRET_FILE = "/run/secrets/admin_session_secret"
 SESSION_COOKIE = "gt_admin_session"
@@ -261,21 +262,12 @@ def healthz() -> dict[str, object]:
 
 
 @app.get("/manifest.webmanifest")
-def web_manifest() -> JSONResponse:
-    manifest = {
-        "name": "IAmGodTranslator",
-        "short_name": "IAG Reader",
-        "description": "Private novel reading, translation, and acquisition workspace.",
-        "start_url": "/#/home",
-        "scope": "/",
-        "display": "standalone",
-        "background_color": "#030a1a",
-        "theme_color": "#0a36c9",
-        "icons": [
-            {"src": "/static/icons/dark-hour-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}
-        ],
-    }
-    return JSONResponse(manifest, headers={"Cache-Control": "public, max-age=3600"})
+def web_manifest() -> Response:
+    return Response(
+        (ROOT / "config" / "manifest.webmanifest").read_bytes(),
+        media_type="application/json",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
 
 
 @app.get("/sw.js")
@@ -309,6 +301,9 @@ def health() -> dict[str, object]:
             "ok": False,
             "version": VERSION,
             "build_marker": BUILD_MARKER,
+            "frontend_build_id": FRONTEND_BUILD_ID,
+            "deployment_id": os.getenv("IAGT_DEPLOYMENT_ID"),
+            "deployment_source_commit": os.getenv("RENDER_GIT_COMMIT"),
             "database": "unreachable",
             "schema": database.config.schema,
             "error": exc.__class__.__name__,
@@ -317,6 +312,9 @@ def health() -> dict[str, object]:
         "ok": True,
         "version": VERSION,
         "build_marker": BUILD_MARKER,
+        "frontend_build_id": FRONTEND_BUILD_ID,
+        "deployment_id": os.getenv("IAGT_DEPLOYMENT_ID"),
+        "deployment_source_commit": os.getenv("RENDER_GIT_COMMIT"),
         "database": "reachable" if reachable else "unreachable",
         "schema": database.config.schema,
     }

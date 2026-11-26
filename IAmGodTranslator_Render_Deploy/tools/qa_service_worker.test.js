@@ -26,6 +26,7 @@ function fixture() {
     clients: {claim: async () => { state.claims++; }},
   };
   const context = vm.createContext({URL, Response, self, caches, fetch: async (url, options) => {
+    assert.match(options.integrity, /^sha256-[A-Za-z0-9+/]{43}=$/);
     assert.equal(options.credentials, "omit");
     assert.equal(options.redirect, "error");
     assert.equal(options.cache, "no-store");
@@ -53,7 +54,7 @@ test("install waits for anonymous shell writes, activate keeps current and unrel
   const f = fixture();
   await f.dispatch("install");
   const [current] = f.stores.keys();
-  assert.equal(f.stores.get(current).size, 6);
+  assert.equal(f.stores.get(current).size, 7);
   assert.equal(f.state.skips, 1);
   for (const name of ["other-app", "iagt-reader-cache-v1", "iagt-app-shell-11.6.2"]) f.stores.set(name, new Map());
   await f.dispatch("activate");
