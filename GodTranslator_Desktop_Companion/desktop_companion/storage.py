@@ -12,16 +12,17 @@ from .models import default_website_url, normalize_website_base_url
 from .paths import AppPaths, ensure_app_dirs
 
 
-_WRITE_LOCKS: dict[Path, threading.Lock] = {}
+_WRITE_LOCKS: dict[Path, threading.RLock] = {}
 _WRITE_LOCKS_GUARD = threading.Lock()
+MAX_ACTIVITY_LOG_BYTES = 1024 * 1024
 
 
-def write_lock(path: Path) -> threading.Lock:
+def write_lock(path: Path) -> threading.RLock:
     resolved = path.resolve()
     with _WRITE_LOCKS_GUARD:
         lock = _WRITE_LOCKS.get(resolved)
         if lock is None:
-            lock = threading.Lock()
+            lock = threading.RLock()
             _WRITE_LOCKS[resolved] = lock
         return lock
 
@@ -93,17 +94,19 @@ class CompanionStore:
         write_json(self.paths.jobs_file, {"updated_at": utc_now(), "jobs": [job.to_dict() for job in jobs]})
 
     def upsert_job(self, job: DownloadJob) -> DownloadJob:
-        jobs = [item for item in self.jobs() if item.id != job.id]
-        job.updated_at = utc_now()
-        jobs.insert(0, job)
-        self.save_jobs(jobs)
-        return job
+        with write_lock(self.paths.jobs_file):
+            jobs = [item for item in self.jobs() if item.id != job.id]
+            job.updated_at = utc_now()
+            jobs.insert(0, job)
+            self.save_jobs(jobs)
+            return job
 
     def job(self, job_id: str) -> DownloadJob | None:
         return next((job for job in self.jobs() if job.id == job_id), None)
 
     def delete_job(self, job_id: str) -> None:
-        self.save_jobs([job for job in self.jobs() if job.id != job_id])
+        with write_lock(self.paths.jobs_file):
+            self.save_jobs([job for job in self.jobs() if job.id != job_id])
 
     def uploads(self) -> list[UploadJob]:
         payload = read_json(self.paths.uploads_file, {"uploads": []})
@@ -113,11 +116,12 @@ class CompanionStore:
         write_json(self.paths.uploads_file, {"updated_at": utc_now(), "uploads": [upload.to_dict() for upload in uploads]})
 
     def upsert_upload(self, upload: UploadJob) -> UploadJob:
-        uploads = [item for item in self.uploads() if item.id != upload.id]
-        upload.updated_at = utc_now()
-        uploads.insert(0, upload)
-        self.save_uploads(uploads)
-        return upload
+        with write_lock(self.paths.uploads_file):
+            uploads = [item for item in self.uploads() if item.id != upload.id]
+            upload.updated_at = utc_now()
+            uploads.insert(0, upload)
+            self.save_uploads(uploads)
+            return upload
 
     def upload(self, upload_id: str) -> UploadJob | None:
         return next((upload for upload in self.uploads() if upload.id == upload_id), None)
@@ -157,5 +161,9 @@ class CompanionStore:
     def append_log(self, message: str) -> None:
         self.paths.logs_dir.mkdir(parents=True, exist_ok=True)
         line = f"{utc_now()} {message}\n"
-        with (self.paths.logs_dir / "activity.log").open("a", encoding="utf-8") as handle:
-            handle.write(line)
+        path = self.paths.logs_dir / "activity.log"
+        with write_lock(path):
+            if path.exists() and path.stat().st_size + len(line.encode("utf-8")) > MAX_ACTIVITY_LOG_BYTES:
+                path.replace(path.with_suffix(".log.1"))
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(line)

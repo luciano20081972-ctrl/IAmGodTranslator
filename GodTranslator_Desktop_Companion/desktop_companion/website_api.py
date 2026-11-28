@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 import json
 import os
@@ -9,6 +10,12 @@ import urllib.error
 import urllib.request
 
 from .models import default_website_url, normalize_website_base_url
+from .packs import MAX_PACK_BYTES
+
+
+class NoWebsiteRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 @dataclass
@@ -55,6 +62,7 @@ class WebsiteClient:
         content_type: str = "",
         novel_title: str = "",
         progress: Any | None = None,
+        expected_sha256: str = "",
     ) -> dict[str, Any]:
         return self._upload_pack(
             "/api/desktop/import/preview-pack",
@@ -63,6 +71,7 @@ class WebsiteClient:
             content_type=content_type,
             novel_title=novel_title,
             progress=progress,
+            expected_sha256=expected_sha256,
         )
 
     def execute_content_pack(
@@ -74,6 +83,7 @@ class WebsiteClient:
         overwrite_existing: bool = False,
         dry_run: bool = False,
         progress: Any | None = None,
+        expected_sha256: str = "",
     ) -> dict[str, Any]:
         return self._upload_pack(
             "/api/desktop/import/execute-pack",
@@ -84,6 +94,7 @@ class WebsiteClient:
             overwrite_existing=overwrite_existing,
             dry_run=dry_run,
             progress=progress,
+            expected_sha256=expected_sha256,
         )
 
     def preview_recovery_pack(self, novel_id: str, pack_path: Path) -> dict[str, Any]:
@@ -103,8 +114,8 @@ class WebsiteClient:
             headers=self._headers(),
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+        with urllib.request.build_opener(NoWebsiteRedirect()).open(request, timeout=self.timeout) as response:
+            return json.loads(response.read(MAX_PACK_BYTES).decode("utf-8"))
 
     def novel_url(self, novel_id: str) -> str:
         return f"{self.base_url.rstrip('/')}/#/novel/{quote(novel_id)}"
@@ -120,43 +131,53 @@ class WebsiteClient:
         except Exception as exc:
             raise RuntimeError("Pack upload requires requests. Run SETUP_ONCE.bat first.") from exc
         pack_path = Path(pack_path)
-        query = urlencode({key: value for key, value in params.items() if key != "progress" and value not in {None, ""}})
+        query = urlencode({key: value for key, value in params.items() if key not in {"progress", "expected_sha256"} and value not in {None, ""}})
         url = f"{self.base_url.rstrip('/')}{path}"
         if query:
             url = f"{url}?{query}"
         progress = params.get("progress")
         with pack_path.open("rb") as handle:
-            reader = ProgressReader(handle, pack_path.stat().st_size, progress)
+            reader = ProgressReader(handle, pack_path.stat().st_size, progress, params.get("expected_sha256", ""))
             response = requests.post(
                 url,
                 headers=self._headers(),
                 files={"files": (pack_path.name, reader, "application/zip")},
                 timeout=max(self.timeout, 120),
+                allow_redirects=False,
             )
+        if response.status_code in {401, 403}:
+            raise RuntimeError("Website authorization failed. Verify the administrator token and retry the preview.")
+        if not response.ok or 300 <= response.status_code < 400:
+            raise RuntimeError(f"Website pack request failed with HTTP {response.status_code}.")
         if progress:
             progress(100)
-        response.raise_for_status()
         return response.json()
 
     def _get_json(self, path: str) -> dict[str, Any]:
         request = urllib.request.Request(f"{self.base_url.rstrip('/')}{path}", headers=self._headers(), method="GET")
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
+            with urllib.request.build_opener(NoWebsiteRedirect()).open(request, timeout=self.timeout) as response:
+                return json.loads(response.read(MAX_PACK_BYTES).decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Website request failed: HTTP {exc.code} {detail}") from exc
+            exc.close()
+            raise RuntimeError(f"Website request failed: HTTP {exc.code}") from None
 
 
 class ProgressReader:
-    def __init__(self, handle: Any, total: int, callback: Any | None = None) -> None:
+    def __init__(self, handle: Any, total: int, callback: Any | None = None, expected_sha256: str = "") -> None:
         self.handle = handle
         self.total = max(1, total)
         self.callback = callback
         self.sent = 0
+        self.expected_sha256 = expected_sha256
 
     def read(self, size: int = -1) -> bytes:
-        chunk = self.handle.read(size)
+        chunk = self.handle.read(MAX_PACK_BYTES + 1 if size == -1 else size)
+        if self.sent + len(chunk) > MAX_PACK_BYTES:
+            raise ValueError("Pack exceeds the 64 MiB transfer limit.")
+        # requests reads each multipart file in one call before sending.
+        if self.expected_sha256 and (size != -1 or hashlib.sha256(chunk).hexdigest() != self.expected_sha256):
+            raise ValueError("Pack changed before transfer. Preview the current pack again.")
         self.sent += len(chunk)
         if self.callback:
             self.callback(min(99, round(self.sent / self.total * 100)))

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .adapters import ADAPTERS
 from .acquisition import AcquisitionError, PROVIDERS, ProviderPolicy, SourceAcquisitionProfile, choose_provider
+from .adapters.wikisource import CHAPTER_LIMIT, work_url
 from .models import DownloadJob, new_id, utc_now
 from .packs import build_pack
 from .paths import AppPaths
@@ -31,7 +32,7 @@ class JobManager:
     def __init__(self, store: CompanionStore, paths: AppPaths) -> None:
         self.store = store
         self.paths = paths
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._controls: dict[str, JobControl] = {}
         self._threads: dict[str, threading.Thread] = {}
         self._recover_interrupted_jobs()
@@ -57,6 +58,14 @@ class JobManager:
     ) -> DownloadJob:
         if source_adapter not in ADAPTERS:
             raise ValueError(f"Unsupported source adapter: {source_adapter}")
+        selection = sorted({int(chapter) for chapter in chapters})
+        if not selection or len(selection) > CHAPTER_LIMIT or not 1 <= selection[0] <= selection[-1] <= 999_999:
+            raise ValueError(f"Select 1 to {CHAPTER_LIMIT} distinct positive chapter numbers.")
+        if source_adapter == "wikisource":
+            source_url = work_url(source_url)
+            if acquisition_provider not in {"direct_http", "auto"}:
+                raise ValueError("English Wikisource uses the local HTTP provider. Choose Auto or Direct.")
+            browser_mode = False
         resolved_mode = target_mode if target_mode in {"reference", "original", "english", "mixed", "new_novel"} else "reference"
         root_dir, content_dir = self._job_folders(output_dir, novel_title, resolved_mode)
         job = DownloadJob(
@@ -66,7 +75,7 @@ class JobManager:
             source_url=source_url,
             output_dir=str(content_dir),
             novel_root_dir=str(root_dir),
-            chapters=sorted({int(chapter) for chapter in chapters}),
+            chapters=selection,
             acquisition_provider=acquisition_provider,
             resolved_provider=self._resolve_provider(source_adapter, acquisition_provider, browser_mode),
             website_url=website_url,
@@ -87,21 +96,24 @@ class JobManager:
         return self.store.upsert_job(job)
 
     def pause(self, job_id: str) -> DownloadJob:
-        job = self.require_job(job_id)
-        control = self._controls.get(job_id)
-        if control and self._thread_alive(job_id):
-            control.action = "pause"
-            control.stop_event.set()
-            job.worker_state = "Pause requested - finishing current chapter"
-            job.last_activity = "Pause requested"
-            self._append_live_log(job, "Pause requested")
+        with self._lock:
+            job = self.require_job(job_id)
+            if job.status in TERMINAL_STATUSES:
+                return job
+            control = self._controls.get(job_id)
+            if control and self._thread_alive(job_id):
+                control.action = "pause"
+                control.stop_event.set()
+                job.worker_state = "Pause requested - finishing current chapter"
+                job.last_activity = "Pause requested"
+                self._append_live_log(job, "Pause requested")
+                return self.store.upsert_job(job)
+            job.status = "paused"
+            job.worker_state = "Paused"
+            job.browser_state = "Closed"
+            job.last_activity = "Paused"
+            self._append_live_log(job, "Job paused")
             return self.store.upsert_job(job)
-        job.status = "paused"
-        job.worker_state = "Paused"
-        job.browser_state = "Closed"
-        job.last_activity = "Paused"
-        self._append_live_log(job, "Job paused")
-        return self.store.upsert_job(job)
 
     def resume(self, job_id: str) -> DownloadJob:
         job = self.require_job(job_id)
@@ -118,22 +130,25 @@ class JobManager:
         return saved
 
     def stop(self, job_id: str) -> DownloadJob:
-        job = self.require_job(job_id)
-        control = self._controls.get(job_id)
-        if control and self._thread_alive(job_id):
-            control.action = "stop"
-            control.stop_event.set()
-            job.worker_state = "Stop requested - closing after current operation"
-            job.last_activity = "Stop requested"
-            self._append_live_log(job, "Stop requested")
+        with self._lock:
+            job = self.require_job(job_id)
+            if job.status in TERMINAL_STATUSES:
+                return job
+            control = self._controls.get(job_id)
+            if control and self._thread_alive(job_id):
+                control.action = "stop"
+                control.stop_event.set()
+                job.worker_state = "Stop requested - closing after current operation"
+                job.last_activity = "Stop requested"
+                self._append_live_log(job, "Stop requested")
+                return self.store.upsert_job(job)
+            job.status = "stopped"
+            job.worker_state = "Stopped"
+            job.browser_state = "Closed"
+            job.finished_at = utc_now()
+            job.last_activity = "Stopped"
+            self._append_live_log(job, "Job stopped")
             return self.store.upsert_job(job)
-        job.status = "stopped"
-        job.worker_state = "Stopped"
-        job.browser_state = "Closed"
-        job.finished_at = utc_now()
-        job.last_activity = "Stopped"
-        self._append_live_log(job, "Job stopped")
-        return self.store.upsert_job(job)
 
     def retry_failed(self, job_id: str) -> DownloadJob:
         job = self.require_job(job_id)
@@ -184,22 +199,25 @@ class JobManager:
         return saved
 
     def cancel_job(self, job_id: str) -> DownloadJob:
-        job = self.require_job(job_id)
-        control = self._controls.get(job_id)
-        if control and self._thread_alive(job_id):
-            control.action = "cancel"
-            control.stop_event.set()
-            job.worker_state = "Cancel requested - stopping current operation"
-            job.last_activity = "Cancel requested"
-            self._append_live_log(job, "Cancel requested")
+        with self._lock:
+            job = self.require_job(job_id)
+            if job.status in TERMINAL_STATUSES:
+                return job
+            control = self._controls.get(job_id)
+            if control and self._thread_alive(job_id):
+                control.action = "cancel"
+                control.stop_event.set()
+                job.worker_state = "Cancel requested - stopping current operation"
+                job.last_activity = "Cancel requested"
+                self._append_live_log(job, "Cancel requested")
+                return self.store.upsert_job(job)
+            job.status = "cancelled"
+            job.worker_state = "Cancelled"
+            job.browser_state = "Closed"
+            job.finished_at = utc_now()
+            job.last_activity = "Cancelled"
+            self._append_live_log(job, "Job cancelled")
             return self.store.upsert_job(job)
-        job.status = "cancelled"
-        job.worker_state = "Cancelled"
-        job.browser_state = "Closed"
-        job.finished_at = utc_now()
-        job.last_activity = "Cancelled"
-        self._append_live_log(job, "Job cancelled")
-        return self.store.upsert_job(job)
 
     def create_update_job(
         self,
@@ -263,6 +281,14 @@ class JobManager:
                 return job
             if job.status == "completed":
                 return job
+            active = [entry for entry in self.store.jobs() if entry.id != job_id and self._thread_alive(entry.id)
+                      and entry.status in ACTIVE_STATUSES]
+            busy_output = any(Path(entry.output_dir).resolve() == Path(job.output_dir).resolve() for entry in active)
+            busy_wikisource = job.source_adapter == "wikisource" and any(entry.source_adapter == "wikisource" for entry in active)
+            if busy_output or busy_wikisource:
+                job.status = "queued"
+                job.worker_state = "Queued - waiting for download slot"
+                return self.store.upsert_job(job)
             if job.browser_mode and self._active_browser_jobs(exclude_job_id=job_id) >= self.max_active_browser_jobs:
                 job.status = "queued"
                 job.worker_state = f"Queued - waiting for browser slot ({self.max_active_browser_jobs} max)"
@@ -291,6 +317,8 @@ class JobManager:
         provider_started = started
         try:
             decision = self._provider_decision(job.source_adapter, job.acquisition_provider, job.browser_mode)
+            if (job.source_adapter in {"firecrawl", "apify"} or decision.provider in {"firecrawl", "apify"}) and not self._provider_policy().allow_cloud_providers:
+                raise ValueError("Cloud acquisition is disabled. Enable it explicitly before using a paid provider.")
             adapter = ADAPTERS[job.source_adapter]()
             job.resolved_provider = decision.provider
             job.provider_attempts = job.provider_attempts + [
@@ -380,97 +408,103 @@ class JobManager:
 
         try:
             result = adapter.download(options, control.stop_event, log, progress)
-            finished = self.require_job(job_id)
-            finished.completed = int(result.get("success") or 0)
-            finished.failed = int(result.get("failed") or 0)
-            finished.skipped = int(result.get("skipped") or 0)
-            finished.elapsed_seconds = round(time.perf_counter() - started, 2)
-            if control.action == "pause":
-                finished.status = "paused"
-                finished.worker_state = "Paused"
-                finished.browser_state = "Closed"
-                finished.finished_at = None
-                finished.last_activity = "Job paused"
-                self._append_live_log(finished, "Job paused")
-            elif control.action in {"stop", "cancel"}:
-                finished.status = "cancelled" if control.action == "cancel" else "stopped"
-                finished.worker_state = "Cancelled" if control.action == "cancel" else "Stopped"
-                finished.browser_state = "Closed"
-                finished.finished_at = utc_now()
-                finished.last_activity = "Job cancelled" if control.action == "cancel" else "Job stopped"
-                self._append_live_log(finished, finished.last_activity)
-            else:
-                finished.status = "failed" if finished.failed else "completed"
-                finished.worker_state = "Failed" if finished.failed else "Completed"
-                finished.browser_state = "Closed"
-                finished.finished_at = utc_now()
-                finished.last_activity = "Completed with failures" if finished.failed else "Completed"
-                finished.provider_attempts = finished.provider_attempts + [
-                    self._provider_attempt(
-                        provider=finished.resolved_provider,
-                        status="failed" if finished.failed else "completed",
-                        elapsed_seconds=round(time.perf_counter() - provider_started, 2),
-                        result={
-                            "success": finished.completed,
-                            "failed": finished.failed,
-                            "skipped": finished.skipped,
-                        },
-                        fallback_decision="retry failed chapters only" if finished.failed else "none",
-                    )
-                ]
-                self._append_live_log(finished, finished.last_activity)
-            if finished.status == "completed" and finished.auto_build_packs:
-                try:
-                    pack_dir = Path(finished.novel_root_dir or output_dir.parent) / "Packs"
-                    pack = build_pack(
-                        source_dir=output_dir,
-                        output_dir=pack_dir,
-                        novel_id=finished.novel_id or safe_folder_name(finished.novel_title).lower().replace(" ", "-"),
-                        novel_title=finished.novel_title,
-                        target_mode=finished.target_mode,
-                        source_type=finished.source_adapter,
-                        source_url=finished.source_url,
-                    )
-                    finished.packs_built = [str(pack.path)]
-                    finished.last_activity = "Completed and built 1 pack"
+            with self._lock:
+                finished = self.require_job(job_id)
+                finished.completed = int(result.get("success") or 0)
+                finished.failed = int(result.get("failed") or 0)
+                finished.skipped = int(result.get("skipped") or 0)
+                finished.elapsed_seconds = round(time.perf_counter() - started, 2)
+                if control.action == "pause":
+                    finished.status = "paused"
+                    finished.worker_state = "Paused"
+                    finished.browser_state = "Closed"
+                    finished.finished_at = None
+                    finished.last_activity = "Job paused"
+                    self._append_live_log(finished, "Job paused")
+                elif control.action in {"stop", "cancel"}:
+                    finished.status = "cancelled" if control.action == "cancel" else "stopped"
+                    finished.worker_state = "Cancelled" if control.action == "cancel" else "Stopped"
+                    finished.browser_state = "Closed"
+                    finished.finished_at = utc_now()
+                    finished.last_activity = "Job cancelled" if control.action == "cancel" else "Job stopped"
                     self._append_live_log(finished, finished.last_activity)
-                    if finished.auto_upload and finished.website_url:
-                        finished.website_import_status = "queued"
-                except Exception as exc:
-                    finished.website_import_status = "pack_build_failed"
-                    finished.errors["pack_build"] = str(exc)
-                    self._append_live_log(finished, f"Pack build failed: {exc}")
-            self.store.upsert_job(finished)
+                else:
+                    accounted = finished.completed + finished.skipped + finished.failed
+                    if accounted != len(finished.chapters) or finished.completed + finished.skipped == 0:
+                        finished.errors["job"] = "The worker did not produce verified files for the selected chapters."
+                        finished.failed = max(finished.failed, len(finished.chapters) - finished.completed - finished.skipped, 1)
+                    finished.status = "failed" if finished.failed else "completed"
+                    finished.worker_state = "Failed" if finished.failed else "Completed"
+                    finished.browser_state = "Closed"
+                    finished.finished_at = utc_now()
+                    finished.last_activity = "Completed with failures" if finished.failed else "Completed"
+                    finished.provider_attempts = finished.provider_attempts + [
+                        self._provider_attempt(
+                            provider=finished.resolved_provider,
+                            status="failed" if finished.failed else "completed",
+                            elapsed_seconds=round(time.perf_counter() - provider_started, 2),
+                            result={
+                                "success": finished.completed,
+                                "failed": finished.failed,
+                                "skipped": finished.skipped,
+                            },
+                            fallback_decision="retry failed chapters only" if finished.failed else "none",
+                        )
+                    ]
+                    self._append_live_log(finished, finished.last_activity)
+                if finished.status == "completed" and finished.auto_build_packs:
+                    try:
+                        pack_dir = Path(finished.novel_root_dir or output_dir.parent) / "Packs"
+                        pack = build_pack(
+                            source_dir=output_dir,
+                            output_dir=pack_dir,
+                            novel_id=finished.novel_id or safe_folder_name(finished.novel_title).lower().replace(" ", "-"),
+                            novel_title=finished.novel_title,
+                            target_mode=finished.target_mode,
+                            source_type=finished.source_adapter,
+                            source_url=finished.source_url,
+                        )
+                        finished.packs_built = [str(pack.path)]
+                        finished.errors.pop("pack_build", None)
+                        finished.last_activity = "Completed and built 1 pack"
+                        self._append_live_log(finished, finished.last_activity)
+                        finished.website_import_status = "pack_ready"
+                    except Exception as exc:
+                        finished.website_import_status = "pack_build_failed"
+                        finished.errors["pack_build"] = str(exc)
+                        self._append_live_log(finished, f"Pack build failed: {exc}")
+                self.store.upsert_job(finished)
         except Exception as exc:
-            failed = self.require_job(job_id)
-            if control.action == "pause":
-                failed.status = "paused"
-                failed.worker_state = "Paused after interruption"
-                failed.last_activity = "Job paused"
-                self._append_live_log(failed, "Job paused after downloader interruption")
-            elif control.action in {"stop", "cancel"}:
-                failed.status = "cancelled" if control.action == "cancel" else "stopped"
-                failed.worker_state = "Cancelled after interruption" if control.action == "cancel" else "Stopped after interruption"
-                failed.last_activity = "Job cancelled" if control.action == "cancel" else "Job stopped"
-                self._append_live_log(failed, f"{failed.last_activity} after downloader interruption")
-            else:
-                failed.status = "failed"
-                failed.worker_state = "Failed"
-                failed.last_activity = str(exc)
-                failed.errors["job"] = str(exc)
-                failed.provider_attempts = failed.provider_attempts + [
-                    self._provider_attempt(
-                        provider=failed.resolved_provider or self._resolve_provider(failed.source_adapter, failed.acquisition_provider, failed.browser_mode),
-                        status="failed",
-                        elapsed_seconds=round(time.perf_counter() - provider_started, 2),
-                        error=exc,
-                        fallback_decision="manual retry required",
-                    )
-                ]
-                self._append_live_log(failed, f"Job failed: {exc}")
-            failed.browser_state = "Closed"
-            failed.finished_at = None if failed.status == "paused" else utc_now()
-            self.store.upsert_job(failed)
+            with self._lock:
+                failed = self.require_job(job_id)
+                if control.action == "pause":
+                    failed.status = "paused"
+                    failed.worker_state = "Paused after interruption"
+                    failed.last_activity = "Job paused"
+                    self._append_live_log(failed, "Job paused after downloader interruption")
+                elif control.action in {"stop", "cancel"}:
+                    failed.status = "cancelled" if control.action == "cancel" else "stopped"
+                    failed.worker_state = "Cancelled after interruption" if control.action == "cancel" else "Stopped after interruption"
+                    failed.last_activity = "Job cancelled" if control.action == "cancel" else "Job stopped"
+                    self._append_live_log(failed, f"{failed.last_activity} after downloader interruption")
+                else:
+                    failed.status = "failed"
+                    failed.worker_state = "Failed"
+                    failed.last_activity = str(exc)
+                    failed.errors["job"] = str(exc)
+                    failed.provider_attempts = failed.provider_attempts + [
+                        self._provider_attempt(
+                            provider=failed.resolved_provider or self._resolve_provider(failed.source_adapter, failed.acquisition_provider, failed.browser_mode),
+                            status="failed",
+                            elapsed_seconds=round(time.perf_counter() - provider_started, 2),
+                            error=exc,
+                            fallback_decision="manual retry required",
+                        )
+                    ]
+                    self._append_live_log(failed, f"Job failed: {exc}")
+                failed.browser_state = "Closed"
+                failed.finished_at = None if failed.status == "paused" else utc_now()
+                self.store.upsert_job(failed)
         finally:
             self._controls.pop(job_id, None)
             self._start_next_queued_job()
@@ -495,6 +529,7 @@ class JobManager:
             source_url=job.source_url,
         )
         job.packs_built = sorted(set(job.packs_built + [str(pack.path)]))
+        job.errors.pop("pack_build", None)
         job.website_import_status = "pack_ready"
         job.last_activity = f"Built pack {pack.path.name}"
         self._append_live_log(job, job.last_activity)
@@ -639,7 +674,9 @@ class JobManager:
 
     def _source_profile(self, source_adapter: str) -> SourceAcquisitionProfile:
         if source_adapter == "novelfire":
-            return SourceAcquisitionProfile(preferred_provider="browser", requires_js=True)
+            return SourceAcquisitionProfile(requires_js=True)
+        if source_adapter == "wikisource":
+            return SourceAcquisitionProfile(preferred_provider="direct_http")
         return SourceAcquisitionProfile()
 
     def _append_live_log(self, job: DownloadJob, message: str) -> None:
