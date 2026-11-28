@@ -6,6 +6,7 @@ from threading import Event
 from typing import Any, Callable
 
 from .novelfire import NovelFireAdapter
+from .wikisource import WikisourceAdapter
 from .cloud import ApifyAdapter, DirectHttpAdapter, FirecrawlAdapter
 
 
@@ -53,6 +54,7 @@ class ScribbleHubAdapter(PlannedSourceAdapter):
 
 ADAPTERS = {
     "novelfire": NovelFireAdapter,
+    "wikisource": WikisourceAdapter,
     "direct_http": DirectHttpAdapter,
     "firecrawl": FirecrawlAdapter,
     "apify": ApifyAdapter,
@@ -74,8 +76,8 @@ def adapter_descriptors() -> list[AdapterDescriptor]:
             AdapterDescriptor(
                 name=name,
                 display_name=getattr(adapter_type, "display_name", name),
-                status="active" if name in {"novelfire", "direct_http", "firecrawl", "apify"} else "planned",
-                notes="" if name in {"novelfire", "direct_http", "firecrawl", "apify"} else "Adapter slot is available without changing downloader core.",
+                status="active" if name in {"novelfire", "wikisource", "direct_http", "firecrawl", "apify"} else "planned",
+                notes="" if name in {"novelfire", "wikisource", "direct_http", "firecrawl", "apify"} else "Adapter slot is available without changing downloader core.",
             )
         )
     return descriptors

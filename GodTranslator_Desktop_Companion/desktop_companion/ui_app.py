@@ -5,9 +5,11 @@ import subprocess
 import threading
 from pathlib import Path
 from tkinter import filedialog, messagebox
+from urllib.parse import urlsplit
 
 from . import APP_NAME, APP_VERSION
 from .adapters import adapter_descriptors
+from .adapters.wikisource import CHAPTER_LIMIT, HOST, discover, work_url
 from .jobs import JobManager
 from .models import WebsiteConnectionProfile
 from .packs import build_pack, validate_pack
@@ -53,6 +55,10 @@ class DesktopCompanionApp:
         self.sync = SyncManager(store)
         self.paths = store.paths
         self.events: queue.Queue[str] = queue.Queue()
+        self.discovery_results: queue.Queue = queue.Queue()
+        self.discovery_active = False
+        self.download_snapshot = ()
+        self.upload_snapshot = ()
         self.recovery_request = None
         self.root = ctk.CTk()
         self.root.title(f"{APP_NAME} {APP_VERSION}")
@@ -136,22 +142,19 @@ class DesktopCompanionApp:
         self.new_title = self._entry(form, "Novel title", 0, 0)
         self.new_author = self._entry(form, "Author", 0, 1)
         self.new_url = self._entry(form, "Source URL", 1, 0)
-        self.new_reference_url = self._entry(form, "Optional Reference URL", 1, 1)
-        self.new_language = self._entry(form, "Language", 2, 0, default="Chinese")
+        self.new_target = self.ctk.CTkOptionMenu(form, values=["english", "reference", "original"])
+        self.new_target.grid(row=2, column=0, sticky="ew", padx=8, pady=8)
         self.new_range = self._entry(form, "Chapter range", 2, 1, default="1-10")
         self.new_folder = self._entry(form, "Download folder", 3, 0, default=str(self.paths.downloads_dir))
-        self.new_adapter = self.ctk.CTkOptionMenu(form, values=[item.name for item in adapter_descriptors()])
-        self.new_adapter.set("novelfire")
+        self.new_adapter = self.ctk.CTkOptionMenu(form, values=[item.name for item in adapter_descriptors() if item.status == "active"])
+        self.new_adapter.set("wikisource")
         self.new_adapter.grid(row=4, column=0, sticky="ew", padx=8, pady=8)
         self.new_provider = self.ctk.CTkOptionMenu(form, values=["Auto", "Direct", "Browser", "Firecrawl", "Apify"])
         self.new_provider.set("Auto")
         self.new_provider.grid(row=4, column=1, sticky="ew", padx=8, pady=8)
-        self.new_auto_upload = self.ctk.CTkCheckBox(form, text="Send to GodTranslator after download")
-        self.new_auto_upload.grid(row=5, column=0, sticky="w", padx=8, pady=8)
-        self.mode_switch = self.ctk.CTkSegmentedButton(form, values=["Simple", "Advanced"])
-        self.mode_switch.set("Simple")
-        self.mode_switch.grid(row=3, column=1, sticky="ew", padx=8, pady=8)
-        self.ctk.CTkButton(form, text="Detect Source", command=self.detect_source_from_form).grid(row=5, column=1, sticky="ew", padx=8, pady=12)
+        self.discovery_label = self.ctk.CTkLabel(form, text="Discover a Wikisource work to see available chapters.", wraplength=410)
+        self.discovery_label.grid(row=5, column=0, sticky="w", padx=8, pady=8)
+        self.ctk.CTkButton(form, text="Discover Chapters", command=self.detect_source_from_form).grid(row=5, column=1, sticky="ew", padx=8, pady=12)
         self.ctk.CTkButton(form, text="Download Chapters", command=self.create_download_job_from_form).grid(row=6, column=0, sticky="ew", padx=8, pady=12)
         self.ctk.CTkButton(form, text="Send Latest Pack to GodTranslator", command=self.queue_latest_pack_upload).grid(row=6, column=1, sticky="ew", padx=8, pady=12)
         self.ctk.CTkButton(form, text="Open Imported Novel", command=self.open_current_novel_on_website).grid(row=7, column=0, sticky="ew", padx=8, pady=12)
@@ -341,16 +344,23 @@ class DesktopCompanionApp:
             chapters = parse_chapter_range(self.new_range.get())
             profile = self.sync.profile()
             acquisition_provider = provider_value(self.new_provider.get())
-            source_adapter = acquisition_provider if acquisition_provider in {"direct_http", "firecrawl", "apify"} else self.new_adapter.get()
+            source_adapter = self.new_adapter.get()
+            source_url = self.new_url.get().strip()
+            if source_adapter == "wikisource" or urlsplit(source_url).hostname == HOST:
+                source_adapter = "wikisource"
+                source_url = work_url(source_url)
+            elif acquisition_provider in {"direct_http", "firecrawl", "apify"}:
+                source_adapter = acquisition_provider
             job = self.manager.create_job(
                 novel_title=self.new_title.get() or "Untitled Novel",
-                source_url=self.new_url.get(),
+                novel_id=safe_slug(self.new_title.get() or "Untitled Novel"),
+                source_url=source_url,
                 chapters=chapters,
                 output_dir=Path(self.new_folder.get()),
                 source_adapter=source_adapter,
                 website_url=profile.base_url,
-                auto_upload=bool(self.new_auto_upload.get()),
-                browser_mode=True,
+                target_mode=self.new_target.get(),
+                browser_mode=acquisition_provider in {"auto", "browser"} and source_adapter == "novelfire",
                 acquisition_provider=acquisition_provider,
             )
             self.store.append_log(f"Created job {job.id}")
@@ -374,12 +384,44 @@ class DesktopCompanionApp:
         open_folder(Path(job.output_dir))
 
     def detect_source_from_form(self) -> None:
-        url = self.new_url.get().lower()
-        if "novelfire" in url:
-            self.new_adapter.set("novelfire")
-            messagebox.showinfo(APP_NAME, "Source detected: NovelFire")
+        if self.discovery_active:
             return
-        messagebox.showinfo(APP_NAME, "Source not recognized yet. Use NovelFire or choose an advanced adapter.")
+        try:
+            url = work_url(self.new_url.get())
+        except ValueError as error:
+            messagebox.showerror(APP_NAME, str(error))
+            return
+        entry = self.new_url
+        input_value = entry.get()
+        self.discovery_active = True
+        self.discovery_label.configure(text="Discovering chapters...")
+
+        def worker():
+            try:
+                self.discovery_results.put((entry, input_value, discover(url, threading.Event()), ""))
+            except Exception as error:
+                self.discovery_results.put((entry, input_value, None, friendly_error(error)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def finish_discovery(self) -> None:
+        while not self.discovery_results.empty():
+            entry, input_value, work, error = self.discovery_results.get()
+            self.discovery_active = False
+            if not entry.winfo_exists() or entry.get() != input_value:
+                continue
+            if error:
+                self.discovery_label.configure(text=error)
+                continue
+            self.new_adapter.set("wikisource")
+            self.new_target.set("english")
+            for field, value in ((self.new_title, work.title), (self.new_author, work.author),
+                                 (self.new_range, ", ".join(map(str, list(work.chapters)[:10])))):
+                field.delete(0, "end")
+                field.insert(0, value)
+            numbers = ", ".join(map(str, list(work.chapters)[:20]))
+            suffix = ", …" if len(work.chapters) > 20 else ""
+            self.discovery_label.configure(text=f"{len(work.chapters)} chapters found. Available: {numbers}{suffix}")
 
     def open_recovery_request(self) -> None:
         path_text = filedialog.askopenfilename(title="Open Recovery Request", filetypes=[("JSON files", "*.json")])
@@ -492,21 +534,31 @@ class DesktopCompanionApp:
         path_text = filedialog.askopenfilename(title="Upload GodTranslator Pack", filetypes=[("ZIP packs", "*.zip")])
         if not path_text:
             return
-        novel_id = Path(path_text).name.split("-")[0] or "imported-novel"
-        upload = self.sync.queue_upload(Path(path_text), novel_id=novel_id, content_type="original")
-        self.preview_and_execute_upload(upload.id)
+        try:
+            self.queue_pack_for_preview(Path(path_text))
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, friendly_error(exc))
 
     def queue_latest_pack_upload(self) -> None:
-        packs = sorted(self.paths.packs_dir.glob("*.zip"), key=lambda path: path.stat().st_mtime, reverse=True)
+        packs = set(self.paths.packs_dir.glob("*.zip"))
+        for job in self.store.jobs():
+            packs.update(Path(path) for path in job.packs_built if Path(path).is_file())
         if not packs:
             messagebox.showinfo(APP_NAME, "No packs are ready yet.")
             return
-        novel_id = packs[0].name.split("-")[0] or "imported-novel"
-        upload = self.sync.queue_upload(packs[0], novel_id=novel_id, content_type="original")
+        try:
+            self.queue_pack_for_preview(max(packs, key=lambda path: path.stat().st_mtime))
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, friendly_error(exc))
+
+    def queue_pack_for_preview(self, path: Path) -> None:
+        manifest = validate_pack(path)["manifest"]
+        upload = self.sync.queue_upload(path, manifest["novel_id"], manifest["content_type"])
+        self.show_sync_center()
         self.preview_and_execute_upload(upload.id)
 
     def preview_and_execute_upload(self, upload_id: str) -> None:
-        if hasattr(self, "sync_result"):
+        if hasattr(self, "sync_result") and self.sync_result.winfo_exists():
             self.sync_result.insert("end", f"Previewing upload {upload_id}...\n")
 
         def worker() -> None:
@@ -523,8 +575,11 @@ class DesktopCompanionApp:
         self.sync.open_imported_novel(safe_slug(self.new_title.get() or "imported-novel"))
 
     def _uploads_table(self, row: int = 0) -> None:
+        if getattr(self, "uploads_frame", None) and self.uploads_frame.winfo_exists():
+            self.uploads_frame.destroy()
         uploads = self.store.uploads()[:8]
         frame = self.ctk.CTkFrame(self.body)
+        self.uploads_frame = frame
         frame.grid(row=row, column=0, sticky="ew", pady=10)
         self.ctk.CTkLabel(frame, text="Recent Imports", font=("Segoe UI", 18, "bold")).pack(anchor="w", padx=12, pady=(12, 4))
         if not uploads:
@@ -533,7 +588,14 @@ class DesktopCompanionApp:
         for upload in uploads:
             row_frame = self.ctk.CTkFrame(frame, fg_color="transparent")
             row_frame.pack(fill="x", padx=12, pady=5)
+            summary = upload.preview.get("estimated_import") or upload.preview.get("summary") or {}
+            details = ", ".join(f"{key.replace('_', ' ')} {value}" for key, value in summary.items()
+                                if isinstance(value, int)) if isinstance(summary, dict) else ""
             line = f"{Path(upload.pack_path).name} | {upload.status} | {upload.progress_percent}% | {upload.last_activity}"
+            if details and upload.status == "previewed":
+                line += f"\n{details}"
+            if upload.error:
+                line += f"\n{short_text(upload.error, 180)}"
             self.ctk.CTkLabel(row_frame, text=line, anchor="w").pack(side="left", fill="x", expand=True)
             self.ctk.CTkButton(row_frame, text="Preview", width=82, state="normal" if upload.status in {"queued", "failed"} else "disabled", command=lambda uid=upload.id: self.preview_upload_action(uid)).pack(side="left", padx=2)
             self.ctk.CTkButton(row_frame, text="Execute Import", width=116, state="normal" if upload.status == "previewed" else "disabled", command=lambda uid=upload.id: self.execute_upload_action(uid)).pack(side="left", padx=2)
@@ -544,7 +606,10 @@ class DesktopCompanionApp:
         self.preview_and_execute_upload(upload_id)
 
     def execute_upload_action(self, upload_id: str) -> None:
-        if hasattr(self, "sync_result"):
+        upload = self.sync.require_upload(upload_id)
+        if not messagebox.askyesno(APP_NAME, f"Import the previewed pack for {upload.novel_id} into {upload.website_url}? Existing content will be preserved."):
+            return
+        if hasattr(self, "sync_result") and self.sync_result.winfo_exists():
             self.sync_result.insert("end", f"Executing import {upload_id}...\n")
 
         def worker() -> None:
@@ -559,20 +624,29 @@ class DesktopCompanionApp:
     def retry_upload_action(self, upload_id: str) -> None:
         try:
             self.sync.retry_upload(upload_id)
-            if hasattr(self, "sync_result"):
+            if hasattr(self, "sync_result") and self.sync_result.winfo_exists():
                 self.sync_result.insert("end", f"Retry queued: {upload_id}\n")
             self.show_sync_center()
         except Exception as exc:
             messagebox.showerror(APP_NAME, friendly_error(exc))
 
     def _pump_events(self) -> None:
+        self.finish_discovery()
         while not self.events.empty():
             message = self.events.get()
             self.store.append_log(message)
-            if hasattr(self, "sync_result"):
+            if hasattr(self, "sync_result") and self.sync_result.winfo_exists():
                 self.sync_result.insert("end", message + "\n")
-        if getattr(self, "current_view", "") == "Downloads" and any(job.status in {"starting", "opening_browser", "waiting_cloudflare", "downloading", "retrying"} for job in self.store.jobs()):
-            self.show_downloads()
+        if self.current_view == "Downloads":
+            snapshot = tuple((job.id, job.updated_at) for job in self.store.jobs())
+            if snapshot != self.download_snapshot:
+                self.download_snapshot = snapshot
+                self.show_downloads()
+        if self.current_view == "Sync":
+            snapshot = tuple((upload.id, upload.status) for upload in self.store.uploads())
+            if snapshot != self.upload_snapshot:
+                self.upload_snapshot = snapshot
+                self._uploads_table(row=3)
         self.root.after(1000, self._pump_events)
 
     def _job_action(self, action: str, job_id: str) -> None:
@@ -597,6 +671,7 @@ class DesktopCompanionApp:
                 messagebox.showinfo(APP_NAME, f"Pack ready:\n{job.packs_built[-1] if job.packs_built else 'No pack path recorded'}")
             elif action == "send":
                 self.queue_pack_upload_for_job(job_id)
+                return
             elif action == "reveal":
                 self.reveal_current_chapter(job_id)
             elif action == "stop":
@@ -615,9 +690,7 @@ class DesktopCompanionApp:
             pack_path = latest_pack_for_job(job)
         if pack_path is None:
             raise ValueError("Build a pack before sending this job.")
-        upload = self.sync.queue_upload(pack_path, novel_id=job.novel_id or safe_slug(job.novel_title), content_type=job.target_mode)
-        self.store.append_log(f"Queued pack upload {upload.id} from job {job.id}")
-        self.preview_and_execute_upload(upload.id)
+        self.queue_pack_for_preview(pack_path)
 
 
 def parse_chapter_range(value: str) -> list[int]:
@@ -629,11 +702,13 @@ def parse_chapter_range(value: str) -> list[int]:
         if "-" in text:
             left, right = text.split("-", 1)
             start, end = int(left), int(right)
+            if not 1 <= min(start, end) <= max(start, end) <= 999_999 or abs(end - start) >= CHAPTER_LIMIT:
+                raise ValueError(f"Choose a range with no more than {CHAPTER_LIMIT} positive chapter numbers.")
             chapters.update(range(min(start, end), max(start, end) + 1))
         else:
             chapters.add(int(text))
-    if not chapters:
-        raise ValueError("Enter at least one chapter.")
+    if not chapters or len(chapters) > CHAPTER_LIMIT or not 1 <= min(chapters) <= max(chapters) <= 999_999:
+        raise ValueError(f"Enter 1 to {CHAPTER_LIMIT} distinct positive chapter numbers.")
     return sorted(chapters)
 
 
@@ -713,7 +788,7 @@ def chapter_file_path(job) -> Path | None:
     chapter = job.current_chapter or job.last_downloaded_chapter
     if chapter is None:
         return None
-    width = max(4, len(str(max(job.chapters) if job.chapters else chapter)))
+    width = 4 if job.source_adapter == "wikisource" else max(4, len(str(max(job.chapters) if job.chapters else chapter)))
     return Path(job.output_dir) / f"{chapter:0{width}d}.txt"
 
 
@@ -722,9 +797,7 @@ def latest_pack_for_job(job) -> Path | None:
         path = Path(path_text)
         if path.exists():
             return path
-    pack_dir = Path(job.novel_root_dir or Path(job.output_dir).parent) / "Packs"
-    packs = sorted(pack_dir.glob("*.zip"), key=lambda path: path.stat().st_mtime, reverse=True) if pack_dir.exists() else []
-    return packs[0] if packs else None
+    return None
 
 
 def safe_slug(value: str) -> str:

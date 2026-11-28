@@ -81,6 +81,9 @@ REGRESSION = FAST + SOURCE + (
     Check("locator-browser", WEBSITE, "python", ("tools/verify_release_browser.py", "--locators"),
           ("tools/verify_release_browser.py", "tools/browser_reading_locators.py", "tools/profile_v11_6_seeded.py",
            "tools/qa_v11_rc1_real_app_smoke.py", "tools/qa_v11_rc2_postgres_auth.py")),
+    Check("downloader-e2e", WEBSITE, "python", ("tools/qa_downloader_e2e.py",),
+          ("tools/qa_downloader_e2e.py", "tools/qa_v11_rc2_postgres_auth.py",
+           "../GodTranslator_Desktop_Companion/desktop_companion/adapters/wikisource.py")),
     website_check("v11-navigation", "qa_v11_phase1_navigation_home_settings"),
     website_check("v11-reader", "qa_v11_phase2_reader_experience"),
     website_check("v11-library", "qa_v11_phase3_library_novel_dashboard"),
@@ -271,7 +274,7 @@ def check_records(args: argparse.Namespace, snapshot: Path, runtime: Path, outpu
         record.update(command=command, cwd=str(cwd), environment=env)
         if check.id == "source-syntax":
             command.append(args.node)
-        if check.id in {BROWSER, "pwa-browser", "locator-browser"}:
+        if check.id in {BROWSER, "pwa-browser", "locator-browser", "downloader-e2e"}:
             details, reason = browser_tools(snapshot, work, args, env)
             manifest["dependencies"]["browser"] = details
             if reason:

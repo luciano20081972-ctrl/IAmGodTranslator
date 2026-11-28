@@ -48,11 +48,15 @@ class BrowserEngine:
         if self._context is None:
             self.profile_dir.mkdir(parents=True, exist_ok=True)
             self._playwright = sync_playwright().start()
-            self._context = self._playwright.chromium.launch_persistent_context(
-                str(self.profile_dir),
-                channel="chrome",
-                headless=False,
-            )
+            try:
+                self._context = self._playwright.chromium.launch_persistent_context(
+                    str(self.profile_dir), headless=False,
+                )
+            except Exception as exc:
+                self.close()
+                raise RuntimeError(
+                    "Could not start the Playwright browser. Run SETUP_ONCE.bat and verify the desktop session."
+                ) from exc
             self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
             self._log("Browser launched")
         return self._page

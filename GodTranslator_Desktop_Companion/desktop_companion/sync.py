@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import threading
 from pathlib import Path
 from typing import Any
 import webbrowser
@@ -7,6 +9,7 @@ import webbrowser
 from . import APP_VERSION
 from .models import UploadJob, WebsiteConnectionProfile, new_id, normalize_website_base_url, utc_now
 from .storage import CompanionStore
+from .packs import validate_pack
 from .website_api import WebsiteClient
 
 
@@ -14,6 +17,7 @@ class SyncManager:
     def __init__(self, store: CompanionStore) -> None:
         self.store = store
         self._session_token = ""
+        self._upload_lock = threading.Lock()
 
     def profile(self) -> WebsiteConnectionProfile:
         profile = self.store.connection_profiles()[0]
@@ -82,8 +86,13 @@ class SyncManager:
         return self.store.upsert_upload(upload)
 
     def preview_upload(self, upload_id: str) -> UploadJob:
-        upload = self.require_upload(upload_id)
-        upload.status = "previewing"
+        with self._upload_lock:
+            upload = self.require_upload(upload_id)
+            if upload.status in {"previewing", "uploading", "imported"}:
+                raise ValueError("This upload is already in progress or imported.")
+            upload.status = "previewing"
+            upload.preview = {}
+            self.store.upsert_upload(upload)
         upload.progress_percent = 0
         upload.error = ""
         upload.last_activity = "Preview upload started"
@@ -95,13 +104,22 @@ class SyncManager:
             self.store.upsert_upload(upload)
 
         try:
-            payload = self.client().preview_content_pack(
+            client = self.client()
+            if client.base_url != upload.website_url:
+                raise ValueError("Website changed. Queue a new preview for the current website.")
+            pack = Path(upload.pack_path)
+            validate_pack(pack)
+            digest = pack_digest(pack)
+            payload = client.preview_content_pack(
                 Path(upload.pack_path),
                 novel_id=upload.novel_id,
                 content_type=upload.content_type,
                 progress=progress,
+                expected_sha256=digest,
             )
-            upload.preview = payload
+            if not payload.get("ok") or payload.get("can_execute") is False or pack_digest(pack) != digest:
+                raise ValueError("The preview failed or the pack changed. Build and preview it again.")
+            upload.preview = {**payload, "local_pack_sha256": digest}
             upload.status = "previewed"
             upload.progress_percent = 100
             upload.last_activity = "Preview ready"
@@ -114,8 +132,17 @@ class SyncManager:
             raise
 
     def execute_upload(self, upload_id: str) -> UploadJob:
-        upload = self.require_upload(upload_id)
-        upload.status = "uploading"
+        with self._upload_lock:
+            upload = self.require_upload(upload_id)
+            if upload.status != "previewed" or not upload.preview.get("local_pack_sha256"):
+                raise ValueError("Preview this pack successfully before executing the import.")
+            client = self.client()
+            if client.base_url != upload.website_url:
+                raise ValueError("Website changed. Queue a new preview for the current website.")
+            if pack_digest(Path(upload.pack_path)) != upload.preview["local_pack_sha256"]:
+                raise ValueError("Pack changed since preview. Preview the current pack before importing.")
+            upload.status = "uploading"
+            self.store.upsert_upload(upload)
         upload.progress_percent = 0
         upload.error = ""
         upload.last_activity = "Import upload started"
@@ -127,11 +154,12 @@ class SyncManager:
             self.store.upsert_upload(upload)
 
         try:
-            payload = self.client().execute_content_pack(
+            payload = client.execute_content_pack(
                 Path(upload.pack_path),
                 novel_id=upload.novel_id,
                 content_type=upload.content_type,
                 progress=progress,
+                expected_sha256=upload.preview["local_pack_sha256"],
             )
             upload.result = payload
             upload.status = "imported" if payload.get("ok") else "failed"
@@ -189,6 +217,11 @@ class SyncManager:
         if upload is None:
             raise ValueError(f"Upload not found: {upload_id}")
         return upload
+
+
+def pack_digest(path: Path) -> str:
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def version_compatible(desktop_version: str, desktop_api_version: str) -> bool:

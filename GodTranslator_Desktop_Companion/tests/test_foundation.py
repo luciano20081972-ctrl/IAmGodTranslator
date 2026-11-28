@@ -391,6 +391,15 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
                 ApifyProvider(api_token="test", actor_id="owner/not-approved").fetch_page(AcquisitionRequest("https://example.invalid", 1))
         self.assertEqual(ctx.exception.category, "unsupported_source")
 
+    def test_missing_playwright_browser_reports_setup_and_closes(self) -> None:
+        from desktop_companion.legacy.novelfire_downloader.browser_engine import BrowserEngine
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"PLAYWRIGHT_BROWSERS_PATH": folder}):
+            engine = BrowserEngine(Path(folder) / "profile")
+            with self.assertRaisesRegex(RuntimeError, "SETUP_ONCE"):
+                engine.page()
+            self.assertIsNone(engine._playwright)
+            self.assertIsNone(engine._context)
+
     def test_browser_provider_is_declared_as_real_local_provider(self) -> None:
         provider = BrowserProvider()
         self.assertTrue(provider.capabilities.requires_local_browser)
@@ -425,13 +434,18 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
             manager = JobManager(store, paths)
             job = manager.create_job("Cloud Novel", "https://example.invalid/{chapter}", [1], source_adapter="firecrawl", acquisition_provider="firecrawl")
             manager.start(job.id)
+            wait_for_job(store, job.id, {"failed"})
+            self.assertIn("Cloud acquisition is disabled", store.job(job.id).errors["job"])
+            self.assertFalse(list(Path(job.output_dir).glob("*.txt")))
+            store.save_settings({"allow_cloud_providers": True})
+            manager.retry_failed(job.id)
             wait_for_job(store, job.id, {"completed"})
             saved = store.job(job.id)
             self.assertEqual(saved.resolved_provider, "firecrawl")
             self.assertEqual(saved.downloaded_chapters, [1])
             self.assertTrue((Path(saved.output_dir) / "0001.txt").exists())
-            self.assertEqual(saved.provider_attempts[0]["status"], "started")
-            self.assertTrue(saved.provider_attempts[0]["capabilities"]["requires_external_credit"])
+            self.assertEqual(saved.provider_attempts[1]["status"], "started")
+            self.assertTrue(saved.provider_attempts[1]["capabilities"]["requires_external_credit"])
             self.assertEqual(saved.provider_attempts[-1]["status"], "completed")
             self.assertEqual(saved.provider_attempts[-1]["result"]["success"], 1)
 
@@ -604,7 +618,9 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
             self.assertTrue(completed.packs_built)
 
             sync = SyncManager(store)
-            sync.client = lambda: FakeWebsite()  # type: ignore[method-assign]
+            fake = FakeWebsite()
+            fake.base_url = sync.profile().base_url
+            sync.client = lambda: fake  # type: ignore[method-assign]
             upload = sync.queue_upload(Path(completed.packs_built[-1]), completed.novel_id, "original")
             previewed = sync.preview_upload(upload.id)
             self.assertEqual(previewed.preview["new"], 3)
@@ -632,6 +648,7 @@ class DesktopCompanionFoundationTests(unittest.TestCase):
             self.assertEqual(updated.downloaded_chapters, [4, 5])
 
             update_upload = sync.queue_upload(Path(updated.packs_built[-1]), updated.novel_id, "original")
+            sync.preview_upload(update_upload.id)
             sync.execute_upload(update_upload.id)
             self.assertEqual(sorted(imported[(completed.novel_id, "original")]), [1, 2, 3, 4, 5])
 

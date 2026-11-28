@@ -117,7 +117,7 @@ class DownloadJob:
 
     @property
     def remaining(self) -> int:
-        finished = len(set(self.downloaded_chapters)) + self.skipped
+        finished = self.completed + self.skipped
         return max(0, len(self.chapters) - finished)
 
     @property

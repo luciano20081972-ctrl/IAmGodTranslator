@@ -194,7 +194,7 @@ def test_token(user_id: str, email: str, *, exp_delta: int = 3600, claimed_role:
     encoded = b64url(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8"))
     signature = hmac.new(TEST_AUTH_SECRET.encode("utf-8"), encoded.encode("utf-8"), hashlib.sha256).hexdigest()
     if tamper:
-        signature = "0" + signature[1:]
+        signature = ("1" if signature[0] == "0" else "0") + signature[1:]
     return f"gtqa1.{encoded}.{signature}"
 
 
